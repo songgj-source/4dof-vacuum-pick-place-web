@@ -56,6 +56,7 @@ def plain(text):
 
 
 TRAY_FRAME = (ROOT / 'output' / 'tray_frames' / 'latest_rgb.png', ROOT / 'output' / 'tray_frames' / 'latest_depth.npy')
+HOME_COMMAND = [PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32']
 ITEMS = [
     ('1', '흰 상자 → 1번 칸'),
     ('2', '빨간 정육면체 → 2번 칸'),
@@ -276,10 +277,17 @@ def ensure_torque():
     return False
 
 
-def run_streaming(cmd):
-    """명령을 실행하고 진행 단계만 한 줄씩 보여 준다. 마지막 JSON 줄(결과)을 돌려준다."""
+def run_streaming(cmd, on_event=None, on_start=None, quiet=False):
+    """명령을 실행하고 진행 단계만 한 줄씩 보여 준다. 마지막 JSON 줄(결과)을 돌려준다.
+
+    arm_api.py가 같은 실행 경로를 쓰도록 훅을 둔다(메뉴는 기본값 그대로 화면에 출력):
+    on_event('phase', (원래 이름, 한국어 문구)) / on_event('plan', (계획 dict, 경고 목록)), on_start(proc), quiet=True면 출력 안 함.
+    """
     started = time.monotonic()
     proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    if on_start:
+        on_start(proc)
+    echo = (lambda *a, **k: None) if quiet else print
     last_json = None
     last_error = None
     previous_phase = None
@@ -290,11 +298,14 @@ def run_streaming(cmd):
             last_error = line.split('error:', 1)[1].strip()
         if line.startswith('{"phase"'):
             try:
-                phase = phase_label(json.loads(line)['phase'])
+                raw = json.loads(line)['phase']
+                phase = phase_label(raw)
                 if phase != previous_phase:
                     step += 1
-                    print(f'   {dim(f"{step:>2}")} {cyan("›")} {phase}', flush=True)
+                    echo(f'   {dim(f"{step:>2}")} {cyan("›")} {phase}', flush=True)
                     previous_phase = phase
+                    if on_event:
+                        on_event('phase', (raw, phase))
             except (ValueError, KeyError):
                 pass
         elif line.startswith('{'):
@@ -306,10 +317,10 @@ def run_streaming(cmd):
                 plan = last_json.get('plan', {})
                 name = next((name for label, name, _ in OBJECTS.values() if label == plan.get('label')), plan.get('label'))
                 target = [round(v) for v in plan.get('manual_target_mm', [])]
-                print(f"   {bold('계획')} {name} {cyan('→')} {plan.get('slot_number')}번 칸  {dim(f'목표 {target} mm')}", flush=True)
+                echo(f"   {bold('계획')} {name} {cyan('→')} {plan.get('slot_number')}번 칸  {dim(f'목표 {target} mm')}", flush=True)
                 slots = plan.get('tray_slots') or {}
                 if slots:
-                    print(dim('   트레이 칸 위치(로봇 기준 거리): ') + ', '.join(
+                    echo(dim('   트레이 칸 위치(로봇 기준 거리): ') + ', '.join(
                         f"{k}번 {v['radius_m']:.3f}m" for k, v in sorted(slots.items())
                     ), flush=True)
                 hidden_warnings = (
@@ -322,7 +333,9 @@ def run_streaming(cmd):
                     if not any(str(w).startswith(prefix) for prefix in hidden_warnings)
                 ))
                 if warnings:
-                    print(yellow('   ⚠ 주의: ' + ' / '.join(warnings)), flush=True)
+                    echo(yellow('   ⚠ 주의: ' + ' / '.join(warnings)), flush=True)
+                if on_event:
+                    on_event('plan', (plan, warnings))
     proc.wait()
     if last_json is not None and last_error and not last_json.get('ok', True):
         last_json['reason'] = f"{last_json.get('reason')} / {last_error}"
@@ -359,6 +372,99 @@ def recover_home_if_placed(since):
     done = bool(summary and summary.get('home_return_complete'))
     print('   → HOME 복귀 완료' if done else f'   → HOME 복귀 실패: {brief_message((summary or {}).get("error")) or code} (팔 위치를 확인하세요)')
     return done
+
+
+CHAIN_PLAN_DIR = ROOT / 'output' / 'chain_plans'
+
+
+def chain_flags(index, count):
+    """세 물체 연속 정리(메뉴 4): 마지막이 아니면 놓은 뒤 HOME을 건너뛰고(트레이 위에서 공구를 세운 채 선다),
+    첫 물체가 아니면 그 자리에서 바로 다음 물체로 간다. 조건이 안 맞으면 pick_auto가 기존 HOME 리셋을 쓴다."""
+    flags = []
+    if index < count - 1:
+        flags.append('--skip-home-after-place')
+    if index > 0:
+        flags.append('--start-above-tray')
+    return flags
+
+
+def plan_command(label, path, use_tray_frame=True):
+    """계획만(카메라, 로봇은 안 움직임) 하고 path에 저장하는 명령. 연속 정리는 팔이 HOME일 때 세 물체를 미리 계획한다
+    (트레이 위에 선 팔이 위 카메라를 가리지 않게)."""
+    return sort_command(label, use_tray_frame=use_tray_frame) + ['--plan-out', str(path)]
+
+
+def chained_command(label, path, index, count, from_home=False):
+    flags = [f for f in chain_flags(index, count) if not (from_home and f == '--start-above-tray')]
+    return sort_command(label) + ['--plan-in', str(path), *flags]
+
+
+CHAIN_REFUSED_EXIT_CODE = 4     # pick_auto: 트레이 위에서 바로 갈 수 없어 움직이기 전에 멈춤(sorting.place_followup과 같은 값)
+
+
+def chain_refused(result):
+    attempts = (result or {}).get('attempts') or []
+    return bool(attempts) and attempts[-1].get('exit_code') == CHAIN_REFUSED_EXIT_CODE
+
+
+def run_all_chained(run=None, on_item=None, stopped=lambda: False, labels=None):
+    """메뉴 4: 흰 상자 → 정육면체 → 줄자(labels를 주면 그 물체만, 같은 순서). (1) HOME에서 차례로 계획(사진)
+    (2) 놓은 뒤 HOME을 거치지 않고 다음 물체. 계획에서 물체가 안 보이면 멈추지 않고 건너뛴다(책상에 있는 것만 정리).
+    run(cmd) → (code, result, seconds). on_item(label, stage)은 진행 표시용.
+    돌려주는 것: dict(ok, failed_label, reason, items, skipped)."""
+    run = run or run_streaming
+    stamp = time.strftime('%Y%m%dT%H%M%S')
+    order = [label for label, _, _ in OBJECTS.values()]
+    wanted = [label for label in order if labels is None or label in labels]
+    planned, items, skipped = [], [], []
+    for label in wanted:
+        if stopped():
+            return dict(ok=False, failed_label=label, reason='cancelled', items=items, skipped=skipped)
+        if on_item:
+            on_item(label, 'plan')
+        path = CHAIN_PLAN_DIR / f'{stamp}_{label}.json'
+        code, result, _ = run(plan_command(label, path))
+        if code != 0 and 'the tray moved since the stored frame' in str((result or {}).get('reason', '')) and all(p.exists() for p in TRAY_FRAME):
+            code, result, _ = run(plan_command(label, path, use_tray_frame=False))
+        if code != 0 or not (result or {}).get('ok'):
+            reason = str((result or {}).get('reason') or f'종료 코드 {code}')
+            if 'not found in the current camera view' in reason:
+                skipped.append(label)                 # 책상에 없다: 건너뛰고 다음 물체
+                continue
+            # 다른 계획 실패(트레이 못 찾음 등)는 그 물체부터 하지 않는다. 앞에서 계획된 물체는 넣고(마지막은 HOME 복귀), 이 물체에서 멈췄다고 알린다.
+            failed = dict(label=label, reason=reason)
+            break
+        planned.append((label, path))
+    else:
+        failed = None
+    if not planned and failed is None:
+        return dict(ok=False, failed_label=None, reason='nothing to sort: no registered object found on the desk', items=items, skipped=skipped)
+    for index, (label, path) in enumerate(planned):
+        if stopped():
+            return dict(ok=False, failed_label=label, reason='cancelled', items=items, skipped=skipped)
+        if on_item:
+            on_item(label, 'pick')
+        since = time.time()
+        code, result, _ = run(chained_command(label, path, index, len(planned)))
+        if chain_refused(result) and not stopped():
+            # 트레이 위에서 바로 갈 수 없었다(움직이기 전에 멈춤): 검증된 return_home.py로 HOME에 간 뒤 같은 물체를 평소처럼 한다
+            home_code, home, _ = run(HOME_COMMAND)
+            if home_code == 0 and (home or {}).get('home_return_complete'):
+                code, result, _ = run(chained_command(label, path, index, len(planned), from_home=True))
+        ok = code == 0 and bool((result or {}).get('ok'))
+        items.append(dict(object=label, ok=ok, reason=None if ok else str((result or {}).get('reason') or f'종료 코드 {code}')))
+        if not ok:
+            if not stopped() and (index > 0 or newest_placed_without_error(since)):
+                run(HOME_COMMAND)        # 앞 물체를 놓고 트레이 위에 서 있었거나, 넣은 뒤 복귀만 실패했을 수 있다: 기존 HOME 복귀(이미 HOME이면 움직이지 않는다)
+            return dict(ok=False, failed_label=label, reason=items[-1]['reason'], items=items, skipped=skipped)
+    if failed:
+        return dict(ok=False, failed_label=failed['label'], reason=failed['reason'], items=items, skipped=skipped)
+    return dict(ok=True, failed_label=None, reason=None, items=items, skipped=skipped)
+
+
+def newest_placed_without_error(since):
+    found = newest_result(since)
+    return bool(found and found.get('motion_cycle_complete') and not found.get('error'))
 
 
 def run_one(label, slot=None):
@@ -417,14 +523,20 @@ def main():
                 continue
             if not ensure_torque():
                 continue
-            for key in ('1', '2', '3'):
-                label, name, slot = OBJECTS[key]
-                print('\n' + bold(f'▌ {name} → {slot}번 칸'))
-                if not run_one(label):
-                    print(f'{name}에서 멈췄습니다. 나머지는 실행하지 않았습니다. 원인을 확인한 뒤 해당 번호를 다시 고르세요.')
-                    break
+            names = {label: (name, slot) for label, name, slot in OBJECTS.values()}
+
+            def show(label, stage):
+                name, slot = names[label]
+                print('\n' + bold(f'▌ {name} ' + ('계획(사진)' if stage == 'plan' else f'→ {slot}번 칸')))
+
+            outcome = run_all_chained(on_item=show)
+            missing = ', '.join(names[label][0] for label in outcome['skipped'])
+            if outcome['ok']:
+                print('\n' + green('✔ 책상의 물체를 모두 넣었습니다.' + (f' (책상에 없어 건너뜀: {missing})' if missing else '')))
+            elif outcome['failed_label'] is None:
+                print('책상에서 등록된 물체를 찾지 못했습니다. 넣을 것이 없습니다.')
             else:
-                print('\n' + green('✔ 세 물체를 모두 넣었습니다.'))
+                print(f"{names[outcome['failed_label']][0]}에서 멈췄습니다: {brief_message(outcome['reason'])}. 나머지는 실행하지 않았습니다. 원인을 확인한 뒤 해당 번호를 다시 고르세요.")
         elif choice == '5':
             picked = choose_object()
             slot = input('칸 번호(1~3): ').strip()

@@ -26,7 +26,7 @@ SLOW_JOINT_BATCH_PULSES=6
 TRAVEL_GOAL_SPEED=600
 TRAVEL_GOAL_ACCELERATION=20
 TRAVEL_PULSES_PER_STEP=4
-MAX_TILT_RAD=math.radians(50.)   # place only: the tool may tilt forward from straight down by at most this much (slots beyond 0.30 m need about 43 degrees; user instruction 2026-10-15)
+MAX_TILT_RAD=math.radians(60.)   # place only: the tool may tilt forward from straight down by at most this much (slots beyond 0.30 m need about 43 degrees; user instruction 2026-10-15; 50->60 2026-10-21: 1번 칸 36.7cm)
 TRAVEL_PERIOD_S=.020
 QUICK_PERIOD_S=.040
 # Commanded acceleration (path pulses/s^2). The servo acceleration register limits what it

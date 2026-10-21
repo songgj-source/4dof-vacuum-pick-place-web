@@ -16,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
+from motion.graceful_child import run_until_clean_exit
 from sorting.sort_runner import run_sort
 
 
@@ -36,6 +37,8 @@ def main(argv=None):
     parser.add_argument('--tray-numbering')
     parser.add_argument('--unknown-baseline', type=Path)
     parser.add_argument('--from-files', nargs=2, metavar=('RGB', 'DEPTH'))
+    parser.add_argument('--plan-out', type=Path, help='계획(카메라)만 하고 이 파일에 저장한 뒤 끝낸다. 로봇은 움직이지 않는다(세 물체 연속 정리: 팔이 HOME일 때 미리 계획)')
+    parser.add_argument('--plan-in', type=Path, help='첫 시도는 저장한 계획을 쓴다(사진을 다시 찍지 않는다). 안 붙어 다시 하면 그때는 새로 찍는다')
     args, extra = parser.parse_known_args(argv)         # 나머지 옵션은 pick_auto.py에 그대로 넘긴다
     if args.execute and not args.supported:
         parser.error('--execute requires --supported')
@@ -71,21 +74,39 @@ def main(argv=None):
         if on:
             plan_cmd.append(flag)
 
+    saved = [json.loads(args.plan_in.read_text())] if args.plan_in else []
+
+    def show(plan):
+        print(json.dumps(dict(plan={k: plan[k] for k in ('label', 'slot_number', 'slot_source', 'manual_target_mm', 'warnings', 'tray_slots')}),
+                         ensure_ascii=False, default=float), flush=True)
+        return plan
+
     def plan_once():
+        if saved:
+            return show(saved.pop())
         done = subprocess.run(plan_cmd, cwd=ROOT, text=True, capture_output=True)
         if done.returncode != 0:
             tail = [line for line in done.stderr.strip().splitlines() if line.strip()]
             raise ValueError(tail[-1] if tail else f'plan_sort exited with {done.returncode}')
         plan, _ = json.JSONDecoder().raw_decode(done.stdout[done.stdout.index('{'):])   # 카메라 라이브러리가 stdout 끝에 경고 한 줄을 붙일 수 있다
-        print(json.dumps(dict(plan={k: plan[k] for k in ('label', 'slot_number', 'slot_source', 'manual_target_mm', 'warnings', 'tray_slots')}),
-                         ensure_ascii=False, default=float), flush=True)
-        return plan
+        return show(plan)
+
+    if args.plan_out:
+        try:
+            plan = plan_once()
+        except ValueError as exc:
+            print(json.dumps(dict(ok=False, attempts=[], reason=f'planning failed: {exc}'), ensure_ascii=False))
+            return 1
+        args.plan_out.parent.mkdir(parents=True, exist_ok=True)
+        args.plan_out.write_text(json.dumps(plan, ensure_ascii=False, default=float))
+        print(json.dumps(dict(ok=True, attempts=[], reason=None, plan_file=str(args.plan_out)), ensure_ascii=False))
+        return 0
 
     def pick_once(plan):
         command = list(plan['pick_auto_command']) + extra
         if not args.execute:
             command = [c for c in command if c not in ('--execute', '--supported')]
-        return subprocess.run(command, cwd=ROOT).returncode
+        return run_until_clean_exit(command, ROOT)      # 정지 신호가 와도 pick_auto가 게인 복구·팔 고정을 마칠 때까지 기다린다
 
     result = run_sort(plan_once, pick_once, max_attempts=args.attempts if args.execute else 1)
     print(json.dumps(result, ensure_ascii=False))

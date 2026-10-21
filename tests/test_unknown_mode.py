@@ -120,7 +120,7 @@ class WatchTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as d,patch.object(pick_unknown,'ROOT',Path(d)),patch('camera.astra_calibration_camera.AstraCalibrationCamera',Camera),patch.object(pick_unknown,'wait_for_new_object',return_value=(rgb,depth,target)),patch.object(pick_unknown,'emit'):
    def child(cmd,**kw):
     self.assertTrue(Camera.closed);self.assertNotIn('--execute',cmd);self.assertIn('unknown',cmd);self.assertIn('--unknown-baseline',cmd);return SimpleNamespace(returncode=0)
-   with patch.object(pick_unknown.subprocess,'run',side_effect=child):self.assertEqual(pick_unknown.main(['--acknowledge-unverified-suction']),0)
+   with patch.object(pick_unknown,'run_until_clean_exit',side_effect=lambda cmd,cwd:child(cmd,cwd=cwd).returncode):self.assertEqual(pick_unknown.main(['--acknowledge-unverified-suction']),0)
  def test_cli_execute_requires_support_before_camera(self):
   import pick_unknown
   with patch('camera.astra_calibration_camera.AstraCalibrationCamera') as camera,patch('sys.stderr'):
@@ -152,9 +152,9 @@ class ReviewRegressionTests(unittest.TestCase):
   result=plan_sorting([{'label':'unknown'}]);self.assertEqual(result['assignments'],[])
  def test_unknown_command_cannot_retry_saved_scene(self):
   import run_sort
-  with patch.object(run_sort.subprocess,'run') as child,patch('sys.stderr'):
+  with patch.object(run_sort.subprocess,'run') as child,patch.object(run_sort,'run_until_clean_exit') as pick_child,patch('sys.stderr'):
    with self.assertRaises(SystemExit):run_sort.main(['--command','unknown 3번','--attempts','3'])
-   child.assert_not_called()
+   child.assert_not_called();pick_child.assert_not_called()
  def test_unknown_legacy_xy_correction_not_applied(self):
   rgb,depth,base=self.scene();targets=self.detect(rgb,depth,base)
   with patch('perception.pick_correction.apply',side_effect=AssertionError('old correction')):result=self.job(targets)

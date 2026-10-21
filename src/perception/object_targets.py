@@ -67,6 +67,18 @@ def _project(locator, pixel, plane_z):
     return (origin + scale * direction)[:2]
 
 
+def default_locator(root):
+    base = Path(root) / 'output/ik_resume_20261012'
+    return BoxLocator(base / 'multipose_review/camera_transform_candidate.json', base / 'moved_box_target.json')
+
+
+def top_center_xy(found, top_mm, locator):
+    """classify_objects 결과 하나와 윗면 높이(mm) → 로봇 기준 윗면 중심 xy(m). locate_targets와 같은 투영."""
+    pixel = np.array(found['top_center_px']) - np.array(DEPTH_MINUS_TOP_CENTER_PX)
+    plane_z = TABLE_PLANE_Z - (REFERENCE_TOP_MM - float(top_mm)) / 1000.
+    return _project(locator, pixel, plane_z) + locator.offset_xy
+
+
 def locate_targets(bgr, depth, root, catalog=None, model=None, locator=None, min_contact_z=MIN_CONTACT_Z_M):
     root = Path(root)
     base = root / 'output/ik_resume_20261012'
@@ -81,9 +93,8 @@ def locate_targets(bgr, depth, root, catalog=None, model=None, locator=None, min
             continue
         entry = catalog['objects'][label]
         top_mm = float(entry['height_mm'])
-        pixel = np.array(found['top_center_px']) - np.array(DEPTH_MINUS_TOP_CENTER_PX)
-        plane_z = TABLE_PLANE_Z - (REFERENCE_TOP_MM - top_mm) / 1000.
-        xy = _project(locator, pixel, plane_z) + locator.offset_xy
+        pixel = np.array(found['top_center_px']) - np.array(DEPTH_MINUS_TOP_CENTER_PX)    # 기록용(projection_pixel)
+        xy = top_center_xy(found, top_mm, locator)
         contact_z = (top_mm + float(catalog['cup_contact_offset_mm']) - float(catalog.get('extra_press_mm', 0))) / 1000.
         radius = float(math.hypot(*xy))
         problems = []

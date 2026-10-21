@@ -13,6 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 
+from motion.graceful_child import run_until_clean_exit
 from perception.unknown_objects import locate_unknowns, StableUnknown
 
 
@@ -178,7 +179,7 @@ def main(argv=None):
                    '--from-files', str(out / 'frame_rgb.png'), str(out / 'frame_depth.npy'), *extra]
         if args.execute:
             command += ['--execute', '--supported']
-        return subprocess.run(command, cwd=ROOT).returncode
+        return run_until_clean_exit(command, ROOT)       # 정지 신호를 run_sort→pick_auto에 전달하고 정리가 끝날 때까지 기다린다
     except (Exception, KeyboardInterrupt) as exc:
         emit(ok=False, reason=str(exc) or '사용자 요청으로 중단했습니다.', output=str(out))
         return 1

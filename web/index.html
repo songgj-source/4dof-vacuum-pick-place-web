@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>물체 분류기</title>
+<style>
+  /* 모서리 규칙: 카드 16px, 버튼·입력 10px, 상태 칩·정지 버튼은 완전한 둥근 모양 */
+  :root {
+    --bg: #f3f4f5; --surface: #ffffff; --surface-2: #f7f8f9; --ink: #16191d; --sub: #5b636e; --faint: #8a929c;
+    --line: #e3e6ea; --accent: #0f766e; --accent-ink: #ffffff; --accent-soft: #e6f2f1;
+    --ok: #16794a; --warn: #9a5b00; --warn-soft: #fff4de; --bad: #c22f26; --bad-soft: #fdecea;
+    --shadow: 0 1px 2px rgb(22 25 29 / .05), 0 4px 16px rgb(22 25 29 / .05);
+    --mono: "JetBrains Mono", "D2Coding", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1012; --surface: #171a1d; --surface-2: #1d2125; --ink: #e9ecef; --sub: #a1a9b3; --faint: #737c86;
+      --line: #2a2f35; --accent: #2bb5a6; --accent-ink: #06201d; --accent-soft: #15302d;
+      --ok: #45c486; --warn: #e3a64a; --warn-soft: #33270f; --bad: #ef5d52; --bad-soft: #3a1714;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; min-height: 100dvh; background: var(--bg); color: var(--ink);
+         font: 15px/1.55 "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif; }
+  button, select, input { font: inherit; color: inherit; }
+  button { cursor: pointer; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); padding: 10px 16px;
+           transition: border-color .16s ease, background-color .16s ease, transform .08s ease; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:active:not(:disabled) { transform: scale(.98); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .primary:hover:not(:disabled) { filter: brightness(1.06); }
+
+  /* 상단 */
+  header { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--surface) 88%, transparent);
+           backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 1240px; margin: 0 auto; height: 68px; padding: 0 24px; display: flex; align-items: center; gap: 14px; }
+  .brand { display: flex; flex-direction: column; line-height: 1.2; }
+  .brand b { font-size: 18px; letter-spacing: -.02em; }
+  .brand span { font-size: 12.5px; color: var(--faint); }
+  .pill { font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 999px; background: var(--surface-2); color: var(--sub);
+          border: 1px solid var(--line); white-space: nowrap; }
+  .pill.idle { color: var(--ok); } .pill.busy { color: var(--accent); border-color: var(--accent); } .pill.down { color: var(--bad); }
+  .spacer { flex: 1; }
+  #settings { padding: 8px 14px; color: var(--sub); }
+  #stop { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 700; padding: 11px 28px; border-radius: 999px;
+          letter-spacing: .04em; box-shadow: 0 4px 14px color-mix(in srgb, var(--bad) 35%, transparent); }
+  #stop:hover { filter: brightness(1.08); }
+
+  /* 배치 */
+  main { max-width: 1240px; margin: 0 auto; padding: 24px; display: grid; gap: 20px;
+         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+  section.card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 20px; }
+  section h2 { font-size: 15px; font-weight: 700; margin: 0 0 14px; letter-spacing: -.01em; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; gap: 16px; } .bar { padding: 0 16px; } .brand span { display: none; } }
+
+  /* 메뉴 */
+  ol.menu { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .item { width: 100%; display: grid; grid-template-columns: 40px 1fr; align-items: center; column-gap: 14px; text-align: left;
+          padding: 10px 14px 10px 10px; background: var(--surface-2); border-color: transparent; }
+  .item:hover:not(:disabled) { background: var(--accent-soft); border-color: transparent; }
+  .item i { font-style: normal; font-family: var(--mono); font-weight: 700; font-size: 15px; width: 40px; height: 40px; border-radius: 10px;
+            display: grid; place-items: center; background: var(--surface); color: var(--accent); border: 1px solid var(--line); }
+  .item small { display: block; grid-column: 2; color: var(--sub); font-size: 13px; margin-top: -2px; }
+  .item .api { display: block; grid-column: 2; font-family: var(--mono); font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+  .doclink { color: var(--sub); font-size: 13.5px; text-decoration: none; padding: 8px 10px; border-radius: 10px; }
+  .doclink:hover { color: var(--accent); }
+  .sub { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 0 4px 64px; }
+  .sub[hidden] { display: none; }
+  select { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); min-width: 140px; }
+  @media (max-width: 900px) { .sub { padding-left: 0; } .sub select { flex: 1; } }
+
+  /* 진행 상태 */
+  .status-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  #banner { display: none; padding: 12px 14px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-weight: 700; margin-bottom: 12px; }
+  .now { font-size: 22px; font-weight: 700; letter-spacing: -.02em; margin: 2px 0 2px; }
+  .meta { color: var(--sub); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  ol.steps { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 0; }
+  ol.steps li { position: relative; display: grid; grid-template-columns: 52px 1fr; gap: 12px; padding: 5px 0 5px 18px; font-size: 14px; color: var(--sub); }
+  ol.steps li::before { content: ""; position: absolute; left: 4px; top: 13px; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+  ol.steps li::after { content: ""; position: absolute; left: 7.5px; top: 23px; bottom: -11px; width: 1px; background: var(--line); }
+  ol.steps li:last-child::after { display: none; }
+  ol.steps li .t { font-family: var(--mono); font-size: 12px; color: var(--faint); text-align: right; padding-top: 2px; }
+  ol.steps li.cur { color: var(--ink); font-weight: 700; }
+  ol.steps li.cur::before { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .result { margin-top: 16px; padding: 12px 14px; border-radius: 10px; font-size: 14px; font-weight: 600; }
+  .result.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+  .result.bad { color: var(--bad); background: var(--bad-soft); }
+  .warn { color: var(--warn); font-size: 13px; margin-top: 8px; }
+
+  .side { display: grid; gap: 20px; align-content: start; }
+  .status-card { min-height: 220px; }
+  .status-head { align-items: center; }
+  .status-head h2 { margin: 0; }
+  .cam-api { display: block; font-family: var(--mono); font-size: 11.5px; color: var(--faint); margin: 2px 0 12px; }
+  .snap { display: block; width: 100%; max-width: 420px; border-radius: 10px; margin-bottom: 8px; cursor: zoom-in; border: 1px solid var(--line); }
+  .snap.big { max-width: 100%; cursor: zoom-out; }
+  .msg.has-photo { max-width: 100%; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
+  .chip { font-size: 13px; padding: 4px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); }
+  .chip.far { color: var(--faint); }
+  .chip.unknown { border-style: dashed; }
+  .snap-time { display: block; color: var(--faint); font-size: 12px; margin-bottom: 6px; }
+  #look { padding: 7px 12px; font-size: 13.5px; }
+  .notice { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); color: var(--sub); font-size: 13.5px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  /* 말로 시키기 */
+  .col { display: grid; gap: 20px; align-content: start; }
+  .log { display: grid; gap: 8px; max-height: min(64vh, 720px); min-height: 260px; overflow-y: auto; padding: 2px 2px 10px; align-content: start; }
+  .log .hint { margin: 0; color: var(--faint); font-size: 13.5px; }
+  .msg { max-width: 88%; padding: 9px 13px; border-radius: 12px; font-size: 14.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user { justify-self: end; background: var(--accent-soft); color: var(--ink); }
+  .msg.bot { justify-self: start; background: var(--surface-2); border: 1px solid var(--line); }
+  .msg.wait { color: var(--faint); }
+  .msg.err { color: var(--bad); background: var(--bad-soft); border-color: transparent; }
+  .msg ul.actions { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 3px; font-size: 13.5px; color: var(--sub); }
+  .msg .go-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+  .chat-form { display: flex; gap: 8px; margin-top: 4px; }
+  .chat-form input { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); }
+  #mic { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #mic svg { width: 16px; height: 16px; }
+  #mic.on { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .voice-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: 13px; color: var(--sub); }
+  .voice-row label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  #voice-state { color: var(--faint); }
+  #voice-engine { min-width: 0; padding: 6px 10px; font-size: 13px; }
+  #voice-state.live { color: var(--bad); font-weight: 600; }
+  @media (prefers-reduced-motion: no-preference) { #mic.on { animation: pulse 1.2s ease-in-out infinite; } @keyframes pulse { 50% { filter: brightness(1.25); } } }
+
+  /* 창 */
+  dialog { border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--ink); padding: 22px; max-width: 400px; width: calc(100% - 32px); box-shadow: 0 20px 60px rgb(0 0 0 / .25); }
+  dialog::backdrop { background: rgb(10 12 14 / .45); }
+  dialog p { margin: 0 0 18px; }
+  dialog label { display: block; font-size: 13px; color: var(--sub); margin-bottom: 6px; }
+  dialog input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); margin-bottom: 16px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .notice:not([hidden]) { animation: rise .22s cubic-bezier(.16, 1, .3, 1); }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  }
+</style>
+</head>
+<body>
+<header><div class="bar">
+  <div class="brand"><b>물체 분류기</b><span>SO-101 진공흡착 로봇팔</span></div>
+  <span id="state" class="pill">연결 중</span>
+  <span id="home" class="pill" hidden></span>
+  <span class="spacer"></span>
+  <a class="doclink" href="/docs" target="_blank" rel="noopener">API 설명</a>
+  <button id="settings" title="접속 토큰">설정</button>
+  <button id="stop" title="실행 중인 동작을 즉시 멈춥니다">정지</button>
+</div></header>
+
+<main>
+    <div class="col">
+    <section class="card chat">
+      <div class="status-head"><h2>말로 시키기</h2><button id="look" title="위 카메라로 다시 찍고 상황을 알려 줍니다">다시 보기</button></div>
+      <code class="api cam-api">POST /api/situation · /chat · 로컬 LLM(Ollama)</code>
+      <div id="log" class="log" aria-live="polite"><p class="hint">화면을 열면 먼저 책상을 찍어 상황과 할 수 있는 일을 알려 드립니다. 잠시 기다려 주세요.</p></div>
+      <form id="chat-form" class="chat-form"><input id="chat-in" maxlength="500" placeholder="명령을 입력하거나 [말하기]를 누르세요 (바로 실행됩니다)" autocomplete="off" aria-label="명령">
+        <button type="button" id="mic" title="누르고 말하세요. 예: 빨간 큐브 넣어줘 / 실행 / 멈춰"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>말하기</button>
+        <button id="chat-send" class="primary">보내기</button></form>
+      <div class="voice-row"><span id="voice-state">음성: 대기</span>
+        <span class="row"><select id="voice-engine" aria-label="음성 인식 방식"><option value="local">로컬 인식(Whisper)</option><option value="browser">브라우저 인식(구글)</option></select>
+        <label><input type="checkbox" id="speak-on" checked> 로봇 목소리</label></span></div>
+    </section>
+    </div>
+
+    <div class="side">
+
+    <section class="card status-card">
+      <div class="status-head"><h2>진행 상태</h2></div>
+      <div id="banner"></div>
+      <div class="now" id="now">대기 중</div>
+      <div class="meta" id="meta">명령을 기다리고 있습니다.</div>
+      <ol class="steps" id="steps"></ol>
+      <div id="result"></div>
+      <div id="notice" class="notice" hidden></div>
+    </section>
+
+    <section class="card">
+      <h2>메뉴</h2>
+      <ol class="menu">
+        <li><button class="item" data-run="white_box"><i>1</i>흰 상자 → 1번 칸<code class="api">POST /api/menu/1</code></button></li>
+        <li><button class="item" data-run="red_cube"><i>2</i>빨간 정육면체 → 2번 칸<code class="api">POST /api/menu/2</code></button></li>
+        <li><button class="item" data-run="tape_measure"><i>3</i>줄자 → 3번 칸<code class="api">POST /api/menu/3</code></button></li>
+        <li><button class="item" data-run="all"><i>4</i>세 물체 모두 넣기<small>흰 상자 → 정육면체 → 줄자 순서</small><code class="api">POST /api/menu/4</code></button></li>
+        <li><button class="item" data-open="pick5"><i>5</i>물체와 칸을 골라서 넣기<code class="api">POST /api/menu/5</code></button>
+          <div class="sub" id="pick5" hidden>
+            <select id="obj" aria-label="물체">
+              <option value="" selected disabled>물체 선택</option>
+              <option value="white_box">흰 상자</option><option value="red_cube">빨간 정육면체</option><option value="tape_measure">줄자</option>
+            </select>
+            <select id="slot" aria-label="칸"><option value="" selected disabled>칸 선택</option><option value="1">1번 칸</option><option value="2">2번 칸</option><option value="3">3번 칸</option></select>
+            <button id="custom" class="primary">넣기</button>
+          </div></li>
+        <li><button class="item" data-run="home"><i>6</i>HOME으로 복귀<code class="api">POST /api/menu/6</code></button></li>
+        <li><button class="item" data-open="pick7"><i>7</i>unknown 자동 집기<small>시작 후 새 물체 하나 놓기</small><code class="api">POST /api/menu/7</code></button>
+          <div class="sub" id="pick7" hidden>
+            <select id="uslot" aria-label="놓을 칸"><option value="" selected disabled>놓을 칸 선택</option><option value="1">1번 칸</option><option value="2">2번 칸</option><option value="3">3번 칸</option></select>
+            <button id="unknown" class="primary">시작</button>
+          </div></li>
+      </ol>
+    </section>
+    </div>
+
+</main>
+
+<dialog id="confirm"><p id="confirm-text"></p>
+  <div class="row" style="justify-content:flex-end"><button value="no" id="confirm-no">취소</button><button class="primary" id="confirm-yes">실행</button></div>
+</dialog>
+<dialog id="token"><p>다른 장비에서 접속할 때 서버를 켤 때 정한 <code>--token</code> 값을 넣습니다. 같은 장비라면 비워 두세요.</p>
+  <label for="token-in">접속 토큰</label>
+  <input id="token-in" type="password" autocomplete="off">
+  <div class="row" style="justify-content:flex-end"><button id="token-save" class="primary">저장</button></div>
+</dialog>
+
+<script>
+const NAMES = { white_box: '흰 상자', red_cube: '빨간 정육면체', tape_measure: '줄자', unknown: '새 물체' };
+const DEFAULT_SLOT = { white_box: 1, red_cube: 2, tape_measure: 3, unknown: 3 };
+const REASONS = {
+  object_not_found: '물체를 찾지 못했습니다.', slot_too_small: '칸에 들어갈 여유가 부족합니다.', unreachable: '팔이 닿지 않는 위치입니다.',
+  tray_not_found: '트레이를 찾지 못했습니다.', tray_moved: '트레이 위치가 바뀌었습니다.', torque_off: '서보 토크가 꺼져 있습니다. 팔을 받치고 토크를 켜 주세요.',
+  arm_state_unknown: '팔 상태를 읽지 못했습니다(USB·전원 확인).', device_absent: '장치 연결을 확인하세요.', cancelled: '정지했습니다.',
+  busy: '다른 작업을 실행 중입니다.', camera_busy: '카메라 창이 켜져 있습니다.', object_moved: '물체 위치·크기가 바뀌었습니다.',
+  unauthorized: '토큰이 필요합니다. 오른쪽 위 설정에서 입력하세요.',
+  multiple_new_objects: '새 물체는 하나씩 놓아 주세요.', not_held: '물체가 집히지 않았습니다.'
+};
+const $ = (id) => document.getElementById(id);
+let token = ''; try { token = localStorage.getItem('armToken') || ''; } catch (e) {}
+let busy = false, watched = null, lastShown = null, looked = false;
+
+async function api(method, path, body) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  const r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  let data = {}; try { data = await r.json(); } catch (e) {}
+  return { status: r.status, data };
+}
+function describe(cmd) {
+  if (cmd.action === 'return_home') return 'HOME으로 복귀합니다.';
+  if (cmd.action === 'pick_all' && cmd.objects) return `${cmd.objects.map((o) => NAMES[o]).join(', ')}를 차례로 넣습니다(책상 정리).`;
+  if (cmd.action === 'pick_all') return '세 물체를 모두 넣습니다(흰 상자 → 정육면체 → 줄자, 책상에 없는 것은 건너뜀).';
+  if (cmd.object === 'unknown') return `새 물체를 ${cmd.slot}번 칸에 넣습니다. 시작 후 안내가 나오면 물체를 놓아 주세요.`;
+  const slot = cmd.slot || DEFAULT_SLOT[cmd.object];
+  return `${NAMES[cmd.object] || cmd.object}를 ${slot}번 칸에 넣습니다.`;
+}
+function confirmRun(text) {
+  return new Promise((resolve) => {
+    $('confirm-text').textContent = text + ' 팔 주변을 비웠는지 확인하세요.';
+    const dlg = $('confirm');
+    const done = (v) => { $('confirm-yes').onclick = $('confirm-no').onclick = null; dlg.close(); resolve(v); };
+    $('confirm-yes').onclick = () => done(true); $('confirm-no').onclick = () => done(false);
+    dlg.oncancel = () => done(false); dlg.showModal();
+  });
+}
+function say(cls, text) {          // 실행 안내·오류를 진행 상태 칸 아래에 한 줄로 보여 준다
+  const box = $('notice'); box.textContent = text; box.hidden = !text;
+}
+async function run(cmd, { askFirst = true } = {}) {
+  if (askFirst && !(await confirmRun(describe(cmd)))) return false;
+  // 메뉴 번호 주소(POST /api/menu/N)를 부른다. 5번은 물체·칸, 7번은 칸을 함께 보낸다.
+  const body = {};
+  if (cmd.menu === 5) { body.object = cmd.object; body.slot = Number(cmd.slot); }
+  if (cmd.menu === 7) body.slot = Number(cmd.slot);
+  if (cmd.menu === 4 && cmd.objects) body.objects = cmd.objects;
+  const { status, data } = await api('POST', '/api/menu/' + cmd.menu, body);
+  if (status !== 202) { say('sys', '실행하지 못했습니다: ' + (REASONS[data.reason_code] || data.reason || status)); return false; }
+  watched = data.task_id; lastShown = null; say('sys', describe(cmd).replace('합니다.', '하는 중'));
+  poll(); return true;
+}
+
+// ---------- 메뉴 ----------
+const RUN = {
+  white_box: { menu: 1, action: 'pick_place', object: 'white_box' }, red_cube: { menu: 2, action: 'pick_place', object: 'red_cube' },
+  tape_measure: { menu: 3, action: 'pick_place', object: 'tape_measure' }, all: { menu: 4, action: 'pick_all' }, home: { menu: 6, action: 'return_home' },
+};
+document.querySelectorAll('.item[data-run]').forEach((b) => b.onclick = () => run(RUN[b.dataset.run]));
+document.querySelectorAll('.item[data-open]').forEach((b) => b.onclick = () => {
+  document.querySelectorAll('.sub').forEach((el) => { if (el.id !== b.dataset.open) el.hidden = true; });
+  $(b.dataset.open).hidden = !$(b.dataset.open).hidden;
+});
+$('custom').onclick = () => {
+  if (!$('obj').value || !$('slot').value) { say('sys', '물체와 칸을 고르세요.'); return; }
+  run({ menu: 5, action: 'pick_place', object: $('obj').value, slot: Number($('slot').value) });
+};
+$('unknown').onclick = () => {          // 메뉴 7번과 같이 칸을 꼭 고르게 한다(기본값 없음)
+  if (!$('uslot').value) { say('sys', '놓을 칸을 고르세요.'); return; }
+  run({ menu: 7, action: 'pick_place', object: 'unknown', slot: Number($('uslot').value) });
+};
+// ---------- 사진(대화 속에 보여 준다) ----------
+function showScene(data, msg) {
+  const box = document.createElement('div');
+  const img = document.createElement('img'); img.className = 'snap'; img.alt = '위 카메라 사진';
+  img.src = 'data:image/jpeg;base64,' + data.image_jpeg_base64; img.onclick = () => img.classList.toggle('big');
+  const chips = document.createElement('div'); chips.className = 'chips';
+  (data.objects.length || (data.in_tray || []).length ? data.objects : [{ name: '책상 위 물체 없음', pickable: true }]).forEach((o) => {
+    const c = document.createElement('span'); c.className = 'chip' + (o.label === 'unknown' ? ' unknown' : !o.pickable ? ' far' : '');
+    c.textContent = o.label === 'unknown' ? '등록 안 된 물체' : o.name + (o.pickable ? '' : ' (닿지 않음)'); chips.appendChild(c);
+  });
+  (data.in_tray || []).forEach((o) => {
+    const c = document.createElement('span'); c.className = 'chip far'; c.textContent = `${o.label === 'unknown' ? '등록 안 된 물체' : o.name} · ${o.slot}번 칸 안`; chips.appendChild(c);
+  });
+  const time = document.createElement('small'); time.className = 'snap-time'; time.textContent = data.captured_at.replace('T', ' ') + ' 촬영';
+  box.append(img, chips, time);
+  if (!msg) msg = bubble('bot', '');
+  msg.classList.add('has-photo'); msg.prepend(box);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+// ---------- 말로 시키기 ----------
+const chatHistory = [];
+function bubble(cls, text) {
+  const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = String(text).replace(/\*\*/g, '');
+  $('log').appendChild(d); $('log').scrollTop = $('log').scrollHeight; return d;
+}
+function toRun(p) {          // 제안을 메뉴 번호 실행으로 바꾼다(버튼과 같은 길)
+  if (p.action === 'return_home') return RUN.home;
+  if (p.action === 'pick_all') return p.objects ? { ...RUN.all, objects: p.objects } : RUN.all;
+  if (p.object === 'unknown') return { menu: 7, action: 'pick_place', object: 'unknown', slot: p.slot };
+  if (p.slot == null) return RUN[p.object];
+  return { menu: 5, action: 'pick_place', object: p.object, slot: p.slot };
+}
+let pending = null;          // 대답을 기다리는 제안 { cmd, button }
+async function startPending(askFirst) {
+  if (!pending) return;
+  const { cmd, button } = pending; pending = null;
+  button.disabled = true;
+  const started = await run(cmd, { askFirst });
+  if (started) button.textContent = '실행함'; else { button.disabled = false; pending = { cmd, button }; }
+}
+function offer(msg, proposal) {          // 제안 → [실행] 버튼. 새 제안이 오면 앞 제안은 버린다. 돌려주는 것: 실행 명령 또는 null
+  if (pending) { pending.button.disabled = true; pending = null; }
+  if (!proposal) return null;
+  const cmd = toRun(proposal);
+  const row = document.createElement('div'); row.className = 'go-row';
+  const label = document.createElement('span'); label.textContent = describe(cmd); row.appendChild(label);
+  const go = document.createElement('button'); go.className = 'primary'; go.textContent = '실행'; row.appendChild(go);
+  pending = { cmd, button: go };
+  go.onclick = () => { if (pending && pending.button === go) startPending(true); };
+  msg.appendChild(row);
+  return cmd;
+}
+// 상황 파악: 사진 → 책상 상황·할 수 있는 일·기본 제안(책상 정리) → 입력을 기다린다. 화면을 열 때, 작업이 끝날 때마다, [다시 보기].
+let looking = false;
+async function lookAround() {
+  if (looking || busy) return;
+  looking = true;
+  const hint = $('log').querySelector('.hint'); if (hint) hint.remove();
+  const wait = bubble('bot wait', '책상을 찍어 상황을 확인하는 중…');
+  try {
+    const { status, data } = await api('POST', '/api/situation', {});
+    wait.remove();
+    if (status !== 200) { bubble('bot err', REASONS[data.reason_code] || data.reason || ('오류 ' + status)); return; }
+    const msg = bubble('bot', data.reply);
+    if (data.scene) showScene(data.scene, msg);
+    if (data.actions && data.actions.length) {
+      const list = document.createElement('ul'); list.className = 'actions';
+      data.actions.forEach((a) => { const li = document.createElement('li'); li.textContent = a; list.appendChild(li); });
+      msg.insertBefore(list, null);
+    }
+    offer(msg, data.proposal);
+    chatHistory.push({ role: 'assistant', content: data.reply });
+    speak(data.speech || data.reply, false);
+  } catch (err) { wait.remove(); bubble('bot err', '서버에 연결하지 못했습니다.'); }
+  finally { looking = false; }
+}
+$('look').onclick = () => lookAround();
+async function sendChat(text) {
+  const hint = $('log').querySelector('.hint'); if (hint) hint.remove();
+  bubble('user', text);
+  const wait = bubble('bot wait', '생각하는 중… (처음 한 번은 모델을 올리느라 1분쯤 걸릴 수 있습니다)');
+  $('chat-send').disabled = true;
+  try {
+    const { status, data } = await api('POST', '/chat', { history: chatHistory.slice(-20), text });
+    wait.remove();
+    if (status !== 200) { const m = data.reason || REASONS[data.reason_code] || ('오류 ' + status); bubble('bot err', m); speak(m); return; }
+    chatHistory.push({ role: 'user', content: text });
+    const reply = data.reply || (data.proposal ? '시작합니다.' : '(답이 없습니다. 다시 말씀해 주세요.)');
+    const msg = bubble('bot', reply);
+    chatHistory.push({ role: 'assistant', content: reply });
+    if (data.scene) showScene(data.scene, msg);
+    const cmd = offer(msg, data.proposal);
+    if (cmd) await startPending(false);          // 묻지 않고 바로 실행(2026-10-21 사용자). 무엇을 하는지는 진행 알림이 말한다
+    else speak(reply);
+    poll();
+  } catch (err) { wait.remove(); bubble('bot err', '서버에 연결하지 못했습니다.'); }
+  finally { $('chat-send').disabled = false; }
+}
+$('chat-form').onsubmit = (e) => {
+  e.preventDefault();
+  const text = $('chat-in').value.trim(); if (!text) return;
+  $('chat-in').value = ''; voiceCommand(text).then(() => $('chat-in').focus());     // 글로 쓴 '실행'·'멈춰'도 말과 같게
+};
+
+// ---------- 음성 ----------
+// 브라우저 음성 인식(Chrome·Edge). 마이크는 http://localhost 또는 https에서만 열린다.
+const STOP_WORDS = /^(멈춰|멈춰줘|멈춰라|정지|정지해|스톱|그만|그만해|stop)[.!\s]*$/i;
+const YES_WORDS = /^(실행|실행해|실행해줘|시작|시작해|응|어|네|예|그래|좋아|해|해줘|오케이|ok|정리해|정리해줘)[.!\s]*$/i;
+const NO_WORDS = /^(취소|취소해|아니|아니야|아니요|하지 마|하지마|됐어)[.!\s]*$/i;
+// 한국어 음성을 직접 고른다(기본 음성이 영어면 한국어를 이상하게 읽는다). 구글 음성(인터넷)이 있으면 그것, 없으면 이 PC의 음성(espeak-ng 등)
+// 오프라인이거나 구글 음성 재생이 한 번 실패하면 이 PC의 음성만 쓴다(구글 음성은 인터넷이 없으면 소리 없이 실패한다).
+let remoteVoiceFailed = false;
+function koreanVoice() {
+  const ko = (window.speechSynthesis ? speechSynthesis.getVoices() : []).filter((v) => v.lang.toLowerCase().startsWith('ko'));
+  const local = ko.find((v) => v.localService);
+  if (!navigator.onLine || remoteVoiceFailed) return local || null;
+  return ko.find((v) => /google/i.test(v.name)) || local || ko[0] || null;
+}
+if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => {
+  const v = koreanVoice(); $('speak-on').parentElement.title = v ? '목소리: ' + v.name : '한국어 음성을 찾지 못했습니다(기본 음성으로 읽음)';
+};
+function speak(text, interrupt = true) {          // interrupt=false: 진행 알림은 앞 문장을 끊지 않고 이어서 말한다
+  if (!$('speak-on').checked || !window.speechSynthesis) return;
+  if (interrupt) speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(String(text).replace(/\*\*/g, '')); u.lang = 'ko-KR'; u.rate = 1.1;
+  const voice = koreanVoice(); if (voice) u.voice = voice;
+  u.onerror = (e) => {
+    if (voice && !voice.localService && !remoteVoiceFailed && e.error !== 'interrupted' && e.error !== 'canceled') {
+      remoteVoiceFailed = true; speak(text, false);           // 같은 말을 이 PC의 음성으로 다시
+    }
+  };
+  speechSynthesis.speak(u);
+}
+async function voiceCommand(text) {
+  const t = text.trim(); if (!t) return;
+  if (STOP_WORDS.test(t)) {                       // 가장 빠른 길: LLM을 거치지 않고 바로 멈춘다
+    bubble('user', t);
+    const { data } = await api('POST', '/stop', {});
+    const m = data.stopped ? '정지 명령을 보냈습니다.' : '실행 중인 동작이 없습니다.';
+    bubble('bot', m); speak(m); poll(); return;
+  }
+  if (pending && YES_WORDS.test(t)) { bubble('user', t); speak('시작합니다.'); await startPending(false); return; }   // 상황 파악 뒤 기본 제안(책상 정리)을 한마디로 시작
+  if (pending && NO_WORDS.test(t)) { bubble('user', t); pending.button.disabled = true; pending = null; bubble('bot', '취소했습니다.'); speak('취소했습니다.'); return; }
+  await sendChat(t);
+}
+const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const canRecord = !!(window.isSecureContext && navigator.mediaDevices && window.MediaRecorder);
+let listening = false, recognizer = null, recorder = null;
+function voiceState(text, live) { $('voice-state').textContent = '음성: ' + text; $('voice-state').classList.toggle('live', !!live); }
+function micOn(on) { listening = on; $('mic').classList.toggle('on', on); }
+function engine() { return $('voice-engine').value; }
+
+// 로컬 인식: 녹음 → POST /api/stt(이 PC의 Whisper) → 문장. 말이 끝나고 1.2초 조용하면 자동으로 멈춘다(최대 8초).
+async function startRecording() {
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (err) { voiceState(err.name === 'NotAllowedError' ? '마이크 권한이 막혀 있습니다(주소창 왼쪽에서 허용)' : '마이크를 열지 못했습니다'); return; }
+  const type = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
+  const rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined); const chunks = [];
+  const ctx = new AudioContext(); const analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  const buf = new Float32Array(analyser.fftSize); const began = performance.now();
+  let floor = 0, samples = 0, heard = false, quietSince = began;
+  const timer = setInterval(() => {
+    analyser.getFloatTimeDomainData(buf);
+    const rms = Math.sqrt(buf.reduce((a, v) => a + v * v, 0) / buf.length); const now = performance.now();
+    if (now - began < 300) { floor = (floor * samples + rms) / ++samples; return; }        // 처음 0.3초로 주변 소음 크기를 잰다
+    if (rms > Math.max(.015, floor * 3)) { heard = true; quietSince = now; }
+    if ((heard && now - quietSince > 1200) || now - began > 8000 || (!heard && now - began > 5000)) rec.stop();
+  }, 50);
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  rec.onstop = async () => {
+    clearInterval(timer); stream.getTracks().forEach((t) => t.stop()); ctx.close(); recorder = null; micOn(false);
+    const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+    if (!heard || blob.size < 1000) { voiceState('말소리를 듣지 못했습니다'); return; }
+    voiceState('알아듣는 중…', true);
+    try {
+      const headers = { 'Content-Type': blob.type }; if (token) headers.Authorization = 'Bearer ' + token;
+      const r = await fetch('/api/stt', { method: 'POST', headers, body: blob }); const data = await r.json().catch(() => ({}));
+      if (r.status !== 200) { voiceState(data.reason || REASONS[data.reason_code] || ('오류 ' + r.status)); return; }
+      if (!data.text) { voiceState('말소리를 듣지 못했습니다'); return; }
+      voiceState(`"${data.text}" (${data.seconds}초)`); await voiceCommand(data.text);
+    } catch (err) { voiceState('서버에 연결하지 못했습니다'); }
+  };
+  recorder = rec; rec.start(); micOn(true); voiceState('듣는 중… (말이 끝나면 자동으로 멈춥니다)', true);
+  if (window.speechSynthesis) speechSynthesis.cancel();
+}
+
+// 브라우저 인식(Chrome·Edge, 소리를 구글 서버로 보낸다)
+if (Recognition && window.isSecureContext) {
+  recognizer = new Recognition();
+  recognizer.lang = 'ko-KR'; recognizer.interimResults = true; recognizer.continuous = false; recognizer.maxAlternatives = 1;
+  recognizer.onstart = () => { micOn(true); voiceState('듣는 중…', true); if (window.speechSynthesis) speechSynthesis.cancel(); };
+  recognizer.onresult = (e) => {
+    const r = e.results[e.results.length - 1]; const text = r[0].transcript;
+    $('chat-in').value = text;
+    if (r.isFinal) { $('chat-in').value = ''; voiceCommand(text); }
+  };
+  recognizer.onerror = (e) => voiceState(e.error === 'not-allowed' ? '마이크 권한이 막혀 있습니다(주소창 왼쪽에서 허용)' : e.error === 'no-speech' ? '말소리를 듣지 못했습니다' : '오류: ' + e.error);
+  recognizer.onend = () => { micOn(false); if ($('voice-state').classList.contains('live')) voiceState('대기'); };
+} else $('voice-engine').querySelector('[value=browser]').disabled = true;
+
+try { const saved = localStorage.getItem('voiceEngine'); if (saved && !$('voice-engine').querySelector(`[value=${saved}]`).disabled) $('voice-engine').value = saved; } catch (e) {}
+$('voice-engine').onchange = () => { try { localStorage.setItem('voiceEngine', engine()); } catch (e) {} };
+if (!canRecord && !recognizer) { $('mic').disabled = true; voiceState('마이크는 http://localhost:8000 또는 https 주소에서만 열립니다'); }
+else if (!canRecord) { $('voice-engine').value = 'browser'; $('voice-engine').querySelector('[value=local]').disabled = true; }
+
+$('mic').onclick = () => {
+  if (listening) { if (recorder) recorder.stop(); else if (recognizer) recognizer.stop(); return; }
+  if (engine() === 'local') startRecording();
+  else if (recognizer) { try { recognizer.start(); } catch (err) {} }
+};
+document.addEventListener('keydown', (e) => {      // 입력칸 밖에서 스페이스 = 말하기
+  if (e.code === 'Space' && !e.repeat && !['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(document.activeElement.tagName) && !document.querySelector('dialog[open]')) {
+    e.preventDefault(); if (!$('mic').disabled) $('mic').click();
+  }
+});
+$('stop').onclick = async () => { const { data } = await api('POST', '/stop', {}); say('sys', data.stopped ? '정지 요청을 보냈습니다.' : '실행 중인 동작이 없습니다.'); poll(); };
+$('settings').onclick = () => { $('token-in').value = token; $('token').showModal(); };
+$('token-save').onclick = () => { token = $('token-in').value.trim(); try { localStorage.setItem('armToken', token); } catch (e) {} $('token').close(); poll(); };
+
+// ---------- 상태 ----------
+function setBusy(b) {
+  busy = b; document.querySelectorAll('.item, #custom, #unknown, #look').forEach((el) => el.disabled = b);
+}
+async function poll() {
+  let res; try { res = await api('GET', '/status'); } catch (e) { $('state').className = 'pill down'; $('state').textContent = '서버 연결 끊김'; return; }
+  if (res.status === 401) { $('state').className = 'pill down'; $('state').textContent = '토큰 필요(설정)'; return; }
+  const s = res.data; setBusy(s.state === 'busy');
+  if (!looked && s.state === 'idle') { looked = true; lookAround(); }       // 화면을 열면 먼저 책상을 찍어 상황을 알린다
+  $('state').className = 'pill ' + (s.state === 'busy' ? 'busy' : 'idle');
+  $('state').textContent = s.state === 'busy' ? '실행 중' : '대기 중';
+  $('home').hidden = s.arm_home == null; $('home').textContent = s.arm_home ? 'HOME 자세' : '';
+  const waiting = s.phase === 'unknown_wait';
+  $('banner').style.display = waiting ? 'block' : 'none';
+  $('banner').textContent = waiting ? '새 물체 하나를 작업 영역에 놓고 손을 빼 주세요 (90초 대기)' : '';
+  if (s.task_id) {
+    const t = await api('GET', '/tasks/' + s.task_id);
+    if (t.status === 200) render(t.data, s);
+  }
+}
+// ---------- 로봇 목소리: 진행 알림 ----------
+// 이 화면이 열려 있는 동안 실행 중이었던 작업만 알린다(화면·음성·NOMI 어디서 시작했든). 페이지를 열 때 이미 끝난 작업은 말하지 않는다.
+const seenRunning = new Set(), told = {};
+function announce(task) {
+  if (task.state === 'running') seenRunning.add(task.id);
+  if (!seenRunning.has(task.id)) return;
+  const t = told[task.id] || (told[task.id] = { step: null, waitSaid: false, done: false });
+  if (task.state === 'running') {
+    let step = null, line = null;
+    if (task.phase === 'unknown_wait') {
+      if (!t.waitSaid) { t.waitSaid = true; speak('새 물체 하나를 작업 영역에 놓고 손을 빼 주세요.', false); }
+      return;
+    }
+    if (task.skill === 'pick_all') {
+      if (task.phase === 'plan') { step = 'plan'; line = '책상의 물체 위치를 확인합니다.'; }
+      else if (task.item && task.phase) { step = 'item:' + task.item; line = `${NAMES[task.item]}를 ${DEFAULT_SLOT[task.item]}번 칸에 넣습니다.`; }
+    } else if (task.skill === 'return_home') { step = 'home'; line = 'HOME 자세로 돌아갑니다.'; }
+    else if (task.params && task.params.object) { step = 'pick'; line = task.params.object === 'unknown' ? '새 물체를 넣을 준비를 합니다.' : `${NAMES[task.params.object]}를 ${task.params.slot}번 칸에 넣습니다.`; }
+    if (step && t.step !== step && !(step === 'plan' && t.step)) { t.step = step; speak(line, false); }
+  } else if (task.result && !t.done) {
+    t.done = true;
+    const r = task.result;
+    if (r.ok) speak((task.skill === 'pick_all' ? '책상 정리를 마쳤습니다.' : task.skill === 'return_home' ? 'HOME으로 돌아왔습니다.' : '넣었습니다.') + (r.note ? ' ' + r.note : ''), false);
+    else if (r.reason_code === 'cancelled') speak('멈췄습니다.', false);
+    else speak('멈췄습니다. ' + (r.reason || REASONS[r.reason_code] || '원인을 확인해 주세요.'), false);
+    if (r.reason_code !== 'cancelled') setTimeout(lookAround, 1500);        // 끝나면 다시 책상을 찍어 다음에 할 일을 알린다(멈춤 뒤에는 기다린다)
+  }
+}
+function render(task, s) {
+  announce(task);
+  const label = task.skill === 'return_home' ? 'HOME 복귀' : task.skill === 'pick_all' ? (task.params && task.params.objects ? '책상 정리 (' + task.params.objects.map((o) => NAMES[o]).join(', ') + ')' : '세 물체 모두 넣기')
+              : `${NAMES[task.params.object] || ''} → ${task.params.slot}번 칸`;
+  $('now').textContent = task.state === 'running' ? (task.phase_label || '카메라로 위치를 찾는 중') : label;
+  $('meta').textContent = task.state === 'running' ? `${label} · ${Math.round(s.elapsed_s || 0)}초` : `${label} · ${task.seconds}초`;
+  $('steps').innerHTML = '';
+  task.phases.forEach((p, i) => {
+    const li = document.createElement('li'); if (task.state === 'running' && i === task.phases.length - 1) li.className = 'cur';
+    li.innerHTML = `<span class="t">${p.at_s.toFixed(1)}s</span><span></span>`; li.lastChild.textContent = p.label; $('steps').appendChild(li);
+  });
+  const box = $('result'); box.innerHTML = '';
+  if (task.result) {
+    const r = task.result, div = document.createElement('div');
+    div.className = 'result ' + (r.ok ? 'ok' : 'bad');
+    div.textContent = r.ok ? '완료' + (r.note ? ' (' + r.note + ')' : '') : '실패: ' + (REASONS[r.reason_code] || '알 수 없는 오류') + (r.reason ? ' (' + r.reason + ')' : '');
+    box.appendChild(div);
+    (r.warnings || []).forEach((w) => { const d = document.createElement('div'); d.className = 'warn'; d.textContent = '주의: ' + w; box.appendChild(d); });
+    if (task.id === watched && lastShown !== task.id) { lastShown = task.id; say('sys', ''); }   // 끝나면 '…하는 중' 안내를 지운다(결과는 위 칸)
+  }
+}
+setInterval(poll, 1000); poll();
+
+</script>
+</body>
+</html>

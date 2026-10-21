@@ -66,6 +66,7 @@ PC는 USB 115200 baud로 펌프를 제어합니다(`p` 흡착 / `d` 배기 300 m
 - 색 기반 분류라 밝은 무채색 물체는 흰 상자와 구분하지 못합니다. 숫자 인식은 지금 필체에서만 확인했습니다.
 - 새 물체는 높이 20–45 mm, 윗면이 평평한 것만 받습니다. 카메라가 높이를 3–5 mm 높게 재는 경향이 있고, 4축 팔은 물체를 돌릴 수 없어 놓이는 방향이 책상에 놓은 방향에 좌우되며, 칸 여유 5 mm 미만이어도 경고만 하고 실행합니다.
 - 집기 가능한 반경은 약 0.16–0.30 m입니다. 이 범위 밖은 계획 단계에서 거부합니다.
+- 세 물체 연속 정리는 처음에 찍은 사진으로 세 물체 위치를 정합니다. 앞 물체를 집다가 옆 물체가 밀리면 다음 물체를 잘못 집을 수 있습니다.
 
 ## 실행
 
@@ -78,10 +79,40 @@ python scripts/run_sort.py --execute --supported --object red_cube  # 실제 구
 
 `--execute --supported` 없이 실행하면 로봇을 움직이지 않고 계획만 출력합니다. 개발 환경은 conda `lerobot_312`(Python 3.12)입니다.
 
+**세 물체 모두 넣기(메뉴 4, 웹·REST `pick_all`)**는 연속으로 정리합니다.
+1. 팔이 HOME에 있을 때 세 물체를 차례로 계획합니다(사진 3장, `run_sort.py --plan-out`). 팔은 움직이지 않습니다.
+2. 놓은 뒤 HOME으로 돌아가지 않고 트레이 위에서 공구를 세운 채 섭니다(`pick_auto.py --skip-home-after-place`).
+3. 다음 물체는 그 자리에서 높이 120mm 이상으로 올라가 극좌표 경로로 바로 갑니다(`--start-above-tray`, 저장한 계획 `--plan-in` 사용).
+4. 마지막 물체만 HOME으로 복귀합니다. 시작 자세가 조건(높이 70–135mm, 반경 0.14–0.32m, 공구 수직, 기울여 집지 않음)을 벗어나면 기존처럼 HOME을 거쳐 갑니다.
+5. 집기·놓기 실패 시에는 HOME으로 돌아가고 나머지는 하지 않습니다. 계획에 실패한 물체가 있으면 그 앞까지만 넣습니다.
+
+## 웹 화면 · REST API · 대화(LLM) 조작
+
+```bash
+python scripts/arm_api.py                                  # 이 장비에서 http://127.0.0.1:8000 (웹 화면)
+python scripts/arm_api.py --host 0.0.0.0 --token 비밀값     # 다른 장비(동료 웹 서버·휴대폰)에서 접속
+```
+
+- **웹 화면** (`/`): 물체 버튼, 물체·칸 선택, HOME 복귀, 진행 단계, 큰 정지 버튼, 대화 입력. 움직이는 명령은 항상 확인 창을 거친다.
+- **상황 파악부터 시작**: 화면을 열면 먼저 위 카메라로 찍고(`POST /api/situation`) 책상 상황, 지금 쓸 수 있는 기능(예시 문장 포함), 기본 제안(정리할 물체가 있으면 책상 정리)을 알린 뒤 입력을 기다린다. 작업이 끝날 때마다 다시 찍어 알린다. 명령은 묻지 않고 바로 실행한다. 기본 제안은 "실행", "응", "정리해" 한마디로 시작한다(화면을 여는 것만으로는 움직이지 않는다).
+- **책상 정리(기본 행동)**: "책상 정리해줘", "치워줘", "분류해줘", "다 정리해줘"처럼 물체 이름 없이 말하면 먼저 위 카메라로 찍어(get image와 같다) 책상에 있는 등록 물체 중 팔이 닿는 것만 담아 제안한다(`/api/menu/4`의 `objects`). 물체가 없으면 "정리할 물체가 없습니다", 등록 안 된 물체가 있으면 칸을 말해 달라고 알린다. 실행 중 계획에서 물체가 안 보이면 멈추지 않고 건너뛴다(NOMI 경로도 같다).
+- **로봇 목소리**: 화면이 열려 있으면 답과 진행 상황을 소리로 알린다(어느 물체를 몇 번 칸에 넣는지, 마침·멈춤과 이유). NOMI가 시작한 작업도 알린다. 브라우저 음성 합성을 쓰고 한국어 음성을 골라 쓴다(구글 음성, 없으면 이 PC의 espeak-ng).
+- **음성**: 화면의 [말하기](또는 입력칸 밖에서 스페이스)를 누르고 말한다. 기본은 로컬 인식(`POST /api/stt`, 이 PC의 faster-whisper `small`, CPU에서 한 문장 약 1초, 인터넷 불필요)이고, 브라우저(구글) 인식도 고를 수 있다. 알아들은 문장은 대화와 같이 처리한다. "멈춰/정지/그만"은 바로 멈추고, 움직이는 명령은 묻지 않고 바로 실행한다. 마이크는 브라우저 보안상 `http://localhost:8000` 또는 https 주소에서만 열린다. 서버에 `pip install faster-whisper`가 필요하다(없으면 로컬 인식만 꺼진다).
+- **대화**: 로컬 LLM(Ollama, 기본 `qwen3.5:9b`)이 말을 도구 호출(`sort_object`, `sort_all_objects`, `arm_return_home`, `look_at_table`, `get_arm_status`, `stop_arm`)로 바꾼다. 상태 확인·사진 찍기·정지는 바로 실행하고, 넣기·복귀는 제안만 해서 화면에서 [실행]을 눌러야 움직인다. Ollama가 켜져 있고 모델이 받아져 있어야 한다(`ollama pull qwen3.5:9b`). 추가 패키지는 필요 없고, 꺼져 있으면 대화만 `503 llm_unavailable`이고 버튼은 동작한다. 주소·모델은 `OLLAMA_HOST`, `ARM_LLM_MODEL`로 바꾼다. 첫 요청은 모델을 올리느라 1분쯤 걸릴 수 있다(`ARM_LLM_TIMEOUT`, 기본 120초).
+
+| 요청 | 설명 |
+|---|---|
+| `POST /robot_arm` `{"action": "pick_place", "object": "red_cube", "slot": 2}` | LLM 도구 호출 모양 그대로. action: `pick_place` · `return_home` · `status` · `stop` |
+| `POST /pick_place`, `POST /return_home`, `POST /stop` | 개별 주소(같은 동작). 움직이는 명령은 바로 `202 {"task_id"}` |
+| `GET /status` · `GET /tasks/<id>` | 진행 단계(`phase_label`)·결과(`ok`, `reason_code`, `warnings`) |
+| `POST /chat` `{"history": [...], "text": "..."}` | 대화 → `{"reply", "proposal", "executed", "scene"}` |
+
+object: `white_box`(1번) · `red_cube`(2) · `tape_measure`(3) · `unknown`(새 물체, `phase`가 `unknown_wait`일 때 물체를 놓는다). 한 번에 한 작업만 받고(실행 중이면 `409 busy`), 토크가 꺼져 있으면 움직이지 않는다(`torque_off`). 동료 웹 서버가 대신 부르면 CORS 설정은 필요 없고, 브라우저에서 직접 부르면 `--cors-origin http://주소`를 준다. LLM 도구 정의는 `scripts/arm_llm.py`의 `TOOLS`.
+
 ## 폴더 구조
 
 ```
-scripts/      메뉴, 계획, 집기·놓기 실행, 새 물체(unknown) 집기, HOME 복귀, 보정 도구
+scripts/      메뉴, 웹·REST API(arm_api.py), 대화 해석(arm_llm.py), 로컬 음성 인식(arm_stt.py), 계획, 집기·놓기 실행, 새 물체(unknown) 집기, HOME 복귀, 보정 도구
 src/camera    Astra 촬영, 카메라 보정, 손목 영상
 src/perception 물체 분류, 집기 목표, 위치 보정
 src/tray      트레이·칸·숫자 검출
@@ -89,6 +120,7 @@ src/robot     좌표계, 4축 IK
 src/hardware  서보 버스, 관절 매핑, 궤적 검증, 진공 펌프
 src/motion    접근·복귀, 정지·집힘 확인, 게인
 src/sorting   운반·놓기 계획과 실행
+web/          웹 화면(index.html)
 tests/        새 물체 인식·칸 맞춤·계획 연결 시험
 하드웨어 설명/  배선도, 핀 명세, ESP32 펌웨어, 진공흡착팔 CAD(STEP)
 portfolio/    설명서 PDF, 그림, 동작 영상

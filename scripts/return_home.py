@@ -32,6 +32,7 @@ parser.add_argument('--execute',action='store_true');parser.add_argument('--supp
 parser.add_argument('--travel-rate',type=float,default=300.);parser.add_argument('--pitch-p',type=int,choices=(32,48,64),default=None,help='temporary shoulder/elbow P gain during the return (default: automatic, 32 unless the arm starts far extended: at 48 the shoulder hunted at about 8 Hz, rms 2-3 pulses, where the arm folds (shoulder raw 2000-2340); at 32 it measured 0.4-0.6 but a far start lagged 17 pulses over the 16-pulse guard, 2026-10-16)');parser.add_argument('--shoulder-i',type=int,choices=(0,1),default=1,help='temporary shoulder I gain during the return (default 1)');parser.add_argument('--damping',type=int,choices=(32,48,64,96),default=None,help='temporary D gain on shoulder and elbow during the return (default: unchanged 32)');parser.add_argument('--record-astra',action='store_true')
 parser.add_argument('--tracking-limit',type=int,choices=range(16,33),metavar='16-32',default=16,help='HOME stage follow-error guard in pulses (default 16, unchanged). The follow lag grows with speed (about 70 ms: 17 pulses at 240 pulses/s, so ~21 at the 300 pulses/s peak, measured 2026-10-19) and trips 16 on the fold; 32 is the project approach default. Not for the 100 approach limit.')
 parser.add_argument('--output',type=Path)
+parser.add_argument('--any-start',action='store_true',help='skip only the start-corridor check (path/desk/link checks and tracking guards stay); for a stop that left the arm outside the corridor, 2026-10-21')
 args=parser.parse_args()
 try: travel=return_profile(args.travel_rate)
 except ValueError as exc: parser.error(str(exc))
@@ -86,7 +87,8 @@ with ServoTransport(profile) as bus:
             # Same vertical reset corridor as scripts/pick_auto.py (contact up to the 70-120 mm hover over a box).
             folded=near_fold({n:initial['joints'][n]['position'] for n in driver.names},home_raw)
             if folded:result['fold_near_home_start']=True      # 접힌 HOME 근처: 접힌 채 관절 값으로 바로 HOME에 맞춘다(수직 복귀 구간·올리기·중간 지점 생략)
-            elif not start_in_corridor(contact_xyz):raise ValueError('not at HOME and outside the vertical reset corridor')
+            elif not args.any_start and not start_in_corridor(contact_xyz):raise ValueError('not at HOME and outside the vertical reset corridor')
+            if args.any_start and not folded and not start_in_corridor(contact_xyz):result['start_outside_corridor']=True
             result.update(start_snapshot=initial,start_candidate_xyz=contact_xyz,travel_rate_pulse_s=args.travel_rate,home_travel_profile=travel)
             if recorder:recorder.snapshot('start')
             def stage(name,operation,expected_xyz=None,expected_raw=None):

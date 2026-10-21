@@ -8,7 +8,7 @@ hover_trial.run_hover_trial의 제약에 맞춘다:
   - 수직 내리기(measured_gap_m): 한 번에 50mm 이하 → 40mm 이하로 나눈다
   - 수평 이동: box_top_m=.040을 주어 높이 70mm 이상, 긴 구간은 30mm 단위로 쪼갠다(관절 보간이 직선에서
     벗어나는 정도를 줄이기 위해)
-place 중에는 공구를 앞으로 기울여도 된다(사용자 허용, 최대 50도). 기울이는 단계(tilt/untilt)는 같은 자리에서
+place 중에는 공구를 앞으로 기울여도 된다(사용자 허용, 최대 60도). 기울이는 단계(tilt/untilt)는 같은 자리에서
 자세만 바꾸고, 기울어진 단계의 이동에는 pitch_rad를 hover에 넘긴다.
 속도: 수평 이동과 70mm 이상 수직 올리기는 fast=True(호출자가 place 속도, 기본 300펄스/초로 처리),
 바닥에서 처음 들기·칸 안 내리기·기울기 변경은 기존 느린 모드다(hover_trial이 접촉·들기 구간의 빠른 모드를 금지).
@@ -41,7 +41,7 @@ VERTICAL_LEGS = {'raise_clear': 'up', 'raise_low': 'up', 'raise': 'up', 'retreat
 HORIZONTAL_LEGS = ('pull_in', 'carry', 'retire')
 PITCH_LEGS = ('tilt', 'untilt')          # 같은 자리에서 공구 기울기만 바꾼다
 VERTICAL_PITCH = -math.pi / 2
-MAX_TILT_RAD = math.radians(50.)
+MAX_TILT_RAD = math.radians(60.)          # 2026-10-21 사용자: 50→60(트레이 1번 칸 36.7cm. 흰 상자는 50도로 36.6cm까지, 60도로 37.6cm까지)
 MAX_TILT_STEP_RAD = math.radians(15.)      # 제자리 기울이기는 15도 이하로 나눈다: 한 번에 45도면 관절 보간 중 컵 끝이 약 5mm 가라앉는다(실물)
 HIGH_TILT_Z = .100                         # 2026-10-20: 이 높이 이상에서는(상자 위 안전선 65mm보다 35mm 이상 위) 5mm 가라앉아도 여유가 커서
 HIGH_TILT_STEP_RAD = math.radians(50.)     # 제자리 기울이기를 한 번에 한다(1번 칸 50도: 15도씩 4번 멈추던 것을 1번으로)
@@ -68,7 +68,7 @@ def _leg_pitch(leg):
         return None
     if isinstance(pitch, bool) or not isinstance(pitch, (int, float)) or not math.isfinite(pitch) \
             or not VERTICAL_PITCH - 1e-9 <= pitch <= VERTICAL_PITCH + MAX_TILT_RAD + 1e-9:
-        raise ValueError(f'leg {leg["name"]}: pitch must be straight down or tilted forward by at most 50 degrees')
+        raise ValueError(f'leg {leg["name"]}: pitch must be straight down or tilted forward by at most 60 degrees')
     return float(pitch)
 
 

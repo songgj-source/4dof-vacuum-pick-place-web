@@ -53,6 +53,7 @@ def run_home_return(root, rate, output, *, runner=subprocess.run):
 
 
 NOT_HELD_EXIT_CODE = 3        # pick_auto.py가 '들어 올렸는데 물체가 안 붙었다'로 place를 하지 않고 끝낼 때의 종료 코드
+CHAIN_REFUSED_EXIT_CODE = 4   # --start-above-tray: 트레이 위에서 바로 갈 수 없어 움직이기 전에 멈춤. 호출자가 return_home.py로 HOME에 간 뒤 같은 물체를 다시 한다
 
 
 def should_return_home_after_failed_pick(result, *, enabled):

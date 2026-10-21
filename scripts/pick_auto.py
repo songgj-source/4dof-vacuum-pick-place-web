@@ -20,8 +20,9 @@ from motion.hover_trial import run_hover_trial,TRAVEL_PERIOD_S,TRAVEL_PULSES_PER
 from motion.home_trial import run_recorded_home_trial
 from motion.trial_phase import finish_pose_phase,candidate_xyz,release_after_return,release_at_slot,stationary_snapshot,phase_pose_tolerance,approach_correction_target,approach_feedforward_target,PoseToleranceError
 from sorting.place_exec import run_place,DEFAULT_MAX_CARRY_S
+from sorting.carry_path import polar_path
 from sorting.place_job import load_place_job,build_plan
-from sorting.place_followup import should_return_home,should_return_home_after_failed_pick,should_return_home_after_release_failure,placed_despite_retreat_error,run_home_return,NOT_HELD_EXIT_CODE
+from sorting.place_followup import should_return_home,should_return_home_after_failed_pick,should_return_home_after_release_failure,placed_despite_retreat_error,run_home_return,NOT_HELD_EXIT_CODE,CHAIN_REFUSED_EXIT_CODE
 from motion.hold_check import check_hold,hold_decision
 from robot.robot_model import load_planar_model
 from perception.object_targets import load_catalog
@@ -35,6 +36,11 @@ from camera.wrist_contact_rgb import record_observation,outcome_context,camera_w
 
 BASE=ROOT/'output/ik_resume_20261012'
 SLOW_RATE_PPS=100.   # 천천히 움직이는 동작의 속도(펄스/초), 2026-10-21 사용자 지정(이전: 하강 60, 접촉 직전 13, 탐색 이동 약 17)
+# 세 물체 연속 정리(2026-10-21 사용자): 앞 물체를 놓은 트레이 위에서 HOME을 거치지 않고 다음 물체로 간다.
+CHAIN_START_Z=(.070,.135)      # 놓기가 끝나는 운반 높이(70~130mm). 이 밖이면 기존 HOME 리셋
+CHAIN_START_R=(.14,.32)        # HOME 복귀 시작 구간과 같은 반경(먼 칸은 놓은 뒤 이 안으로 물러나 선다)
+CHAIN_PITCH_TOL=math.radians(5.)   # 공구가 수직(놓은 뒤 세우기 완료)이어야 한다
+CHAIN_TRANSIT_Z=.120           # 트레이에서 물체로 갈 때의 최소 높이: 접근 경유점(120mm)과 같다. 물체는 40mm 이하, 트레이 벽은 운반 높이로 이미 넘는다
 PUMP='/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0'
 
 
@@ -75,9 +81,11 @@ def main(argv=None):
     parser.add_argument('--manual-target-mm',type=float,nargs=3,metavar=('X','Y','CONTACT_Z'),help='robot-base target x y contact_z in mm instead of locating the red box; same reachability/envelope checks, validated before any device is opened')
     parser.add_argument('--place-json',type=Path,help='after lifting, carry the object to the tray slot in the job file and release it there (vacuum stays on in this process); needs --manual-target-mm; slot number is the commanded one, else the default rule white_box=1 red_cube=2 tape_measure=3')
     parser.add_argument('--place-empty-run',action='store_true',help='with --place-json: test run of the same carry path from the 70 mm hover over the target with NO suction and NO release (no object)')
-    parser.add_argument('--place-max-tilt-deg',type=float,default=50.,help='place only: the tool may tilt forward from straight down by up to this many degrees (0 = stay vertical; max 50); only the smallest tilt that works is used (slots beyond 0.30 m need about 43) to lift the held object clear of the tray rim without dragging it low')
+    parser.add_argument('--place-max-tilt-deg',type=float,default=60.,help='place only: the tool may tilt forward from straight down by up to this many degrees (0 = stay vertical; max 60); only the smallest tilt that works is used (slots beyond 0.30 m need about 43) to lift the held object clear of the tray rim without dragging it low')
     parser.add_argument('--place-rate',type=float,default=150.,help='place only: clear-space carry speed in pulses/s, 50-300 (default 150 with 2 pulses/tick = the 13.3 ms tick that keeps the arm steady; at 300 the wrist follow error reached 33 and tripped the 32-pulse guard on the carry). Applies to horizontal carry moves and vertical rises above 70 mm; lifting off the table, lowering into the slot and tool tilt changes stay slow')
     parser.add_argument('--no-return-home',action='store_true',help='place only: do not return to HOME automatically after a completed place')
+    parser.add_argument('--skip-home-after-place',action='store_true',help='place only: after a completed place stay above the tray with the tool vertical (the next object follows with --start-above-tray); failed picks/releases still return HOME')
+    parser.add_argument('--start-above-tray',action='store_true',help='start from where the previous --skip-home-after-place cycle ended (above the tray, tool vertical) and go straight to the object without HOME; other start poses use the existing HOME reset')
     parser.add_argument('--home-rate',type=float,default=150.,help='place only: automatic HOME return speed in pulses/s, 50-300 (default 150, the speed that passes the return_home.py 16-pulse follow-error guard: at 200 and 300 the shoulder lags 17 and the guard stops the return (measured 2026-10-15))')
     parser.add_argument('--held-rate',type=float,default=100.,help='pulses/s while the object hangs on the cup: lift20, lifts/lowers in place and the table return, 0 = old slow profile (26-33), else 40-150 (default 100, 2026-10-20 user: slower shook more)')
     parser.add_argument('--approach-feedforward-mm',type=float,nargs=2,default=[3.5,3.0],metavar=('RADIAL','UP'),help='send the approach/approach_b hover this far outward and up (P32 stops short the same way: 2026-10-20, 15 runs); 0 0 disables, each 0-6 mm')
@@ -172,7 +180,7 @@ def main(argv=None):
         if not math.isfinite(args.place_max_s) or not 1.<=args.place_max_s<=1800.:parser.error('--place-max-s must be 1-1800 seconds')
         if not math.isfinite(args.place_rate) or not 50.<=args.place_rate<=300.:parser.error('--place-rate must be 50-300 pulses/s')
         if not math.isfinite(args.home_rate) or not 50.<=args.home_rate<=300.:parser.error('--home-rate must be 50-300 pulses/s')
-        if not math.isfinite(args.place_max_tilt_deg) or not 0.<=args.place_max_tilt_deg<=50.:parser.error('--place-max-tilt-deg must be 0-50 degrees')
+        if not math.isfinite(args.place_max_tilt_deg) or not 0.<=args.place_max_tilt_deg<=60.:parser.error('--place-max-tilt-deg must be 0-60 degrees')
         try:
             place_job=load_place_job(args.place_json)
             if place_job['label']=='unknown':
@@ -194,7 +202,7 @@ def main(argv=None):
     if place_job is not None:
         plan['place']=dict(label=place_job['label'],slot_number=place_job['slot_number'],slot_source=place_job['slot_source'],empty_run=args.place_empty_run,
                            max_seconds=args.place_max_s,hold_check=args.hold_check,max_tilt_deg=args.place_max_tilt_deg,rate_pulses_s=args.place_rate,pulses_per_step=args.place_pulses_per_step,tick_s=args.place_pulses_per_step/args.place_rate,
-                           return_home=dict(enabled=not args.no_return_home,rate_pulses_s=args.home_rate),rim_height_mm=place_job['rim_height_mm'],
+                           return_home=dict(enabled=not (args.no_return_home or args.skip_home_after_place),rate_pulses_s=args.home_rate,skip_after_place=args.skip_home_after_place),rim_height_mm=place_job['rim_height_mm'],
                            start_assumed_xyz=list(preview_start),plan=preview,
                            note=('empty run: no suction and no release; starts from the 70 mm hover' if args.place_empty_run else
                                  'assumed start is contact z + 20 mm; the real plan is recomputed from the measured pose after lifting'),
@@ -377,9 +385,12 @@ def main(argv=None):
                         # 접촉 직전 13펄스/초 끝 구간도 없앤다. 빨라진 만큼 추종 오차 가드는 흡착한 채 이동과 같은 32펄스로 둔다.
                         kwargs.pop('tail',None)
                         pps=kwargs.get('pulses_per_step',1)
-                        if not kwargs.get('quick_ticks') or pps/kwargs.get('tick_s',1.)<SLOW_RATE_PPS:
-                            # 틱당 2펄스·20ms(흡착한 채 이동과 같은 틱). 낮은 상자 위 호버만 1펄스 규칙(hover_trial)이 있어 1펄스·10ms.
-                            if pps==1 and not (kwargs.get('box_top_m') is not None and target[2]<.080):pps=2
+                        # 틱당 2펄스·20ms(흡착한 채 이동과 같은 틱). 낮은 상자 위 호버만 1펄스 규칙(hover_trial)이 있어 1펄스·10ms.
+                        # 2026-10-21 사용자 "천천히 접근할 때 너무 떤다": 하강이 1펄스·10ms로 남아(조건이 100펄스/초를 이미 맞춘 것으로 봄)
+                        # 한 번 주고받는 데 약 37ms라 실제 약 26펄스/초로 1펄스씩 끊겨 움직였다(밑동 1펄스 반전 초당 3~6번).
+                        # 2펄스 틱인 들기(lift20)는 반전이 거의 0이었다 → 하강도 2펄스 틱으로 바꾼다.
+                        if pps==1 and not (kwargs.get('box_top_m') is not None and target[2]<.080):pps=2
+                        if not kwargs.get('quick_ticks') or pps!=kwargs.get('pulses_per_step',1) or pps/kwargs.get('tick_s',1.)<SLOW_RATE_PPS:
                             kwargs.update(quick_ticks=True,pulses_per_step=pps,tick_s=pps/SLOW_RATE_PPS)
                         kwargs['tracking_limit']=max(kwargs.get('tracking_limit',16),32)
                     def move(record,goal,**extra):
@@ -421,7 +432,7 @@ def main(argv=None):
                     def release(expected):
                         result['release']=release_at_slot(driver,geometry,zeros,expected,pump)
                         result['pump_commands'].extend([dict(command='vent_place',pressure_verified=False),dict(command='stop_place',pressure_verified=False)])
-                    report=run_place(plan_now,hover=hover,fresh_xyz=fresh_xyz,release=release,cancelled=is_cancelled,empty_run=empty,skip_final_untilt=not args.no_return_home,
+                    report=run_place(plan_now,hover=hover,fresh_xyz=fresh_xyz,release=release,cancelled=is_cancelled,empty_run=empty,skip_final_untilt=not (args.no_return_home or args.skip_home_after_place),
                                      max_carry_s=args.place_max_s,record=lambda event:result.setdefault('place_steps',[]).append(event))
                     result['place']=report;save()
                 initial=driver._snapshot(torque=1);xyz=fresh_xyz()
@@ -436,7 +447,21 @@ def main(argv=None):
                         at_home=True
                         result['near_home_takeover_max_delta_pulse']=home_delta
                         save()
-                if not at_home:
+                chain_start=False
+                if not at_home and args.start_above_tray:
+                    # 앞 물체를 놓고(--skip-home-after-place) 트레이 위 운반 높이에 공구를 세운 채 서 있으면 HOME을 거치지 않고 바로 다음 물체로 간다.
+                    # 조건(높이·반경 구간, 공구 수직)이 안 맞으면 움직이기 전에 멈춘다(종료 코드 4). 기존 HOME 리셋은 물체 위 같은 가까운 자리용이라
+                    # 트레이 위에서는 한 번 이동 한도(1600펄스)를 넘는다(2026-10-21 실물: 거부). 호출자가 return_home.py로 HOME에 간 뒤 다시 한다.
+                    q0=tuple(joint_map[n].direction*(initial['joints'][n]['position']-zeros[n])*pulse for n in NAMES)
+                    tool_pitch=geometry.forward(q0)[3]
+                    chain_start=bool(CHAIN_START_Z[0]<=xyz[2]<=CHAIN_START_Z[1] and CHAIN_START_R[0]<=math.hypot(*xyz[:2])<=CHAIN_START_R[1]
+                                     and abs(tool_pitch+math.pi/2)<=CHAIN_PITCH_TOL)
+                    result['chain_start']=dict(used=chain_start,start_xyz=list(xyz),tool_pitch_deg=round(math.degrees(tool_pitch),1))
+                    save()
+                    if not chain_start:
+                        result['chain_refused']=True
+                        raise ValueError('start above the tray is outside the chain start conditions; return HOME first')
+                if not at_home and not chain_start:
                     # Reset from where the previous cycle ended (vertically above/at a box), not from a stored scene.
                     if not .030<=xyz[2]<=.135 or not .14<=math.hypot(*xyz[:2])<=.32:
                         raise ValueError('not at HOME and outside the vertical reset corridor; move to HOME first')
@@ -449,6 +474,7 @@ def main(argv=None):
                     set_pitch(args.travel_p)
                     set_integral(0 if args.travel_p==64 else 1)
                     stage('home',home_xyz,lambda record:run_recorded_home_trial(driver,geometry,zeros,home,supported=True,record=record,cancelled=is_cancelled,pulses_per_step=approach_pulses if args.fast_space else 1,batch_slow_joints=args.batch_base,fast_travel=args.fast_space,tick_s=approach_period,tracking_limit=approach_limit,native=args.native_moves,smooth_motion=True),home_goal=home)
+                if chain_start and manual is None:raise ValueError('--start-above-tray needs planned coordinates: the arm above the tray would block the overhead photo')
                 if manual is None:capture('home',wrist=False)   # 좌표를 받은 경우(plan_sort가 방금 찍고 계획 폴더에 저장함)에는 같은 사진을 다시 찍지 않는다(약 3~5초)
                 import cv2
                 if manual is not None:
@@ -482,8 +508,32 @@ def main(argv=None):
                 set_pitch(args.travel_p)
                 set_integral(1)  # extended poses cannot hold at I=0; I=0 was only for the HOME return
                 approach_via=(known[0]*inner/radius,known[1]*inner/radius,.120)
-                try:hover('approach',(*known[:2],.070),box_top_m=.040,via=[approach_via],via_pulses=approach_pulses)
-                except ValueError as exc:
+                if chain_start:
+                    transit_z=max(CHAIN_TRANSIT_Z,fresh_xyz()[2])
+                    for index in range(4):
+                        cur=fresh_xyz()
+                        if transit_z-cur[2]<.006:break
+                        lift=min(.030,transit_z-cur[2])
+                        hover('chain_raise'+str(index),(*cur[:2],cur[2]+lift),lift_m=lift)
+                    cur=fresh_xyz()
+                    if cur[2]<transit_z-.008:raise ValueError('could not rise to the transit height above the tray')
+                    path=polar_path(tuple(cur),approach_via,.030)+[(*known[:2],.070)]
+                    result['chain_transit']=dict(start_xyz=list(cur),transit_z=transit_z,points=len(path));save()
+                    def transit(name,points):
+                        # 한 번 이동 한도(1600펄스)를 넘으면 움직이기 전에 거부된다: 경로를 반으로 나눠 이어 간다(place의 move_path와 같다)
+                        try:hover(name,points[-1],box_top_m=.040,via=points[:-1],via_pulses=approach_pulses)
+                        except ValueError as exc:
+                            if str(exc)!='hover change exceeds trial envelope' or len(points)<2:raise
+                            mid=len(points)//2
+                            transit(name+'a',points[:mid]);transit(name+'b',points[mid:])
+                    try:transit('approach',path)
+                    except ValueError:
+                        # 경로 검사(도달·링크 높이·이동 한도)는 움직이기 전에 거부한다. 그 자리에 그대로 있으면 HOME을 거쳐 다시 하도록 알린다
+                        if math.dist(fresh_xyz(),cur)<.003:result['chain_refused']=True
+                        raise
+                else:
+                  try:hover('approach',(*known[:2],.070),box_top_m=.040,via=[approach_via],via_pulses=approach_pulses)
+                  except ValueError as exc:
                     # 멀리 있는 물체: 한 번 이동 한도(1600펄스)를 넘으면 움직이기 전에 거부된다. 한도는 그대로 두고 경유점에서 둘로 나눠 이어 간다.
                     if str(exc)!='hover change exceeds trial envelope':raise
                     hover('approach',approach_via,box_top_m=.040)
@@ -640,7 +690,7 @@ def main(argv=None):
                 except Exception as exc:result['contact_rgb_outcome_record_error']=str(exc)
             save()
     home_return=None
-    if place_job is not None and (should_return_home(result,enabled=not args.no_return_home) or should_return_home_after_failed_pick(result,enabled=not args.no_return_home) or should_return_home_after_release_failure(result,enabled=not args.no_return_home)):
+    if place_job is not None and (should_return_home(result,enabled=not (args.no_return_home or args.skip_home_after_place)) or should_return_home_after_failed_pick(result,enabled=not args.no_return_home) or should_return_home_after_release_failure(result,enabled=not args.no_return_home)):
         # The bus, pump and temporary gains are closed/restored by now; the existing guarded return_home.py takes over the held arm.
         home_return=run_home_return(ROOT,args.home_rate,out/'home_return')
         result['home_return']=home_return;save()
@@ -650,6 +700,7 @@ def main(argv=None):
         result['placed_despite_retreat_error']=result.get('error');save()
         print(json.dumps(dict(placed_despite_retreat_error=result['placed_despite_retreat_error']),ensure_ascii=False),flush=True)
         return 0
+    if result.get('chain_refused') and result['restoration_verified'] and not result['motion_cycle_complete']:return CHAIN_REFUSED_EXIT_CODE
     if result.get('pick_failed') and result['restoration_verified'] and (home_return is None or home_return['ok']):return NOT_HELD_EXIT_CODE
     return 0 if result['motion_cycle_complete'] and result['restoration_verified'] and (home_return is None or home_return['ok']) else 1
 

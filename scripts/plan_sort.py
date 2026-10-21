@@ -146,6 +146,9 @@ def main(argv=None):
             targets = locate_unknowns(bgr, depth, np.load(args.unknown_baseline, allow_pickle=False), ROOT)
         else:
             targets = locate_targets(bgr, depth, ROOT)
+            if tray.get('found'):                       # 이미 칸에 들어 있는 물체는 다시 꺼내지 않는다(없는 것으로 보고 건너뛰게)
+                from tray.occupancy import outside_tray
+                targets = outside_tray(targets, tray['slots'])
         result = build_job(targets, tray,
                            load_catalog(ROOT / 'config/object_catalog.json'), label, commanded,
                            acknowledge_unverified_suction=args.acknowledge_unverified_suction,
