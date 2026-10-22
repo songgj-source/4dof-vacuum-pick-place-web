@@ -21,6 +21,7 @@ object: white_box(기본 1번 칸) · red_cube(2) · tape_measure(3) · unknown(
 한 번에 한 작업만 받는다. 실행 중에 다른 명령이 오면 409(busy). 토크가 꺼졌거나 팔 상태를 읽지 못하면 움직이지 않고 거절한다.
 """
 import argparse
+import collections
 import hmac
 import json
 import os
@@ -30,6 +31,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
+import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -38,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))   # 물체 인식(perception) 모듈
 import sort_menu as menu     # 명령 만들기·실행·상태 판정은 메뉴와 같은 코드를 쓴다
 import arm_stt               # 로컬 음성 인식(faster-whisper는 처음 쓸 때 불러온다)
+from hardware import devices
 
 OBJECTS = {'white_box': 1, 'red_cube': 2, 'tape_measure': 3, 'unknown': 3}      # 물체 → 기본 칸
 NAMES = {'white_box': '흰 상자', 'red_cube': '빨간 정육면체', 'tape_measure': '줄자', 'unknown': 'unknown'}
@@ -100,11 +104,36 @@ def reason_code(text):
     return next((code for needle, code in REASON_CODES if needle in text), 'failed')
 
 
+class EventLog:
+    """웹 로그창용 최근 사건 기록(메모리, 500건). 화면에는 '알 수 없는 오류'로만 나오는 실패의 원문(실행 프로그램이 알려 준 이유, 마지막 출력)을 남긴다.
+    level: info | ok | warn | error. boot는 서버를 다시 켤 때마다 바뀌어, 화면이 번호를 처음부터 다시 받게 한다."""
+
+    def __init__(self, size=500):
+        self.items = collections.deque(maxlen=size)
+        self.lock = threading.Lock()
+        self.counter = 0
+        self.boot = uuid.uuid4().hex[:8]
+
+    def add(self, level, source, message, detail=None):
+        with self.lock:
+            self.counter += 1
+            self.items.append(dict(id=self.counter, t=round(time.time(), 3), time=time.strftime('%H:%M:%S'), level=level, source=source,
+                                   message=str(message)[:500], detail=str(detail)[:2000] if detail else None))
+            return self.counter
+
+    def since(self, after=0, limit=200):
+        """(after보다 새로운 기록 최대 limit건, 마지막 번호)."""
+        with self.lock:
+            rows = [dict(row) for row in self.items if row['id'] > after]
+            return rows[-limit:], self.counter
+
+
 class Arm:
     """한 번에 한 작업을 돌리는 상태. HTTP 핸들러와 작업 스레드가 함께 쓴다."""
 
     def __init__(self, run=menu.run_streaming, read_state=None, hold=None, base_check=None):
         self.run = run
+        self.log = EventLog()
         self.base_check = base_check or base_moving
         self.read_state = read_state or (lambda: menu.classify_arm(menu.read_arm_state()))
         self.hold = hold or (lambda: subprocess.run(HOLD_CMD, cwd=menu.ROOT, capture_output=True, text=True, timeout=60))
@@ -167,6 +196,7 @@ class Arm:
                                        started=time.monotonic(), seconds=0.)
             self.current = task_id
             self.stop_requested = False
+        self.log.add('info', '작업', f'{command[0]} 시작 {json.dumps(command[1], ensure_ascii=False)}', f'task {task_id}')
         threading.Thread(target=self._work, args=(task_id, *command), daemon=True).start()
         return 202, dict(ok=True, task_id=task_id)
 
@@ -193,6 +223,7 @@ class Arm:
                 self.scene = dict(scene, jpeg=jpeg.tobytes())
             return 200, scene
         except Exception as exc:
+            self.log.add('error', '카메라', f'{type(exc).__name__}: {str(exc)[:300]}', traceback.format_exc())
             return 500, dict(ok=False, reason_code='camera_error', reason=f'{type(exc).__name__}: {str(exc)[:200]}')
         finally:
             with self.lock:
@@ -247,7 +278,19 @@ class Arm:
     def _run(self, task_id, command):
         if self.stop_requested:
             return 130, dict(ok=False, reason='cancelled'), 0.
-        return self.run(command, on_event=lambda k, d: self._event(task_id, k, d), on_start=self._set_proc, quiet=True)
+        code, summary, seconds = self.run(command, on_event=lambda k, d: self._event(task_id, k, d), on_start=self._set_proc, quiet=True)
+        self._log_run(command, code, summary)
+        return code, summary, seconds
+
+    def _log_run(self, command, code, summary):
+        """실행 프로그램(pick_auto, return_home 등)이 실패하면 그 원문 이유와 마지막 출력을 로그에 남긴다."""
+        script = Path(str(command[1])).name if len(command) > 1 else str(command[0])
+        if code == 130:
+            self.log.add('info', script, '정지 신호로 중단됨')
+        elif code != 0 or (summary is not None and summary.get('ok') is False):
+            raw = (summary or {}).get('error') or (summary or {}).get('reason') or f'종료 코드 {code}'
+            tail = '\n'.join((summary or {}).get('_tail') or [])
+            self.log.add('error', script, raw, f'종료 코드 {code}' + (f'\n--- 마지막 출력 ---\n{tail}' if tail else ''))
 
     def _work(self, task_id, skill, params):
         started = time.monotonic()
@@ -256,15 +299,31 @@ class Arm:
             result = self._execute(task_id, skill, params)
         except Exception as exc:                                    # 서버가 죽지 않게 모든 실패를 결과로 돌려준다
             result = dict(ok=False, reason=f'{type(exc).__name__}: {exc}', reason_code='failed')
+            self.log.add('error', '서버', f'{skill} 처리 중 예외: {type(exc).__name__}: {exc}', traceback.format_exc())
         finally:
             with self.lock:
                 task = self.tasks[task_id]
                 task['seconds'] = round(time.monotonic() - started, 1)
                 task['result'] = dict(result, seconds=task['seconds'], warnings=task['warnings'])
                 task['state'] = 'done' if result['ok'] else 'failed'
+                self._log_result(skill, task, result)
                 self.arm_home = True if result['ok'] else None
                 self.proc = None
                 self.current = None
+
+    QUIET_REASONS = ('base_moving', 'torque_off', 'object_not_found', 'unreachable', 'busy')    # 사용자가 바로 고칠 수 있는 거부
+
+    def _log_result(self, skill, task, result):
+        for warning in task.get('warnings') or []:
+            self.log.add('warn', '작업', f'{skill} 주의: {warning}', f"task {task['id']}")
+        code = result.get('reason_code')
+        if result['ok']:
+            self.log.add('ok', '작업', f"{skill} 완료 ({task['seconds']}초)" + (f" - {result['note']}" if result.get('note') else ''), f"task {task['id']}")
+        elif code == 'cancelled':
+            self.log.add('info', '작업', f"{skill} 정지됨 ({task['seconds']}초)", f"task {task['id']}")
+        else:
+            self.log.add('warn' if code in self.QUIET_REASONS else 'error', '작업', f"{skill} 실패: {result.get('reason')}",
+                         f"task {task['id']}, reason_code={code}, {task['seconds']}초")
 
     def _ensure_torque(self, task_id, skill):
         """움직여도 되면 None, 아니면 거부 결과. HOME에 놓인 채 토크만 꺼진 팔은 자동으로 토크를 켜서 붙잡는다(접힌 HOME 근처면 HOME에 맞춘다)."""
@@ -273,6 +332,7 @@ class Arm:
             return None
         if AUTO_TORQUE and state in ('off_at_home', 'off_near_fold') and not self.stop_requested:
             self._event(task_id, 'phase', ('torque_on', '토크 켜기(팔 붙잡기)'))
+            self.log.add('info', '팔', f'토크가 꺼진 팔을 붙잡습니다(상태 {state})')
             self.hold()
             after = self.read_state()
             if after != 'ok':
@@ -582,6 +642,8 @@ COMMON_API = [
          description='상황 파악: 사진을 찍고 책상 상황(reply·speech), 지금 쓸 수 있는 기능(actions, 예시 문장 포함), 기본 제안(proposal: 정리할 물체가 있으면 책상 정리)을 돌려준다. 로봇은 움직이지 않는다. 웹 화면은 열 때와 작업이 끝날 때마다 부른다.'),
     dict(method='POST', path='/api/stt', body='녹음 파일(webm·ogg·wav, 2MB 이하, Content-Type: audio/webm 등)',
          description='로컬 음성 인식(Whisper, 인터넷 없이 이 PC에서). 응답: text(알아들은 문장, 말소리가 없으면 빈 문자열), seconds. 로봇은 움직이지 않는다. 문장은 /chat으로 보내 명령으로 쓴다.'),
+    dict(method='GET', path='/api/logs?since=<번호>', body=None,
+         description='최근 사건 기록(최대 500건 중 번호가 since보다 큰 것). 작업 시작·완료·실패의 원문 이유와 실행 프로그램의 마지막 출력, 카메라·API 오류. 응답: boot(서버를 다시 켜면 바뀜), last(마지막 번호), entries[{id, time, level(info/ok/warn/error), source, message, detail}]. 웹 화면의 로그창이 쓴다.'),
     dict(method='GET', path='/status', body=None, description='지금 상태. state(idle/busy), phase_label(지금 단계), task_id, arm_home.'),
     dict(method='GET', path='/tasks/<task_id>', body=None, description='작업 하나의 단계 기록(phases)과 결과(result: ok, reason, reason_code, warnings).'),
     dict(method='POST', path='/stop', body=None, description='실행 중인 동작을 즉시 멈춘다. 팔은 그 자리에 선다(이후 메뉴 6번으로 복귀).'),
@@ -655,6 +717,10 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
             pass
 
         def _send(self, status, body):
+            log = getattr(arm, 'log', None)
+            if log is not None and status >= 400 and status != 401 and isinstance(body, dict) and not self.path.startswith(('/api/logs', '/favicon')):
+                log.add('error' if status >= 500 else 'warn', 'API', f"{status} {self.command} {self.path.split('?')[0]}: {body.get('reason') or body.get('reason_code') or ''}",
+                        body.get('reason_code'))
             data = json.dumps(body, ensure_ascii=False).encode()
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -714,6 +780,14 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
                 return self._send(401, dict(ok=False, reason_code='unauthorized'))
             if self.path == '/status':
                 return self._send(200, arm.status())
+            if self.path.split('?')[0] == '/api/logs':
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                try:
+                    after = max(0, int(query.get('since', ['0'])[0]))
+                except ValueError:
+                    after = 0
+                entries, last = arm.log.since(after)
+                return self._send(200, dict(ok=True, boot=arm.log.boot, last=last, entries=entries))
             if self.path == '/api/image/latest.jpg':
                 scene = arm.scene
                 if not scene:
@@ -825,13 +899,16 @@ def main(argv=None):
     arm = Arm()
     server = ThreadingHTTPServer((args.host, args.port), make_handler(arm, args.token, args.cors_origin))
     print(f'로봇팔 API: http://{args.host}:{args.port}  (Ctrl+C로 종료)', flush=True)
+    arm.log.add('info', '서버', f'시작 http://{args.host}:{args.port}', f'펌프 {devices.get("pump_port")} / 서보 {devices.get("servo_port", "(프로필)")}')
 
     def warm_stt():                                  # 첫 음성 명령이 느리지 않게 Whisper를 미리 불러 둔다(없으면 조용히 넘어간다)
         try:
             arm_stt.load()
             print(f'음성 인식 준비됨: {arm_stt.describe()}', flush=True)
+            arm.log.add('info', '음성', f'음성 인식 준비됨: {arm_stt.describe()}')
         except arm_stt.SttUnavailable as exc:
             print(f'로컬 음성 인식 꺼짐: {exc}', flush=True)
+            arm.log.add('warn', '음성', f'음성 인식 꺼짐: {exc}')
     threading.Thread(target=warm_stt, daemon=True).start()
     # 백그라운드(nohup)로 켜면 SIGINT가 무시된 채로 시작한다. 직접 받아서 아래 정리를 거치게 한다. SIGTERM(kill)도 같게 취급한다.
     signal.signal(signal.SIGINT, signal.default_int_handler)

@@ -82,6 +82,7 @@ pkill -f "scripts/stt_server.py"; pkill -f "socat TCP4-LISTEN:11434"   # 노트�
 ```
 
 ### 문제가 생기면
+- **화면 아래 [로그]창**: 작업의 시작·완료·실패와 실패의 **원문 이유**(화면에는 "알 수 없는 오류"로만 나오는 것)가 쌓입니다. 빨간 줄을 누르면 실행 프로그램의 마지막 출력이 펼쳐지고, [복사]로 통째로 복사할 수 있습니다. 위쪽 "로그" 옆 숫자는 오류 개수입니다(`GET /api/logs`).
 - 상태·로그: `bash pi/remote.sh status`, `bash pi/remote.sh log`
 - 음성이나 대화가 안 됨: 노트북 주소가 192.168.0.32가 아니면 Pi의 `~/4dof_ik_pi_test/pi/arm-api.env`에서 `ARM_STT_URL`, `OLLAMA_HOST`의 주소를 고치고 `bash pi/remote.sh restart`. socat의 `bind=` 주소도 새 주소로.
 - Pi가 안 보임: `ping 192.168.0.31`. 전원이 끊겼는지 확인합니다. 재부팅했으면 2번부터 다시.

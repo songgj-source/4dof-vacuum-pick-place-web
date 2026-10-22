@@ -292,8 +292,11 @@ def run_streaming(cmd, on_event=None, on_start=None, quiet=False):
     last_error = None
     previous_phase = None
     step = 0
+    tail = []                                   # JSON이 아닌 마지막 출력 줄(실패했을 때 원인을 보려고 결과에 붙인다)
     for line in proc.stdout:
         line = line.strip()
+        if line and not line.startswith('{'):
+            tail = (tail + [line[:300]])[-12:]
         if not line.startswith('{') and 'error:' in line:
             last_error = line.split('error:', 1)[1].strip()
         if line.startswith('{"phase"'):
@@ -339,6 +342,8 @@ def run_streaming(cmd, on_event=None, on_start=None, quiet=False):
     proc.wait()
     if last_json is not None and last_error and not last_json.get('ok', True):
         last_json['reason'] = f"{last_json.get('reason')} / {last_error}"
+    if last_json is not None and tail and (proc.returncode != 0 or not last_json.get('ok', True)):
+        last_json['_tail'] = tail
     return proc.returncode, last_json, time.monotonic() - started
 
 

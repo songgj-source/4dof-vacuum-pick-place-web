@@ -139,6 +139,42 @@
   dialog label { display: block; font-size: 13px; color: var(--sub); margin-bottom: 6px; }
   dialog input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); margin-bottom: 16px; }
 
+  /* 로그창: 작업·오류의 원문 이유를 본다 */
+  .logcard { grid-column: 1 / -1; }
+  .log-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .log-head h2 { margin: 0; }
+  .log-head .count { font-size: 12.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; background: var(--bad-soft); color: var(--bad); }
+  .log-head .count[hidden] { display: none; }
+  .log-head select { padding: 7px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); }
+  .log-head button { padding: 7px 12px; font-size: 13.5px; }
+  #log-list { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2);
+              font: 12.5px/1.5 var(--mono); }
+  #log-list .empty { padding: 18px; color: var(--faint); font-family: inherit; }
+  .lg { display: block; border-bottom: 1px solid var(--line); }
+  .lg:last-child { border-bottom: 0; }
+  .lg > summary, .lg > .row { list-style: none; display: grid; grid-template-columns: 4.6em 3.2em minmax(6em, 10em) minmax(0, 1fr); gap: 10px; padding: 7px 12px; align-items: baseline; }
+  .lg > summary::-webkit-details-marker { display: none; }
+  .lg > summary { cursor: pointer; }
+  .lg > summary:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .lg .t { color: var(--faint); font-variant-numeric: tabular-nums; }
+  .lg .lv { font-weight: 700; }
+  .lg .src { color: var(--sub); overflow-wrap: anywhere; }
+  .lg .msg { overflow-wrap: anywhere; white-space: pre-wrap; }
+  .lg > summary .msg::after { content: " ▸"; color: var(--faint); }
+  .lg[open] > summary .msg::after { content: " ▾"; }
+  .lg pre { margin: 0; padding: 8px 12px 12px calc(4.6em + 3.2em + 10em + 42px); color: var(--sub); white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+  .lg.lv-ok .lv { color: var(--ok); } .lg.lv-warn .lv { color: var(--warn); } .lg.lv-error .lv { color: var(--bad); }
+  .lg.lv-error { background: var(--bad-soft); } .lg.lv-warn { background: color-mix(in srgb, var(--warn-soft) 70%, transparent); }
+  #log-list[data-filter="warn"] .lg.lv-info, #log-list[data-filter="warn"] .lg.lv-ok { display: none; }
+  #log-list[data-filter="error"] .lg:not(.lv-error) { display: none; }
+  @media (max-width: 700px) {
+    .lg > summary, .lg > .row { grid-template-columns: 4.4em 2.8em minmax(0, 1fr); }
+    .lg .src { display: none; }
+    .lg pre { padding-left: 12px; }
+  }
+  .doclink .count { margin-left: 6px; font-size: 11.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: var(--bad); color: #fff; }
+  .doclink .count[hidden] { display: none; }
+
   @media (prefers-reduced-motion: no-preference) {
     .notice:not([hidden]) { animation: rise .22s cubic-bezier(.16, 1, .3, 1); }
     @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -152,6 +188,7 @@
   <span id="home" class="pill" hidden></span>
   <span class="spacer"></span>
   <a class="doclink" href="/docs" target="_blank" rel="noopener">API 설명</a>
+  <a class="doclink" href="#logcard" title="작업·오류 로그로 이동">로그<span id="log-badge" class="count" hidden>0</span></a>
   <button id="settings" title="접속 토큰">설정</button>
   <button id="stop" title="실행 중인 동작을 즉시 멈춥니다">정지</button>
 </div></header>
@@ -208,6 +245,18 @@
       </ol>
     </section>
     </div>
+
+    <section class="card logcard" id="logcard">
+      <div class="log-head">
+        <h2>로그</h2><span id="log-count" class="count" hidden>0</span>
+        <span class="spacer"></span>
+        <select id="log-filter" aria-label="로그 보기"><option value="all">전체</option><option value="warn">주의·오류</option><option value="error">오류만</option></select>
+        <button id="log-copy" type="button">복사</button>
+        <button id="log-clear" type="button">비우기</button>
+        <button id="log-fold" type="button" aria-expanded="true">접기</button>
+      </div>
+      <div id="log-list" data-filter="all" role="log" aria-live="off"><div class="empty">기록을 불러오는 중…</div></div>
+    </section>
 
 </main>
 
@@ -585,6 +634,66 @@ function render(task, s) {
     if (task.id === watched && lastShown !== task.id) { lastShown = task.id; say('sys', ''); }   // 끝나면 '…하는 중' 안내를 지운다(결과는 위 칸)
   }
 }
+
+// ---------- 로그창 ----------
+// 서버가 모아 둔 사건 기록(GET /api/logs)을 2초마다 받아 아래에 붙인다. 줄을 누르면 원문 이유와 실행 프로그램의 마지막 출력이 펼쳐진다.
+const LOG_LEVELS = { info: '정보', ok: '완료', warn: '주의', error: '오류' }, LOG_KEEP = 400;
+let logLast = 0, logBoot = null, logErrors = 0, logPolling = false;
+function logRow(entry) {
+  const row = document.createElement(entry.detail ? 'details' : 'div');
+  row.className = 'lg lv-' + entry.level;
+  const head = document.createElement(entry.detail ? 'summary' : 'div');
+  if (!entry.detail) head.className = 'row';
+  for (const [cls, text] of [['t', entry.time], ['lv', LOG_LEVELS[entry.level] || entry.level], ['src', entry.source], ['msg', entry.message]]) {
+    const cell = document.createElement('span'); cell.className = cls; cell.textContent = text; head.appendChild(cell);
+  }
+  row.appendChild(head);
+  if (entry.detail) { const pre = document.createElement('pre'); pre.textContent = entry.detail; row.appendChild(pre); }
+  return row;
+}
+function showLogErrors() {
+  for (const id of ['log-count', 'log-badge']) { $(id).hidden = !logErrors; $(id).textContent = id === 'log-count' ? `오류 ${logErrors}` : logErrors; }
+}
+async function pollLogs(fresh = false) {
+  if (logPolling || document.hidden) return;
+  logPolling = true;
+  try {
+    const { status, data } = await api('GET', '/api/logs?since=' + logLast);
+    if (status !== 200) return;
+    const list = $('log-list');
+    if (logBoot !== null && data.boot !== logBoot && !fresh) {          // 서버를 다시 켰다: 번호가 처음부터 다시 시작한다
+      logBoot = data.boot; logLast = 0; logErrors = 0; list.textContent = ''; showLogErrors(); logPolling = false; return pollLogs(true);
+    }
+    logBoot = data.boot; logLast = data.last;
+    if (!data.entries.length) { if (!list.children.length) list.innerHTML = '<div class="empty">아직 기록이 없습니다. 작업을 시키면 여기에 시작·완료·실패 이유가 쌓입니다.</div>'; return; }
+    const empty = list.querySelector('.empty'); if (empty) empty.remove();
+    const atEnd = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+    for (const entry of data.entries) { list.appendChild(logRow(entry)); if (entry.level === 'error') logErrors += 1; }
+    while (list.children.length > LOG_KEEP) list.firstChild.remove();
+    showLogErrors();
+    if (atEnd) list.scrollTop = list.scrollHeight;
+  } catch (e) { /* 서버가 잠깐 안 닿으면 다음 번에 다시 */ } finally { logPolling = false; }
+}
+$('log-filter').onchange = () => { $('log-list').dataset.filter = $('log-filter').value; try { localStorage.setItem('logFilter', $('log-filter').value); } catch (e) {} };
+try { const f = localStorage.getItem('logFilter'); if (f) { $('log-filter').value = f; $('log-list').dataset.filter = $('log-filter').value; } } catch (e) {}
+$('log-clear').onclick = () => { $('log-list').innerHTML = '<div class="empty">비웠습니다. 새 기록부터 보입니다.</div>'; logErrors = 0; showLogErrors(); };   // logLast는 그대로 둬서 지운 기록이 다시 오지 않는다
+$('log-fold').onclick = () => {
+  const open = $('log-list').hidden; $('log-list').hidden = !open; $('log-fold').textContent = open ? '접기' : '펼치기'; $('log-fold').setAttribute('aria-expanded', String(open));
+  try { localStorage.setItem('logOpen', open ? '1' : '0'); } catch (e) {}
+};
+try { if (localStorage.getItem('logOpen') === '0') $('log-fold').click(); } catch (e) {}
+$('log-copy').onclick = async () => {
+  const text = [...$('log-list').querySelectorAll('.lg')].filter((r) => r.offsetParent !== null).map((r) => {
+    const cells = [...r.querySelectorAll(':scope > .row > span, :scope > summary > span')].map((c) => c.textContent).join('  ');
+    const pre = r.querySelector('pre'); return cells + (pre ? '\n' + pre.textContent : '');
+  }).join('\n');
+  const done = () => { $('log-copy').textContent = '복사됨'; setTimeout(() => { $('log-copy').textContent = '복사'; }, 1400); };
+  try { await navigator.clipboard.writeText(text); done(); } catch (e) {
+    const area = document.createElement('textarea'); area.value = text; document.body.appendChild(area); area.select();
+    try { document.execCommand('copy'); done(); } catch (err) { /* 선택만 남는다 */ } area.remove();
+  }
+};
+setInterval(pollLogs, 2000); pollLogs();
 setInterval(poll, 1000); poll();
 
 </script>

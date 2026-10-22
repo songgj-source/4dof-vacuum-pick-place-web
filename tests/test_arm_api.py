@@ -750,6 +750,69 @@ class BaseMovingTests(unittest.TestCase):
         self.assertIsNone(arm_api.base_moving(''))
 
 
+class LogTests(ApiBase):
+    """웹 로그창: 실패의 원문 이유와 마지막 출력이 남고, since로 새 기록만 받는다."""
+
+    def logs(self, since=0):
+        status, body = self.call('GET', f'/api/logs?since={since}')
+        self.assertEqual(status, 200)
+        return body
+
+    def test_failed_task_keeps_the_raw_reason_and_the_last_output(self):
+        raw = 'existing fixed goal is not stationary; takeover refused'
+        self.outcome = (1, dict(ok=False, reason=raw, _tail=['approach 끝', 'takeover 검사']), 1.)
+        self.release.set()
+        _, started = self.call('POST', '/pick_place', {'object': 'red_cube'})
+        self.wait_done(started['task_id'])
+        body = self.logs()
+        errors = [e for e in body['entries'] if e['level'] == 'error']
+        script = next(e for e in errors if e['message'] == raw)                  # 실행 프로그램이 알려 준 원문
+        self.assertIn('종료 코드 1', script['detail'])
+        self.assertIn('takeover 검사', script['detail'])                          # 마지막 출력
+        summary = next(e for e in errors if e['source'] == '작업')                 # 화면에 보이는 문장
+        self.assertIn('실패', summary['message'])
+        self.assertIn(started['task_id'], summary['detail'])
+
+    def test_success_and_refusals_are_logged_with_their_level(self):
+        self.release.set()
+        _, started = self.call('POST', '/pick_place', {'object': 'red_cube'})
+        self.wait_done(started['task_id'])
+        self.base_reason = '차가 움직이는 중입니다.'
+        _, refused = self.call('POST', '/pick_place', {'object': 'red_cube'})
+        self.wait_done(refused['task_id'])
+        levels = [(e['level'], e['source']) for e in self.logs()['entries'] if e['source'] == '작업']
+        self.assertIn(('ok', '작업'), levels)
+        self.assertIn(('warn', '작업'), levels)                                    # base_moving은 바로 고칠 수 있는 거부라 주의
+
+    def test_since_returns_only_newer_entries_and_boot_identifies_the_server(self):
+        first = self.logs()
+        self.arm.log.add('info', '시험', '하나')
+        newer = self.logs(first['last'])
+        self.assertEqual([e['message'] for e in newer['entries']], ['하나'])
+        self.assertEqual(newer['boot'], first['boot'])
+        self.assertEqual(self.logs(newer['last'])['entries'], [])
+
+    def test_api_errors_are_logged_but_not_the_log_polling_itself(self):
+        self.assertEqual(self.call('POST', '/pick_place', {'object': 'cup'})[0], 400)
+        entries = self.logs()['entries']
+        self.assertTrue(any(e['source'] == 'API' and e['level'] == 'warn' and '400' in e['message'] for e in entries))
+        before = self.logs()['last']
+        self.call('GET', '/api/logs?since=999999')
+        self.assertEqual(self.logs()['last'], before)
+
+    def test_ring_buffer_keeps_the_newest(self):
+        log = arm_api.EventLog(size=3)
+        for n in range(5):
+            log.add('info', 's', str(n))
+        entries, last = log.since(0)
+        self.assertEqual(([e['message'] for e in entries], last), (['2', '3', '4'], 5))
+
+    def test_logs_need_the_token(self):
+        self.start_server(token='t')
+        self.assertEqual(self.call('GET', '/api/logs')[0], 401)
+        self.assertEqual(self.call('GET', '/api/logs', headers={'Authorization': 'Bearer t'})[0], 200)
+
+
 class SttTests(ApiBase):
     """로컬 음성 인식 주소(/api/stt). 가짜 인식기로 서버 쪽 동작을, 실제 Whisper로 녹음 파일 하나를 확인한다."""
 
