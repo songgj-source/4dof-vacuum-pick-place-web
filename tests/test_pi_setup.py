@@ -44,6 +44,16 @@ class DevicePathTests(unittest.TestCase):
         devices.CONFIG.write_text('not json')
         self.assertEqual(devices.lookup('pump_port')[1], 'default')     # 깨진 설정 파일은 무시한다
 
+    def test_by_path_is_allowed_only_when_configured(self):
+        by_id, by_path = Path(self.tmp.name) / 'by-id', Path(self.tmp.name) / 'by-path'
+        for folder in (by_id, by_path):
+            folder.mkdir(); (folder / 'dev').symlink_to('/dev/null')
+        with patch.object(devices, 'SERIAL_STABLE_DIRS', (by_id, by_path)):
+            self.assertTrue(devices.stable_serial(by_id / 'dev', configured=False))
+            self.assertFalse(devices.stable_serial(by_path / 'dev', configured=False))   # 기본값은 by-id만
+            self.assertTrue(devices.stable_serial(by_path / 'dev', configured=True))     # 직접 지정하면 포트 위치 이름도
+            self.assertFalse(devices.stable_serial(Path('/dev/ttyUSB0'), configured=True))
+
     def test_configured_pump_must_still_be_a_stable_name(self):
         from hardware.vacuum_serial import SerialVacuum
         with patch.dict(os.environ, {'ARM_PUMP_PORT': '/dev/ttyUSB7'}):

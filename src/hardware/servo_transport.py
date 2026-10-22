@@ -75,9 +75,10 @@ class ServoTransport:
         from hardware import devices
         data = self.profile.data
         device = Path(devices.get('servo_port', data['port']))      # ARM_SERVO_PORT / config/devices.json / 프로필
-        if (device.parent != Path('/dev/serial/by-id') or not device.is_symlink()
-                or (not devices.configured('servo_port') and data['device_identity'] not in device.name)):
-            raise ValueError(f'expected stable by-id servo device is absent: {device} (ARM_SERVO_PORT로 지정 가능)')
+        named = devices.configured('servo_port')
+        if (not devices.stable_serial(device, named)
+                or (not named and data['device_identity'] not in device.name)):
+            raise ValueError(f'expected stable by-id/by-path servo device is absent: {device} (ARM_SERVO_PORT로 지정 가능)')
         lock_dir = self.profile.root/'tmp/servo_locks'
         lock_dir.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(str(device.resolve()).encode()).hexdigest()[:16]

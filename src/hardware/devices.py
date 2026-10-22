@@ -9,7 +9,10 @@ Raspberry Pi 등 다른 컴퓨터로 옮기면 by-id 이름이나 OpenNI2 런타
   ARM_OPENNI2_RUNTIME  Astra용 OpenNI2 런타임 폴더(libOpenNI2.so가 있는 곳). Pi는 ARM64 빌드가 필요하다
 
 기본값과 같은 장치(같은 USB 일련번호)면 by-id 이름은 어느 리눅스에서나 같아서 설정이 필요 없다.
-직접 지정한 경로는 일련번호 이름 검사를 하지 않는다(다른 어댑터로 바꿨을 수 있다). /dev/serial/by-id 같은 고정 이름인지는 계속 검사한다.
+직접 지정한 경로는 일련번호 이름 검사를 하지 않는다(다른 어댑터로 바꿨을 수 있다). 고정 이름인지는 계속 검사한다:
+기본은 /dev/serial/by-id, 직접 지정하면 /dev/serial/by-path(꽂은 USB 포트 위치 이름)도 된다.
+by-path는 같은 일련번호의 장치가 둘일 때 쓴다. 예: 팀 라이다와 펌프 ESP32가 둘 다 CP2102 '_0001'이라
+by-id 이름이 하나만 생긴다(scripts/find_pump_port.py로 펌프의 by-path를 찾는다). 다른 포트로 옮겨 꽂으면 다시 정해야 한다.
 """
 import json
 import os
@@ -26,6 +29,16 @@ DEFAULTS = {
 }
 ENV = {'servo_port': 'ARM_SERVO_PORT', 'pump_port': 'ARM_PUMP_PORT',
        'wrist_camera': 'ARM_WRIST_CAMERA', 'openni2_runtime': 'ARM_OPENNI2_RUNTIME'}
+
+
+SERIAL_STABLE_DIRS = (Path('/dev/serial/by-id'), Path('/dev/serial/by-path'))
+
+
+def stable_serial(path, configured):
+    """재부팅해도 같은 장치를 가리키는 이름인가. by-id는 늘, by-path는 직접 지정했을 때만."""
+    path = Path(path)
+    allowed = SERIAL_STABLE_DIRS if configured else SERIAL_STABLE_DIRS[:1]
+    return path.parent in allowed and path.is_symlink()
 
 
 def _file_values():

@@ -46,6 +46,37 @@ HOME_CMD = [menu.PY, str(menu.ROOT / 'scripts' / 'return_home.py'), '--execute',
 # 토크가 꺼진 팔이 HOME(또는 접힌 HOME 근처)에 놓여 있으면 작업 전에 토크를 켜서 그 자리에 붙잡는다(메뉴에서 Enter로 하던 일). ARM_AUTO_TORQUE=0이면 예전처럼 거부한다.
 HOLD_CMD = [menu.PY, str(menu.ROOT / 'scripts' / 'servo_driver.py'), 'hold', '--arm', '--supported', '--duration', '1.5']
 AUTO_TORQUE = os.environ.get('ARM_AUTO_TORQUE', '1') != '0'
+# 팀 주행(ros2_slam test/map_web.py, 같은 Pi)에 차가 움직이는지 묻는다(읽기만). 움직이면 팔 작업을 시작하지 않는다.
+# map_web이 꺼져 있으면(주행을 안 쓰는 중) 그냥 진행한다. 빈 값이면 확인하지 않는다.
+BASE_URL = os.environ.get('ARM_BASE_URL', 'http://127.0.0.1:8081').rstrip('/')
+BASE_MOVING_NAV = ('backing', 'sending', 'active', 'canceling')     # map_web nav.state: Go to 진행 중
+BASE_LINEAR, BASE_ANGULAR = .01, .03                                 # odom 실제 속도가 이보다 크면 움직이는 중
+
+
+def base_moving(url=BASE_URL, timeout_s=1.5):
+    """차가 움직이는 중이면 그 이유 문장, 아니면 None. map_web에 닿지 않으면 None(주행을 안 쓰는 중으로 본다)."""
+    if not url:
+        return None
+    import urllib.request
+    def get(path):
+        with urllib.request.urlopen(url + path, timeout=timeout_s) as response:
+            return json.loads(response.read())
+    try:
+        drive = get('/api/drive')
+    except Exception:
+        return None
+    odom = drive.get('odom') or {}
+    if abs(odom.get('linear') or 0.) > BASE_LINEAR or abs(odom.get('angular') or 0.) > BASE_ANGULAR:
+        return f"차가 움직이는 중입니다(속도 {odom.get('linear', 0):.2f} m/s, 회전 {odom.get('angular', 0):.2f} rad/s)."
+    if drive.get('moving'):
+        return '차에 주행 명령이 들어가는 중입니다(수동 주행).'
+    try:
+        nav = (get('/api/get_map_info').get('nav') or {})
+    except Exception:
+        return None
+    if nav.get('state') in BASE_MOVING_NAV:
+        return f"차가 목적지로 이동하는 중입니다(Nav2 {nav.get('state')}"+ (f", {nav['target']}" if nav.get('target') else '') + ').'
+    return None
 
 # 실패 원문 → 고정 코드(호출한 쪽이 문장 대신 코드로 분기한다). 위에서부터 처음 맞는 것.
 REASON_CODES = (
@@ -72,8 +103,9 @@ def reason_code(text):
 class Arm:
     """한 번에 한 작업을 돌리는 상태. HTTP 핸들러와 작업 스레드가 함께 쓴다."""
 
-    def __init__(self, run=menu.run_streaming, read_state=None, hold=None):
+    def __init__(self, run=menu.run_streaming, read_state=None, hold=None, base_check=None):
         self.run = run
+        self.base_check = base_check or base_moving
         self.read_state = read_state or (lambda: menu.classify_arm(menu.read_arm_state()))
         self.hold = hold or (lambda: subprocess.run(HOLD_CMD, cwd=menu.ROOT, capture_output=True, text=True, timeout=60))
         self.lock = threading.Lock()
@@ -258,6 +290,9 @@ class Arm:
 
     def _execute(self, task_id, skill, params):
         CAMERA.release()                    # 작업(pick_auto 등)이 카메라를 직접 연다
+        moving = self.base_check()
+        if moving:
+            return dict(ok=False, reason_code='base_moving', reason=moving + ' 차가 멈춘 뒤 다시 시키세요.')
         if menu.live_view_running():
             return dict(ok=False, reason='카메라 창(live_view.py)이 켜져 있습니다.', reason_code='camera_busy')
         refused = self._ensure_torque(task_id, skill)

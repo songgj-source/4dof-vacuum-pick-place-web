@@ -38,7 +38,8 @@ class ApiBase(unittest.TestCase):
             target.start(); self.addCleanup(target.stop)
         self.holds = 0
         self.hold_works = True
-        self.arm = arm_api.Arm(run=self.fake_run, read_state=lambda: self.state, hold=self.fake_hold)
+        self.base_reason = None                # 팀 map_web 대신(움직이면 이유 문장)
+        self.arm = arm_api.Arm(run=self.fake_run, read_state=lambda: self.state, hold=self.fake_hold, base_check=lambda: self.base_reason)
         self.start_server()
 
     def fake_hold(self):                       # servo_driver.py hold 대신(실제 서보를 건드리지 않는다)
@@ -121,6 +122,13 @@ class ApiTests(ApiBase):
         self.assertEqual(task['result']['reason_code'], 'torque_off')
         self.assertIn('HOME 자세로 옮긴 뒤', task['result']['reason'])
         self.assertEqual((self.commands, self.holds), ([], 0))             # 토크를 켜지도 않는다
+
+    def test_does_not_move_while_the_car_moves(self):
+        self.state, self.base_reason = 'off_at_home', '차가 목적지로 이동하는 중입니다(Nav2 active).'
+        _, body = self.call('POST', '/pick_place', {'object': 'red_cube'})
+        task = self.wait_done(body['task_id'])
+        self.assertEqual(task['result']['reason_code'], 'base_moving')
+        self.assertEqual((self.commands, self.holds), ([], 0))             # 토크도 켜지 않는다
 
     def test_torque_is_turned_on_automatically_at_home(self):
         self.state = 'off_at_home'
@@ -710,6 +718,36 @@ class SteadySceneTests(unittest.TestCase):
     def test_all_different_is_marked_unstable(self):
         bgr, scene = self.run_with([['red_cube'], ['white_box'], []])
         self.assertTrue(scene['unstable'])
+
+
+class BaseMovingTests(unittest.TestCase):
+    """팀 map_web에 차가 움직이는지 묻는다(읽기만). 닿지 않으면 주행을 안 쓰는 중으로 본다."""
+
+    def serve(self, drive, nav):
+        from http.server import BaseHTTPRequestHandler
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def do_GET(self):
+                body = json.dumps(drive if self.path == '/api/drive' else {'nav': nav}).encode()
+                self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close); self.addCleanup(server.shutdown)
+        return f'http://127.0.0.1:{server.server_address[1]}'
+
+    def test_still_car_allows(self):
+        url = self.serve({'moving': False, 'odom': {'linear': 0.002, 'angular': 0.0}}, {'state': 'succeeded'})
+        self.assertIsNone(arm_api.base_moving(url))
+
+    def test_odom_speed_drive_command_or_nav_goal_refuses(self):
+        self.assertIn('움직이는 중', arm_api.base_moving(self.serve({'moving': False, 'odom': {'linear': 0.1, 'angular': 0}}, {})))
+        self.assertIn('수동 주행', arm_api.base_moving(self.serve({'moving': True, 'odom': None}, {})))
+        self.assertIn('Nav2 active', arm_api.base_moving(self.serve({'moving': False, 'odom': {'linear': 0, 'angular': 0}},
+                                                                    {'state': 'active', 'target': '책상'})))
+
+    def test_no_map_web_or_disabled_allows(self):
+        self.assertIsNone(arm_api.base_moving('http://127.0.0.1:9'))
+        self.assertIsNone(arm_api.base_moving(''))
 
 
 class SttTests(ApiBase):

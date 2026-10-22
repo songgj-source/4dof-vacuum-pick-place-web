@@ -50,7 +50,7 @@ def main():
         mark = OK if row['exists'] else BAD
         problems += not row['exists']
         print(f"[{mark}] {name:<16} {row['path']}  ({row['source']})")
-    for folder in ('/dev/serial/by-id', '/dev/v4l/by-id'):
+    for folder in ('/dev/serial/by-id', '/dev/serial/by-path', '/dev/v4l/by-id'):
         names = sorted(p.name for p in Path(folder).glob('*')) if Path(folder).exists() else []
         print(f'        {folder}: ' + (', '.join(names) if names else '(없음)'))
 
