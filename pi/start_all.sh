@@ -77,6 +77,12 @@ start() {
   done
   [ "$changed" = 1 ] || echo "   맞음"
 
+  say "펌프 포트 (설정한 USB 포트 이름이 사라졌으면 다시 찾는다)"
+  local pump; pump="$(pi "cd ~/$REMOTE_DIR && set -a && . pi/arm-api.env && set +a && p=\$ARM_PUMP_PORT; \
+    if [ -n \"\$p\" ] && [ ! -e \"\$p\" ]; then echo MISSING; .venv/bin/python scripts/find_pump_port.py --write 2>&1 | grep -E '^(우리 팔|펌프를)' ; fi" 2>&1)"
+  if [ -z "$pump" ]; then echo "   맞음"
+  else echo "$pump" | sed 's/^/   /'; case "$pump" in *ARM_PUMP_PORT=*) changed=1 ;; *) warn "펌프를 찾지 못했습니다 - 펌프 USB와 전원을 확인하세요" ;; esac; fi
+
   say "Pi Wi-Fi 절전 끄기"
   pi 'sudo -n /usr/sbin/iw dev wlan0 set power_save off 2>/dev/null && /usr/sbin/iw dev wlan0 get power_save' \
     | sed 's/^/   /' || warn "끄지 못했습니다(sudo 비밀번호 필요?) — 응답이 느릴 수 있습니다"
