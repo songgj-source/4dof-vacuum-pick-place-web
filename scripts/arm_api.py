@@ -330,9 +330,12 @@ class Arm:
         state = self.read_state()
         if state == 'ok':
             return None
-        if AUTO_TORQUE and state in ('off_at_home', 'off_near_fold') and not self.stop_requested:
+        # HOME이 아닌 곳에서 토크가 꺼진 팔은 'HOME 복귀'만 받는다: 현재 자세를 그대로 붙잡은 뒤(목표=현재 위치라 튀지 않는다) return_home이
+        # 복귀 경로 전체를 검사하고 간다. 그 밖의 작업은 HOME에서 시작해야 한다.
+        recover = state == 'off_elsewhere' and skill == 'return_home'
+        if AUTO_TORQUE and (state in ('off_at_home', 'off_near_fold') or recover) and not self.stop_requested:
             self._event(task_id, 'phase', ('torque_on', '토크 켜기(팔 붙잡기)'))
-            self.log.add('info', '팔', f'토크가 꺼진 팔을 붙잡습니다(상태 {state})')
+            self.log.add('info', '팔', f'토크가 꺼진 팔을 붙잡습니다(상태 {state})' + (' - 현재 자세에서 HOME으로 복귀' if recover else ''))
             self.hold()
             after = self.read_state()
             if after != 'ok':
@@ -345,7 +348,7 @@ class Arm:
             return None
         return dict(ok=False, reason_code='arm_state_unknown' if state == 'unknown' else 'torque_off',
                     reason={'unknown': '서보가 응답하지 않습니다. 서보 전원(어댑터 전원)과 서보 선을 확인하세요.',
-                            'off_elsewhere': '토크가 꺼져 있고 팔이 HOME이 아닙니다. 팔을 손으로 받쳐 HOME 자세로 옮긴 뒤 다시 시키세요.'}.get(
+                            'off_elsewhere': '토크가 꺼져 있고 팔이 HOME이 아닙니다. 먼저 "홈으로 돌아가"를 시키세요. 팔을 현재 자세에서 붙잡고 HOME으로 복귀합니다(팔이 걸리거나 처지지 않게 받쳐 주세요).'}.get(
                                 state, f'팔 상태가 움직여도 되는 상태가 아닙니다({state}). 사람이 팔을 받치고 토크를 켜야 합니다.'))
 
     def _execute(self, task_id, skill, params):

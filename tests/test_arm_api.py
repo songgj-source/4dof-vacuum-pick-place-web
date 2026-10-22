@@ -120,7 +120,7 @@ class ApiTests(ApiBase):
         _, body = self.call('POST', '/pick_place', {'object': 'red_cube'})
         task = self.wait_done(body['task_id'])
         self.assertEqual(task['result']['reason_code'], 'torque_off')
-        self.assertIn('HOME 자세로 옮긴 뒤', task['result']['reason'])
+        self.assertIn('홈으로 돌아가', task['result']['reason'])               # 집기 같은 작업은 거부하고 복귀를 안내한다
         self.assertEqual((self.commands, self.holds), ([], 0))             # 토크를 켜지도 않는다
 
     def test_does_not_move_while_the_car_moves(self):
@@ -129,6 +129,28 @@ class ApiTests(ApiBase):
         task = self.wait_done(body['task_id'])
         self.assertEqual(task['result']['reason_code'], 'base_moving')
         self.assertEqual((self.commands, self.holds), ([], 0))             # 토크도 켜지 않는다
+
+    def test_home_return_from_elsewhere_holds_the_arm_where_it_is_then_returns(self):
+        self.state = 'off_elsewhere'
+        self.outcome = (0, dict(ok=True, home_return_complete=True), 1.)
+        self.release.set()
+        _, body = self.call('POST', '/return_home')
+        task = self.wait_done(body['task_id'])
+        self.assertEqual((task['state'], self.holds), ('done', 1))               # 현재 자세를 붙잡고
+        self.assertEqual(self.commands, [arm_api.HOME_CMD])                      # 복귀 명령 실행
+        self.assertEqual(task['phases'][0]['phase'], 'torque_on')
+
+    def test_home_return_from_elsewhere_stops_if_the_hold_fails(self):
+        self.state, self.hold_works = 'off_elsewhere', False
+        _, body = self.call('POST', '/return_home')
+        task = self.wait_done(body['task_id'])
+        self.assertEqual((task['result']['reason_code'], self.commands), ('torque_off', []))
+
+    def test_mixed_torque_is_still_refused_even_for_home_return(self):
+        self.state = 'mixed'
+        _, body = self.call('POST', '/return_home')
+        task = self.wait_done(body['task_id'])
+        self.assertEqual((task['result']['reason_code'], self.commands, self.holds), ('torque_off', [], 0))
 
     def test_torque_is_turned_on_automatically_at_home(self):
         self.state = 'off_at_home'
