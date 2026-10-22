@@ -91,9 +91,10 @@ start() {
   pi "bash ~/$REMOTE_DIR/pi/arm_api_ctl.sh check" 2>&1 | grep -E '문제|\[ 문제 \]|OK  \] (servo|pump|wrist|openni2)' | sed 's/^/   /'
 
   say "팔 상태 · 토크 (HOME에 놓인 팔은 토크를 켜서 붙잡는다, NO_TORQUE=1이면 확인만)"
-  local hold=--hold; [ -n "${NO_TORQUE:-}" ] && hold=
+  local arm_ready=1 hold=--hold; [ -n "${NO_TORQUE:-}" ] && hold=
   if ! pi "cd ~/$REMOTE_DIR && set -a && . pi/arm-api.env && set +a && .venv/bin/python scripts/arm_ready.py $hold" 2>&1 | sed 's/^/   /'; then
     warn "팔을 움직일 수 없는 상태입니다 - 위 안내대로 고친 뒤 bash pi/start_all.sh 를 다시 실행하세요 (서버는 그대로 켭니다)"
+    arm_ready=0
   fi
 
   say "Pi 서버"
@@ -111,7 +112,11 @@ start() {
     ARM_URL="http://$PI_IP:8000" bash "$ROOT/pi/open_jarvis.sh" | sed 's/^/   /'
   fi
   echo
-  echo "준비됐습니다. 움직이는 명령(넣어줘, 정리해, 홈으로)은 묻지 않고 바로 실행됩니다. 끄기: bash pi/start_all.sh stop"
+  if [ "$arm_ready" = 1 ]; then
+    echo "준비됐습니다. 움직이는 명령(넣어줘, 정리해, 홈으로)은 묻지 않고 바로 실행됩니다. 끄기: bash pi/start_all.sh stop"
+  else
+    echo "서버는 켜졌지만 팔을 움직일 수 없는 상태입니다(위 안내 참고). 고친 뒤 bash pi/start_all.sh 를 다시 실행하세요."
+  fi
 }
 
 stop() {
