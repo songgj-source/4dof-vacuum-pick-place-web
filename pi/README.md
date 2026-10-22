@@ -12,6 +12,71 @@
 [노트북]  브라우저(웹 화면·마이크), Ollama(LLM), stt_server.py(Whisper), 팀 NOMI
 ```
 
+## 매일 실행하기 (설치가 끝난 뒤)
+
+명령은 노트북의 이 폴더에서 입력합니다. 로봇 이름은 **자비스**입니다.
+
+### 준비
+- 노트북 Wi-Fi를 `robot`에 연결합니다(노트북 주소 192.168.0.32, `ip -4 addr show wlp3s0`로 확인).
+- Pi를 켭니다. 리튬팩으로 켤 때 충전기를 꽂거나 빼면 Pi가 꺼질 수 있습니다(2026-10-22 실제로 꺼짐).
+- 서보 어댑터·ESP32 펌프·손목 카메라는 허브에, **Astra는 Pi에 직접** 꽂습니다(전원 없는 허브에 Astra까지 물리면 허브가 끊김. Pi 포트 1-1.3은 인식 실패가 잦음).
+- 서보 전원과 펌프 전원(AA 4개)을 켭니다.
+
+### 1. 노트북: 음성 인식 서버와 Ollama 중계 (노트북을 켤 때마다 한 번)
+```bash
+# 음성 토큰은 Pi 설정(pi/arm-api.env)의 ARM_STT_TOKEN과 같아야 한다
+STT_TOKEN=$(ssh user@192.168.0.31 "grep ^ARM_STT_TOKEN= ~/4dof_ik_pi_test/pi/arm-api.env | cut -d= -f2")
+env -u ARM_STT_URL nohup ~/miniconda3/envs/lerobot_312/bin/python scripts/stt_server.py \
+  --host 0.0.0.0 --port 8010 --token "$STT_TOKEN" > ~/stt_server.log 2>&1 &
+
+# Pi가 노트북 Ollama(127.0.0.1에서만 받음)를 쓰게 하는 중계. Pi 주소만 허용, sudo 필요 없음
+nohup socat TCP4-LISTEN:11434,bind=192.168.0.32,reuseaddr,fork,range=192.168.0.31/32 \
+  TCP4:127.0.0.1:11434 > ~/ollama_fwd.log 2>&1 &
+```
+Pi 설정에는 `ARM_STT_URL=http://192.168.0.32:8010/api/stt`, `OLLAMA_HOST=http://192.168.0.32:11434`가 들어 있습니다.
+
+### 2. Pi: 서버 켜기
+```bash
+ssh user@192.168.0.31 'sudo iw dev wlan0 set power_save off'   # Pi를 켤 때마다 (절전이면 응답이 수백 ms로 느려짐)
+bash pi/remote.sh check     # 장치 점검 (읽기 전용)
+bash pi/remote.sh start     # 서버 켜기. 켜기만 해서는 로봇이 움직이지 않는다
+```
+
+### 3. 화면 열기
+```bash
+bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (터널 없이 마이크 사용 가능)
+```
+처음 한 번 [설정]에 접속 토큰을 넣습니다. 토큰 보기:
+`ssh user@192.168.0.31 "grep ^ARM_API_TOKEN= ~/4dof_ik_pi_test/pi/arm-api.env | cut -d= -f2"`
+
+[말하기]를 누르고 말하거나 입력칸에 씁니다. 앞에 "자비스,"를 붙여도 됩니다.
+
+| 말 | 동작 |
+|---|---|
+| "작업대에 뭐 있어?" | 사진을 찍고 설명 (안 움직임, 약 2.5초) |
+| "상태 어때?" | 팔 상태 (안 움직임) |
+| "홈으로 돌아가" | 토크를 자동으로 켜고 HOME 자세 (**움직임**) |
+| "빨간 큐브 넣어줘", "흰 상자 3번 칸에 넣어" | 한 물체 넣기 (**움직임**) |
+| "책상 정리해줘" 또는 [실행] | 책상의 등록 물체를 모두 칸에 넣기 (**움직임**) |
+| "다시 해줘" | 마지막 작업 다시 (**움직임**) |
+| "멈춰", 정지 버튼 | 즉시 정지 |
+
+- **움직이는 명령은 묻지 않고 바로 실행됩니다.** 팔 옆에서 서보 전원을 바로 끊을 수 있게 해 두세요.
+- 팔이 닿는 거리(로봇에서 16~38 cm) 안의 책상에는 정리할 물체만 둡니다. 다른 물건(리튬팩 등)도 물체로 잡혀 집으러 갈 수 있습니다.
+- 팔 밑동에 너무 가까운 물체(약 16 cm 안)는 로봇 자신으로 보고 뺍니다.
+
+### 4. 끄기
+```bash
+bash pi/remote.sh stop      # Pi 서버 (진행 중인 작업은 정리한 뒤 끝남)
+pkill -f "scripts/stt_server.py"; pkill -f "socat TCP4-LISTEN:11434"   # 노트북 쪽 (필요할 때만)
+```
+
+### 문제가 생기면
+- 상태·로그: `bash pi/remote.sh status`, `bash pi/remote.sh log`
+- 음성이나 대화가 안 됨: 노트북 주소가 192.168.0.32가 아니면 Pi의 `~/4dof_ik_pi_test/pi/arm-api.env`에서 `ARM_STT_URL`, `OLLAMA_HOST`의 주소를 고치고 `bash pi/remote.sh restart`. socat의 `bind=` 주소도 새 주소로.
+- Pi가 안 보임: `ping 192.168.0.31`. 전원이 끊겼는지 확인합니다. 재부팅했으면 2번부터 다시.
+- 코드를 고친 뒤 Pi에 반영: `bash pi/deploy_to_robot.sh -- --no-service --no-apt` 후 `bash pi/remote.sh restart`.
+
 ## 0. 팀 로봇 Pi(`user@192.168.0.31`)에서 우리 팔만 시험하기
 
 팀원의 주행·카메라·hand_eye가 같이 쓰는 Pi라서, **서비스를 만들지 않고(`--no-service`) 우리 폴더 안에서만** 설치·실행합니다.
@@ -26,7 +91,7 @@ bash pi/remote.sh start                       # 서버 켜기 → 브라우저 h
 bash pi/remote.sh stop | status | log
 ```
 
-- 다른 주소·사용자면 `ROBOT=사용자@주소`를 앞에 붙입니다. 비밀번호는 접속할 때 한 번 묻습니다(저장소에 없음, 팀원에게 확인).
+- 다른 주소·사용자면 `ROBOT=사용자@주소`를 앞에 붙입니다. 노트북 키를 등록해 두면(`ssh-copy-id user@192.168.0.31`) 비밀번호를 묻지 않습니다.
 - apt 패키지가 이미 있으면 `bash pi/deploy_to_robot.sh -- --no-service --no-apt`.
 - **Astra는 한 프로그램만 열 수 있습니다.** 팀의 카메라 노드(`remote_robot_rgbd.sh`, `remote_camera_web.sh`)나 `hand_eye`가 돌고 있으면 `start`가 거부합니다. 먼저 팀원과 맞춰 그쪽을 끄세요.
 - 팔·펌프 USB를 Pi에 꽂은 뒤 `check`에서 장치 경로가 OK인지 봅니다. 같은 어댑터면 노트북과 by-id 이름이 같아 설정할 것이 없습니다.
