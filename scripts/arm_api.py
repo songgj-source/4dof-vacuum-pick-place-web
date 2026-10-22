@@ -23,8 +23,10 @@ object: white_box(기본 1번 칸) · red_cube(2) · tape_measure(3) · unknown(
 import argparse
 import hmac
 import json
+import os
 import re
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -41,6 +43,9 @@ OBJECTS = {'white_box': 1, 'red_cube': 2, 'tape_measure': 3, 'unknown': 3}      
 NAMES = {'white_box': '흰 상자', 'red_cube': '빨간 정육면체', 'tape_measure': '줄자', 'unknown': 'unknown'}
 ALL_ORDER = ('white_box', 'red_cube', 'tape_measure')     # 메뉴 4번: 흰 상자 → 정육면체 → 줄자, 각자 기본 칸
 HOME_CMD = [menu.PY, str(menu.ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32']
+# 토크가 꺼진 팔이 HOME(또는 접힌 HOME 근처)에 놓여 있으면 작업 전에 토크를 켜서 그 자리에 붙잡는다(메뉴에서 Enter로 하던 일). ARM_AUTO_TORQUE=0이면 예전처럼 거부한다.
+HOLD_CMD = [menu.PY, str(menu.ROOT / 'scripts' / 'servo_driver.py'), 'hold', '--arm', '--supported', '--duration', '1.5']
+AUTO_TORQUE = os.environ.get('ARM_AUTO_TORQUE', '1') != '0'
 
 # 실패 원문 → 고정 코드(호출한 쪽이 문장 대신 코드로 분기한다). 위에서부터 처음 맞는 것.
 REASON_CODES = (
@@ -67,9 +72,10 @@ def reason_code(text):
 class Arm:
     """한 번에 한 작업을 돌리는 상태. HTTP 핸들러와 작업 스레드가 함께 쓴다."""
 
-    def __init__(self, run=menu.run_streaming, read_state=None):
+    def __init__(self, run=menu.run_streaming, read_state=None, hold=None):
         self.run = run
         self.read_state = read_state or (lambda: menu.classify_arm(menu.read_arm_state()))
+        self.hold = hold or (lambda: subprocess.run(HOLD_CMD, cwd=menu.ROOT, capture_output=True, text=True, timeout=60))
         self.lock = threading.Lock()
         self.proc = None
         self.stop_requested = False
@@ -143,8 +149,7 @@ class Arm:
         try:
             if menu.live_view_running():
                 return 409, dict(ok=False, reason_code='camera_busy', reason='카메라 창(live_view.py)이 켜져 있습니다.')
-            bgr, depth = (grab or grab_astra)()
-            scene = describe_scene(bgr, depth)
+            bgr, scene = self._steady_scene(grab or grab_astra)
             import base64
             import cv2
             ok, jpeg = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -160,6 +165,24 @@ class Arm:
         finally:
             with self.lock:
                 self.capturing = False
+
+    @staticmethod
+    def _steady_scene(grab, shots_max=3):
+        """사진 한 장이 가끔 튄다(10~30장에 한 번 물체가 더 잡히거나 책상 물체가 칸 안으로 보임, 2026-10-22).
+        두 장의 판단(책상 물체·칸 안 물체)이 같으면 그것을, 다르면 한 장 더 찍어 두 번 나온 판단을 쓴다.
+        셋 다 다르면 마지막 것을 쓰고 unstable로 알린다. 돌려주는 것: (그 판단의 사진, 장면)."""
+        def key(scene):
+            return (tuple(sorted(o['label'] for o in scene.get('objects', []))),
+                    tuple(sorted((o['label'], o.get('slot')) for o in scene.get('in_tray', []))))
+        shots = []
+        for _ in range(shots_max):
+            bgr, depth = grab()
+            scene = describe_scene(bgr, depth)
+            shots.append((key(scene), bgr, scene))
+            if sum(k == shots[-1][0] for k, _, _ in shots) >= 2:
+                return bgr, dict(scene, shots=len(shots))
+        _, bgr, scene = shots[-1]
+        return bgr, dict(scene, shots=len(shots), unstable=True)
 
     def stop(self):
         """실행 중인 작업에 SIGINT를 보낸다(메뉴의 Ctrl+C와 같다: pick_auto가 현재 동작을 멈추고 정리한다)."""
@@ -211,13 +234,34 @@ class Arm:
                 self.proc = None
                 self.current = None
 
+    def _ensure_torque(self, task_id, skill):
+        """움직여도 되면 None, 아니면 거부 결과. HOME에 놓인 채 토크만 꺼진 팔은 자동으로 토크를 켜서 붙잡는다(접힌 HOME 근처면 HOME에 맞춘다)."""
+        state = self.read_state()
+        if state == 'ok':
+            return None
+        if AUTO_TORQUE and state in ('off_at_home', 'off_near_fold') and not self.stop_requested:
+            self._event(task_id, 'phase', ('torque_on', '토크 켜기(팔 붙잡기)'))
+            self.hold()
+            after = self.read_state()
+            if after != 'ok':
+                return dict(ok=False, reason_code='torque_off', reason=f'토크를 켜지 못했습니다({after}). 서보 전원과 팔을 확인하세요.')
+            if state == 'off_near_fold' and skill != 'return_home':          # 조금 어긋난 접힌 자세: 먼저 HOME에 맞춘다
+                code, summary, _ = self._run(task_id, HOME_CMD)
+                if not (summary and summary.get('home_return_complete')):
+                    error = (summary or {}).get('error')
+                    return dict(ok=False, reason=f'토크를 켠 뒤 HOME에 맞추지 못했습니다: {error or f"종료 코드 {code}"}', reason_code=reason_code(error))
+            return None
+        return dict(ok=False, reason_code='arm_state_unknown' if state == 'unknown' else 'torque_off',
+                    reason=f'팔 상태가 움직여도 되는 상태가 아닙니다({state}). '
+                           + ('팔을 손으로 받쳐 HOME 자세로 옮긴 뒤 다시 시키세요.' if state == 'off_elsewhere' else '사람이 팔을 받치고 토크를 켜야 합니다.'))
+
     def _execute(self, task_id, skill, params):
+        CAMERA.release()                    # 작업(pick_auto 등)이 카메라를 직접 연다
         if menu.live_view_running():
             return dict(ok=False, reason='카메라 창(live_view.py)이 켜져 있습니다.', reason_code='camera_busy')
-        state = self.read_state()
-        if state != 'ok':
-            return dict(ok=False, reason_code='arm_state_unknown' if state == 'unknown' else 'torque_off',
-                        reason=f'팔 상태가 움직여도 되는 상태가 아닙니다({state}). 사람이 팔을 받치고 토크를 켜야 합니다.')
+        refused = self._ensure_torque(task_id, skill)
+        if refused:
+            return refused
         if skill == 'return_home':
             code, summary, _ = self._run(task_id, HOME_CMD)
             done = bool(summary and summary.get('home_return_complete'))
@@ -269,9 +313,90 @@ class Arm:
 WEB = Path(__file__).resolve().parents[1] / 'web' / 'index.html'
 
 
+class CameraWorker:
+    """scripts/astra_worker.py(카메라를 열어 둔 프로세스)를 띄워 두고 사진을 받는다. 처음 한 장만 카메라를 여는 시간이 들고 그 뒤로는 바로 나온다.
+    로봇 작업도 같은 카메라를 쓰므로 작업을 시작하기 전에 release()로 닫는다. 실패하면 None을 돌려주고 호출한 쪽이 예전 방식으로 찍는다."""
+
+    START_S, GRAB_S, CLOSE_S = 15., 5., 5.
+
+    def __init__(self, command=None):
+        self.command = command or [menu.PY, str(menu.ROOT / 'scripts' / 'astra_worker.py')]
+        self.proc = None
+        self.lock = threading.Lock()
+
+    def _start(self):
+        self.proc = subprocess.Popen(self.command, cwd=menu.ROOT,
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        if self._reply(self.START_S) != 'ready':
+            self._kill()
+
+    def _reply(self, timeout_s):
+        import select
+        if self.proc is None or not select.select([self.proc.stdout], [], [], timeout_s)[0]:
+            return None
+        return self.proc.stdout.readline().strip() or None
+
+    def _kill(self):
+        if self.proc is not None:
+            self.proc.kill()
+            self.proc.wait()
+        self.proc = None
+
+    def grab(self):
+        import tempfile
+        import numpy as np
+        with self.lock:
+            for _ in range(2):                                    # 쉬다가 스스로 닫혔으면 한 번 다시 띄운다
+                if self.proc is None or self.proc.poll() is not None:
+                    self.proc = None
+                    self._start()
+                    if self.proc is None:
+                        return None
+                with tempfile.TemporaryDirectory() as folder:
+                    path = Path(folder) / 'shot.npz'
+                    try:
+                        self.proc.stdin.write(f'grab {path}\n')
+                        self.proc.stdin.flush()
+                    except (BrokenPipeError, OSError):
+                        self.proc = None
+                        continue
+                    reply = self._reply(self.GRAB_S)
+                    if reply == 'ok':
+                        with np.load(path) as shot:
+                            return shot['bgr'], shot['depth']
+                self._kill()
+                if reply is not None:                             # 카메라가 답은 했지만 실패: 다시 띄우지 않는다
+                    return None
+            return None
+
+    def release(self):
+        """카메라를 놓아 준다(로봇 작업 전·서버 종료 때). 닫는 데 1초쯤 걸린다."""
+        with self.lock:
+            if self.proc is None:
+                return
+            if self.proc.poll() is None:
+                try:
+                    self.proc.stdin.write('quit\n')
+                    self.proc.stdin.flush()
+                    self.proc.wait(self.CLOSE_S)
+                except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+                    pass
+            self._kill()
+
+
+CAMERA = CameraWorker()
+
+
 def grab_astra():
-    """위 카메라 한 장(RGB, 깊이 mm). 기존 촬영 명령을 별도 프로세스로 실행한다(카메라 드라이버를 서버 프로세스에 남기지 않는다)."""
-    import subprocess
+    """위 카메라 한 장(RGB, 깊이 mm). 열어 둔 카메라 프로세스(CameraWorker)에서 받고, 안 되면 예전처럼 촬영 명령을 따로 실행한다."""
+    shot = CAMERA.grab()
+    if shot is not None:
+        return shot
+    return grab_astra_once()
+
+
+def grab_astra_once():
+    """기존 촬영 명령을 별도 프로세스로 한 번 실행한다(카메라를 열고 한 장 찍고 닫는다)."""
     import tempfile
     import cv2
     import numpy as np
@@ -289,6 +414,9 @@ FAR_CLEAR_M = .42        # 이보다 먼 것은 작업 범위 밖(케이블·설
 ARM_HEIGHT_MM = 100.     # 이보다 높은 '등록 안 된 물체'는 로봇팔 자신(등록 물체는 40mm 이하)
 
 
+IN_TRAY_SCENE_MM = 70.       # 화면 판단에서 '칸 안'으로 보는 칸 중심 거리(칸 92×100mm의 모서리까지). 칸 안 물체 윗면은 칸 중심에서 50~70mm 떨어져 잡히기도 한다
+
+
 def tray_slots(bgr, depth):
     """지금 트레이 칸 위치({번호: x_mm, y_mm ...}) 또는 None. 칸에 물체가 들어 있으면 실시간으로 칸 바닥을 못 찾으므로
     저장해 둔 빈 트레이 사진을 쓰고, 트레이가 조금 밀렸으면 밀린 만큼 옮긴다(plan_sort와 같은 방식)."""
@@ -303,15 +431,24 @@ def tray_slots(bgr, depth):
         rgb, dep = menu.TRAY_FRAME
         if not (rgb.exists() and dep.exists()):
             return None
-        from tray.tray_frame_check import tray_offset_px, register_tray, move_slots
+        from tray.tray_frame_check import tray_offset_px, register_tray, move_slots, GOOD_SCORE
         stored_bgr, stored_depth = cv2.imread(str(rgb)), np.load(dep)
         stored = detect_tray(stored_bgr, stored_depth, root, first_end='far_from_base')
         if not stored.get('found'):
             return None
-        if tray_offset_px(stored_bgr, bgr, depth=stored_depth, root=root)['ok']:
+        offset = tray_offset_px(stored_bgr, bgr, depth=stored_depth, root=root)
+        if offset['ok']:
             return stored['slots']
         moved = register_tray(stored_bgr, bgr, depth=stored_depth, root=root)
-        return move_slots(stored['slots'], moved, root) if moved['ok'] else None
+        if moved['ok']:
+            return move_slots(stored['slots'], moved, root)
+        # 화면 판단용(집기 계획에는 쓰지 않는다): 1번 칸에 넣은 물체가 트레이 끝 모서리 둘을 가리면 맞는 모서리가 하나뿐이다(2026-10-22).
+        # 남은 모서리가 정확히 맞고, 나머지가 다른 자리에도 확실히 맞지 않으면(가려짐) 트레이가 그대로라고 보고 저장한 칸을 쓴다.
+        # 나머지 모서리가 다른 자리에 확실히 맞으면 트레이가 움직인 것이다. 안 그러면 칸 안 물체가 책상 물체로 보인다.
+        good = [i for i, (shift, score) in enumerate(zip(offset['offsets_px'], offset['scores'])) if shift <= 3. and score >= GOOD_SCORE]
+        if good and all(i in good or score < GOOD_SCORE for i, score in enumerate(offset['scores'])):
+            return stored['slots']
+        return None
     except Exception:
         return None
 
@@ -354,7 +491,7 @@ def describe_scene(bgr, depth):
                 xy = None
         if xy is not None and item['label'] == 'unknown' and not BASE_CLEAR_M <= (float(xy[0]) ** 2 + float(xy[1]) ** 2) ** .5 <= FAR_CLEAR_M:
             continue        # 로봇 밑동 근처(로봇 자신)·작업 범위 밖(케이블 등)
-        if slot_containing(xy, slots) is not None:
+        if slot_containing(xy, slots, radius_mm=IN_TRAY_SCENE_MM) is not None:
             continue        # 칸 안: 무엇이 들어 있는지는 아래에서 칸마다 높이로 따로 본다(칸막이·숫자가 '등록 안 된 물체'로 잡히기도 한다)
         objects.append(dict(label=item['label'], name=NAMES.get(item['label'], item['label']),
                             pixel=[int(v) for v in item.get('top_center_px', item.get('center_px', (0, 0)))],
@@ -623,31 +760,54 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
     return Handler
 
 
+def shutdown_arm(arm, wait_s=25.):
+    """서버를 끌 때 실행 중인 작업이 있으면 정지 신호를 보내고 끝날 때까지 기다린다(집기 프로세스가 게인 복구·팔 고정·펌프 정지를 마치도록).
+    서비스(systemd)는 프로세스 그룹 전체에 신호를 보내지만, 백그라운드로 켠 경우에는 이 서버만 신호를 받으므로 여기서 직접 전달한다."""
+    if arm.status()['state'] != 'busy':
+        return True
+    print('실행 중인 작업에 정지를 보내고 정리가 끝나길 기다립니다…', flush=True)
+    arm.stop()
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if arm.status()['state'] != 'busy':
+            return True
+        time.sleep(.2)
+    print('정리가 끝나지 않았습니다. 팔 상태를 확인하세요.', flush=True)
+    return False
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--host', default='127.0.0.1')
-    parser.add_argument('--port', type=int, default=8000)
+    parser.add_argument('--port', type=int, default=int(os.environ.get('ARM_API_PORT') or 8000))
     parser.add_argument('--cors-origin', help='웹 화면이 브라우저에서 직접 부를 때 허용할 주소(예: http://192.168.0.10:3000)')
-    parser.add_argument('--token', help='Authorization: Bearer <값>. 127.0.0.1이 아닌 주소로 열려면 필수')
+    parser.add_argument('--token', default=os.environ.get('ARM_API_TOKEN') or None,
+                        help='Authorization: Bearer <값>. 127.0.0.1이 아닌 주소로 열려면 필수(없으면 ARM_API_TOKEN 환경 변수)')
     args = parser.parse_args(argv)
     if args.host not in ('127.0.0.1', 'localhost', '::1') and not args.token:
         parser.error('다른 장비에서 접근하게 열려면 --token이 필요합니다(로봇을 움직이는 API입니다).')
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(Arm(), args.token, args.cors_origin))
+    arm = Arm()
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(arm, args.token, args.cors_origin))
     print(f'로봇팔 API: http://{args.host}:{args.port}  (Ctrl+C로 종료)', flush=True)
 
     def warm_stt():                                  # 첫 음성 명령이 느리지 않게 Whisper를 미리 불러 둔다(없으면 조용히 넘어간다)
         try:
             arm_stt.load()
-            print(f'로컬 음성 인식 준비됨: Whisper {arm_stt.MODEL} ({arm_stt.DEVICE})', flush=True)
+            print(f'음성 인식 준비됨: {arm_stt.describe()}', flush=True)
         except arm_stt.SttUnavailable as exc:
             print(f'로컬 음성 인식 꺼짐: {exc}', flush=True)
     threading.Thread(target=warm_stt, daemon=True).start()
+    # 백그라운드(nohup)로 켜면 SIGINT가 무시된 채로 시작한다. 직접 받아서 아래 정리를 거치게 한다. SIGTERM(kill)도 같게 취급한다.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+        shutdown_arm(arm)
+        CAMERA.release()
     return 0
 
 

@@ -12,3 +12,8 @@ output/**/contact_rgb_frames/
 하드웨어 설명/SO101_진공흡착팔_CAD/*.stp
 calibration/openni2_redist/
 .swarm/
+
+# 컴퓨터마다 다른 장치 경로·가상환경(Raspberry Pi 이전)
+config/devices.json
+.venv/
+pi/arm-api.env

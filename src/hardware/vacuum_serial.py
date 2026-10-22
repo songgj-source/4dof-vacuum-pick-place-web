@@ -13,9 +13,11 @@ class SerialVacuum:
         self.device=Path(device);self.serial=None;self.suction_requested=False
 
     def open(self):
+        from hardware import devices
+        named=devices.configured('pump_port')      # 직접 지정한 경로면 CP2102_0001 이름 검사를 하지 않는다
         if (self.device.parent!=Path('/dev/serial/by-id') or not self.device.is_symlink()
-                or 'CP2102' not in self.device.name or '_0001-' not in self.device.name):
-            raise ValueError('expected stable CP2102_0001 pump device required')
+                or (not named and ('CP2102' not in self.device.name or '_0001-' not in self.device.name))):
+            raise ValueError(f'expected stable by-id pump device required: {self.device} (ARM_PUMP_PORT로 지정 가능)')
         if self.serial is not None:raise RuntimeError('pump already open')
         require_device_available(self.device.resolve())
         import serial

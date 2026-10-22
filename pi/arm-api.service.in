@@ -1,0 +1,22 @@
+# SO-101 로봇팔 REST API. install.sh가 사용자와 프로젝트 경로를 채워 /etc/systemd/system/arm-api.service로 설치한다.
+# 서버를 켜는 것만으로 로봇은 움직이지 않는다(명령을 받아야 움직인다).
+[Unit]
+Description=SO-101 vacuum arm REST API (arm_api.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@ROOT@
+EnvironmentFile=/etc/arm-api.env
+ExecStart=@ROOT@/.venv/bin/python scripts/arm_api.py --host 0.0.0.0
+Restart=on-failure
+RestartSec=3
+# 멈출 때 집기 프로세스에도 SIGINT를 보내 게인 복구·팔 고정·펌프 정지를 마치게 한다(강제 종료 전 30초 기다림)
+KillSignal=SIGINT
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -7,7 +7,27 @@ import time
 import cv2
 import numpy as np
 
-DEFAULT_RUNTIME = Path(__file__).resolve().parents[2] / 'calibration' / 'openni2_redist'
+from hardware import devices
+DEFAULT_RUNTIME = Path(devices.get('openni2_runtime'))   # ARM_OPENNI2_RUNTIME / config/devices.json / calibration/openni2_redist
+
+
+def use_large_device_info(openni2, low):
+    """primesense(OpenNI 2.2 기준)는 OniDeviceInfo를 772바이트로 아는데, Orbbec 공식 OpenNI2 2.3.0.8x는 끝에 char[256]이 하나 더 있는
+    1028바이트를 쓴다. 그대로 두면 장치 정보를 읽을 때마다 힙을 256바이트 넘어 써서, 한참 뒤 'malloc(): invalid size'로 프로세스가 죽는다
+    (Raspberry Pi에서 Orbbec 런타임을 쓰는 팀원 코드에서 확인된 문제). 구조체를 1028바이트짜리로 바꾸고 이를 쓰는 함수의 인자형도 맞춘다.
+    initialize() 뒤에 한 번만 부른다. 이미 충분히 크면 아무것도 하지 않는다. 처음 한 장치만 읽으므로 목록 간격 차이는 영향이 없다."""
+    if ctypes.sizeof(low.OniDeviceInfo) >= 1028:
+        return False
+
+    class DeviceInfo(ctypes.Structure):
+        _fields_ = [('uri', ctypes.c_char * 256), ('vendor', ctypes.c_char * 256), ('name', ctypes.c_char * 256),
+                    ('usbVendorId', ctypes.c_ushort), ('usbProductId', ctypes.c_ushort), ('reserved', ctypes.c_char * 256)]
+    pointer = ctypes.POINTER(DeviceInfo)
+    low.OniDeviceInfo = openni2.DeviceInfo = DeviceInfo
+    low._oniGetDeviceList.argtypes = [ctypes.POINTER(pointer), ctypes.POINTER(ctypes.c_int)]
+    low._oniReleaseDeviceList.argtypes = [pointer]
+    low._oniDeviceGetInfo.argtypes = [low.OniDeviceHandle, pointer]
+    return True
 
 
 class AstraCalibrationCamera:
@@ -18,6 +38,7 @@ class AstraCalibrationCamera:
         self.original_properties = {}
         self.cleanup_warnings = []
         openni2.initialize(str(runtime))
+        use_large_device_info(openni2, _openni2)
         try:
             self.device = openni2.Device.open_any()
             self.color = self.device.create_color_stream()
@@ -37,8 +58,14 @@ class AstraCalibrationCamera:
                 ('exposure', _openni2.ONI_STREAM_PROPERTY_EXPOSURE, ctypes.c_int, 20),
                 ('auto_white_balance', _openni2.ONI_STREAM_PROPERTY_AUTO_WHITE_BALANCE, ctypes.c_int, 0),
                 ('gain', _openni2.ONI_STREAM_PROPERTY_GAIN, ctypes.c_int, 30)]
+            # The ARM64 Orbbec build (Pi) rejects the flicker property; skip what the driver cannot read.
+            self.unsupported_properties = []
             for name, prop, typ, value in self.properties:
-                self.original_properties[name] = self.color.get_property(prop, typ).value
+                try:
+                    self.original_properties[name] = self.color.get_property(prop, typ).value
+                except openni2.OpenNIError:
+                    self.unsupported_properties.append(name)
+            self.properties = [p for p in self.properties if p[0] not in self.unsupported_properties]
             if fixed_exposure:
                 for _, prop, typ, value in self.properties:
                     self.color.set_property(prop, typ(value))
@@ -51,6 +78,7 @@ class AstraCalibrationCamera:
                 'mirroring': False, 'registration_mode': int(self.device.get_image_registration_mode()),
                 'depth_units': 'mm', 'depth_Z_color_optical_contract_verified': False,
                 'fixed_exposure': fixed_exposure, 'original_color_properties': self.original_properties,
+                'unsupported_color_properties': self.unsupported_properties,
                 'capture_color_properties': {name: self.color.get_property(prop, typ).value
                                              for name, prop, typ, _ in self.properties}}
             self.color.start()

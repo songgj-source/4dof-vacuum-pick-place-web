@@ -36,8 +36,15 @@ class ApiBase(unittest.TestCase):
         for target in (patch.object(arm_api.menu, 'live_view_running', return_value=False),
                        patch.object(arm_api.menu, 'newest_result', return_value=None)):
             target.start(); self.addCleanup(target.stop)
-        self.arm = arm_api.Arm(run=self.fake_run, read_state=lambda: self.state)
+        self.holds = 0
+        self.hold_works = True
+        self.arm = arm_api.Arm(run=self.fake_run, read_state=lambda: self.state, hold=self.fake_hold)
         self.start_server()
+
+    def fake_hold(self):                       # servo_driver.py hold 대신(실제 서보를 건드리지 않는다)
+        self.holds += 1
+        if self.hold_works:
+            self.state = 'ok'
 
     def start_server(self, token=None, cors_origin=None):
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), arm_api.make_handler(self.arm, token, cors_origin))
@@ -107,12 +114,35 @@ class ApiTests(ApiBase):
         self.assertEqual((status, body['reason_code']), (409, 'busy'))
         self.release.set()
 
-    def test_does_not_move_when_torque_is_off(self):
-        self.state = 'off_at_home'
+    def test_does_not_move_when_torque_is_off_away_from_home(self):
+        self.state = 'off_elsewhere'
         _, body = self.call('POST', '/pick_place', {'object': 'red_cube'})
         task = self.wait_done(body['task_id'])
         self.assertEqual(task['result']['reason_code'], 'torque_off')
-        self.assertEqual(self.commands, [])
+        self.assertIn('HOME 자세로 옮긴 뒤', task['result']['reason'])
+        self.assertEqual((self.commands, self.holds), ([], 0))             # 토크를 켜지도 않는다
+
+    def test_torque_is_turned_on_automatically_at_home(self):
+        self.state = 'off_at_home'
+        self.release.set()
+        _, body = self.call('POST', '/pick_place', {'object': 'red_cube'})
+        task = self.wait_done(body['task_id'])
+        self.assertEqual((task['state'], self.holds), ('done', 1))
+        self.assertEqual(task['phases'][0]['phase'], 'torque_on')
+        self.assertIn('red_cube', self.commands[0])
+
+    def test_failed_torque_on_does_not_move(self):
+        self.state, self.hold_works = 'off_at_home', False
+        _, body = self.call('POST', '/pick_place', {'object': 'red_cube'})
+        task = self.wait_done(body['task_id'])
+        self.assertEqual((task['result']['reason_code'], self.commands), ('torque_off', []))
+
+    def test_near_fold_is_held_then_aligned_to_home_before_picking(self):
+        self.state = 'off_near_fold'
+        self.release.set()
+        _, body = self.call('POST', '/pick_place', {'object': 'red_cube'})
+        self.wait_done(body['task_id'])
+        self.assertEqual(self.commands[0], arm_api.HOME_CMD)
 
     def test_failure_gets_a_stable_reason_code(self):
         self.outcome = (1, dict(ok=False, reason='unknown을 이 방향으로 놓을 여유가 부족합니다(외곽 여유 2mm, 필요 5mm).'), 1.)
@@ -389,7 +419,7 @@ class ChatTests(ApiBase):
 
     def test_status_is_answered_immediately(self):
         llm = FakeLlm([say('', call('get_arm_status')), say('대기 중입니다.')])
-        status, body = self.chat(llm, '상태 알려줘')
+        status, body = self.chat(llm, '팔 어때?')                           # 규칙에 없는 말은 LLM이 도구로 확인한다
         self.assertEqual((body['reply'], body['proposal']), ('대기 중입니다.', None))
         self.assertIn('idle', [m['content'] for m in llm.requests[1] if m['role'] == 'tool'][0])
 
@@ -402,6 +432,14 @@ class ChatTests(ApiBase):
         self.assertEqual(body['reply'], '정지 명령을 보냈습니다.')
         self.assertTrue(self.interrupted.wait(2))
 
+    def test_robot_name_is_stripped_and_answered_by_rule(self):
+        status, body = self.chat(FakeLlm([]), '자비스야, 홈으로 돌아가')        # 이름을 떼고 규칙으로 처리한다(LLM을 부르지 않는다)
+        self.assertEqual((body['proposal'], body['source']), ({'action': 'return_home'}, 'rule'))
+        status, body = self.chat(FakeLlm([]), '자비스')
+        self.assertIn('자비스', body['reply'])
+        status, body = self.chat(FakeLlm([]), '너 이름이 뭐야?')
+        self.assertEqual((body['reply'], body['proposal']), ('저는 자비스입니다. 물체를 칸에 넣거나 책상을 정리해 드려요.', None))
+
     def test_look_at_table_returns_scene_but_hides_image_from_model(self):
         import numpy as np
         frame = (np.zeros((48, 64, 3), np.uint8), np.zeros((48, 64), np.uint16))
@@ -409,11 +447,41 @@ class ChatTests(ApiBase):
                      available_menus=[2, 5, 6], note='n')
         llm = FakeLlm([say('', call('look_at_table')), say('빨간 정육면체가 보입니다.')])
         with patch.object(arm_api, 'grab_astra', return_value=frame), patch.object(arm_api, 'describe_scene', return_value=scene):
-            status, body = self.chat(llm, '작업대에 뭐 있어?')
+            status, body = self.chat(llm, '책상 위 물건 알려줘')
         self.assertEqual(body['scene']['available_menus'], [2, 5, 6])
         self.assertIn('image_jpeg_base64', body['scene'])                      # 웹 화면에는 사진을 준다
         tool_reply = [m['content'] for m in llm.requests[1] if m['role'] == 'tool'][0]
         self.assertNotIn('image_jpeg_base64', tool_reply)                      # 모델에는 빼고 준다
+
+    def test_again_repeats_the_last_task(self):
+        status, body = self.chat(FakeLlm([]), '다시 해줘')
+        self.assertEqual((body['proposal'], body['source']), (None, 'rule'))       # 아직 한 작업이 없다
+        self.release.set()
+        _, started = self.call('POST', '/pick_place', {'object': 'red_cube', 'slot': 3})
+        self.wait_done(started['task_id'])
+        status, body = self.chat(FakeLlm([]), '자비스, 다시 해줘')
+        self.assertEqual(body['proposal'], {'action': 'pick_place', 'object': 'red_cube', 'slot': 3})
+
+    def test_llm_claiming_an_action_without_a_tool_is_corrected(self):
+        status, body = self.chat(FakeLlm([say('흰 상자, 빨간 정육면체, 줄자를 차례로 넣습니다. 바로 시작합니다.')]), '그거 해')
+        self.assertIsNone(body['proposal'])
+        self.assertIn('아무것도 실행하지 않았습니다', body['reply'])
+
+    def test_status_and_table_questions_skip_the_llm(self):
+        import numpy as np
+        status, body = self.chat(FakeLlm([]), '자비스, 지금 상태 어때?')           # LLM을 부르면 FakeLlm이 실패한다
+        self.assertEqual((body['source'], body['proposal']), ('rule', None))
+        self.assertTrue(body['reply'].startswith('대기 중입니다.'))
+        frame = (np.zeros((48, 64, 3), np.uint8), np.zeros((48, 64), np.uint16))
+        scene = dict(objects=[dict(label='red_cube', name='빨간 정육면체', pixel=[1, 2], position_mm=[250, 0], pickable=True)],
+                     available_menus=[2, 5, 6], note='n')
+        with patch.object(arm_api, 'grab_astra', return_value=frame), patch.object(arm_api, 'describe_scene', return_value=scene):
+            status, body = self.chat(FakeLlm([]), '작업대에 뭐 있어?')
+        self.assertEqual(body['source'], 'rule')
+        self.assertIn('빨간 정육면체', body['reply'])
+        self.assertEqual(body['proposal']['action'], 'pick_all')                 # 정리는 제안만 하고 실행하지 않는다
+        status, body = self.chat(FakeLlm([say('', call('sort_object', object_name='red_cube')), say('확인해 주세요.')]), '작업대에 있는 빨간 큐브 넣어줘')
+        self.assertEqual(body['proposal'], {'action': 'pick_place', 'object': 'red_cube'})
 
     def test_history_is_sent_and_arguments_as_json_string_are_accepted(self):
         llm = FakeLlm([{'role': 'assistant', 'content': '', 'tool_calls': [{'function': {'name': 'sort_object', 'arguments': '{"object_name": "white_box"}'}}]},
@@ -533,7 +601,7 @@ class ChatTests(ApiBase):
 
     def test_web_page_is_served(self):
         with urllib.request.urlopen(self.base + '/', timeout=5) as response:
-            self.assertIn('물체 분류기', response.read().decode())
+            self.assertIn('<title>자비스</title>', response.read().decode())
 
     def test_ollama_down_reports_setup_needed(self):
         import arm_llm
@@ -548,6 +616,100 @@ class ChatTests(ApiBase):
             with self.assertRaises(arm_llm.LlmUnavailable):
                 arm_llm.OllamaClient(host='127.0.0.1:1')([], [])
         self.assertEqual(arm_llm.OllamaClient(host='127.0.0.1:11434').host, 'http://127.0.0.1:11434')
+
+
+class TraySlotFallbackTests(unittest.TestCase):
+    """칸에 넣은 물체가 트레이 모서리를 가려도 저장한 칸을 쓴다(화면 판단용). 다른 자리에 확실히 맞는 모서리가 있으면 쓰지 않는다."""
+
+    def slots_with(self, scores, offsets):
+        import numpy as np, tempfile
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
+        rgb, dep = Path(tmp.name) / 'rgb.png', Path(tmp.name) / 'depth.npy'
+        rgb.write_bytes(b'x'); np.save(dep, np.zeros((2, 2)))
+        stored = {1: {'x_mm': 340., 'y_mm': -170.}}
+        detect = lambda bgr, depth, root, first_end=None: dict(found=False) if bgr is not None and bgr.shape == (480, 640, 3) and bgr.any() else dict(found=True, slots=stored)
+        offset = dict(ok=False, offsets_px=offsets, scores=scores)
+        with patch.object(arm_api.menu, 'TRAY_FRAME', (rgb, dep)), patch('cv2.imread', return_value=np.zeros((480, 640, 3), np.uint8)), \
+             patch('tray.tray_detect.detect_tray', side_effect=detect), \
+             patch('tray.tray_frame_check.tray_offset_px', return_value=offset), \
+             patch('tray.tray_frame_check.register_tray', return_value=dict(ok=False)):
+            return arm_api.tray_slots(np.ones((480, 640, 3), np.uint8), np.zeros((480, 640), np.uint16))
+
+    def test_occluded_corners_keep_the_stored_slots(self):
+        self.assertEqual(self.slots_with([.80, .61, .93], [25.5, 24.2, 2.3]), {1: {'x_mm': 340., 'y_mm': -170.}})
+
+    def test_a_corner_matching_elsewhere_means_the_tray_moved(self):
+        self.assertIsNone(self.slots_with([.95, .61, .93], [12., 24.2, 2.3]))
+
+
+class CameraWorkerTests(unittest.TestCase):
+    """열어 둔 카메라 프로세스: 사진을 받고, 작업 전에 닫고, 다시 부르면 새로 띄운다. 실패하면 None(예전 방식으로 찍게)."""
+    FAKE = """
+import sys, numpy as np
+print('ready', flush=True)
+for line in sys.stdin:
+    cmd, _, path = line.strip().partition(' ')
+    if cmd == 'quit': break
+    if MODE == 'fail': print('error camera', flush=True); continue
+    np.savez(path, bgr=np.full((4, 4, 3), 7, np.uint8), depth=np.full((4, 4), 500, np.uint16)); print('ok', flush=True)
+"""
+
+    def worker(self, mode='ok'):
+        import tempfile
+        folder = tempfile.TemporaryDirectory(); self.addCleanup(folder.cleanup)
+        script = Path(folder.name) / 'fake_worker.py'
+        script.write_text(f'MODE = {mode!r}\n' + self.FAKE)
+        camera = arm_api.CameraWorker([sys.executable, str(script)])
+        self.addCleanup(camera.release)
+        return camera
+
+    def test_grab_release_and_restart(self):
+        camera = self.worker()
+        bgr, depth = camera.grab()
+        self.assertEqual((int(bgr[0, 0, 0]), int(depth[0, 0])), (7, 500))
+        first = camera.proc.pid
+        camera.grab()
+        self.assertEqual(camera.proc.pid, first)                   # 같은 프로세스로 바로 찍는다
+        camera.release()
+        self.assertIsNone(camera.proc)
+        self.assertIsNotNone(camera.grab())                        # 작업 뒤에는 새로 띄운다
+
+    def test_camera_error_returns_none(self):
+        camera = self.worker('fail')
+        self.assertIsNone(camera.grab())
+        self.assertIsNone(camera.proc)
+
+    def test_task_releases_the_camera_first(self):
+        released = []
+        arm = arm_api.Arm(run=lambda *a, **k: (0, dict(home_return_complete=True), 0.), read_state=lambda: 'ok')
+        with patch.object(arm_api.CAMERA, 'release', side_effect=lambda: released.append(1)), \
+             patch.object(arm_api.menu, 'live_view_running', return_value=False):
+            arm._execute('t1', 'return_home', {})
+        self.assertEqual(released, [1])
+
+
+class SteadySceneTests(unittest.TestCase):
+    """사진 한 장이 튀어도 두 번 나온 판단을 쓴다."""
+
+    def run_with(self, scenes):
+        import numpy as np
+        frames = iter(range(10))
+        grab = lambda: (np.full((2, 2, 3), next(frames), np.uint8), np.zeros((2, 2), np.uint16))
+        with patch.object(arm_api, 'describe_scene', side_effect=[dict(objects=[dict(label=l) for l in s], in_tray=[]) for s in scenes]):
+            return arm_api.Arm._steady_scene(grab)
+
+    def test_two_matching_shots_are_enough(self):
+        bgr, scene = self.run_with([['red_cube'], ['red_cube']])
+        self.assertEqual((scene['shots'], int(bgr[0, 0, 0])), (2, 1))
+
+    def test_an_odd_shot_is_outvoted(self):
+        bgr, scene = self.run_with([['red_cube'], ['red_cube', 'unknown', 'unknown'], ['red_cube']])
+        self.assertEqual(([o['label'] for o in scene['objects']], scene['shots']), (['red_cube'], 3))
+        self.assertNotIn('unstable', scene)
+
+    def test_all_different_is_marked_unstable(self):
+        bgr, scene = self.run_with([['red_cube'], ['white_box'], []])
+        self.assertTrue(scene['unstable'])
 
 
 class SttTests(ApiBase):

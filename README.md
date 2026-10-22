@@ -77,6 +77,8 @@ python scripts/plan_sort.py --command "빨간 상자 3번 칸에 넣어줘"   # 
 python scripts/run_sort.py --execute --supported --object red_cube  # 실제 구동 (재시도 포함)
 ```
 
+**Raspberry Pi(로봇 위)로 옮기기**: [`pi/README.md`](pi/README.md) — 설치 스크립트(`pi/install.sh`), systemd 서비스, 장치 경로 설정(`ARM_*_PORT` 등), 노트북 음성 인식 서버(`scripts/stt_server.py`), 장치 점검(`scripts/check_devices.py`).
+
 `--execute --supported` 없이 실행하면 로봇을 움직이지 않고 계획만 출력합니다. 개발 환경은 conda `lerobot_312`(Python 3.12)입니다.
 
 **세 물체 모두 넣기(메뉴 4, 웹·REST `pick_all`)**는 연속으로 정리합니다.

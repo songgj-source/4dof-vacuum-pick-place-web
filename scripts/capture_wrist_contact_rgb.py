@@ -6,9 +6,13 @@ import json
 from pathlib import Path
 import time
 
+import sys
+
 import cv2
 
-DEVICE=Path('/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-720P_SN0001-video-index0')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from hardware import devices
+DEVICE=Path(devices.get('wrist_camera'))   # ARM_WRIST_CAMERA / config/devices.json / 기본값
 
 
 def main():

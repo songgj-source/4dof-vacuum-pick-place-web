@@ -1,0 +1,6 @@
+# Raspberry Pi(로봇 위)에서 arm_api.py·집기 실행에 필요한 것만. LLM(Ollama)·음성 인식(Whisper)은 노트북에서 돌린다.
+numpy>=1.26
+opencv-python-headless>=4.10
+pyserial>=3.5
+feetech-servo-sdk==1.0.0          # import scservo_sdk (서보 버스)
+primesense==2.2.0.30.post5        # import primesense (Astra OpenNI2 파이썬 연결, 순수 파이썬)

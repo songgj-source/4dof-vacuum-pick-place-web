@@ -11,7 +11,7 @@ from pathlib import Path
 import argparse,json,sys,time,math,signal,subprocess,hashlib
 from datetime import datetime,timezone
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'src'))
-WRIST_CAMERA=Path('/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-720P_SN0001-video-index0')
+WRIST_CAMERA=None   # 아래 import 뒤에 정한다(ARM_WRIST_CAMERA / config/devices.json / 기본값)
 from hardware.servo_mapping import MappingProfile
 from hardware.servo_transport import ServoTransport
 from hardware.servo_driver import ServoDriver
@@ -41,7 +41,9 @@ CHAIN_START_Z=(.070,.135)      # 놓기가 끝나는 운반 높이(70~130mm). �
 CHAIN_START_R=(.14,.32)        # HOME 복귀 시작 구간과 같은 반경(먼 칸은 놓은 뒤 이 안으로 물러나 선다)
 CHAIN_PITCH_TOL=math.radians(5.)   # 공구가 수직(놓은 뒤 세우기 완료)이어야 한다
 CHAIN_TRANSIT_Z=.120           # 트레이에서 물체로 갈 때의 최소 높이: 접근 경유점(120mm)과 같다. 물체는 40mm 이하, 트레이 벽은 운반 높이로 이미 넘는다
-PUMP='/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0'
+from hardware import devices
+PUMP=devices.get('pump_port')      # ARM_PUMP_PORT / config/devices.json / 기본값
+WRIST_CAMERA=Path(devices.get('wrist_camera'))
 
 
 def main(argv=None):

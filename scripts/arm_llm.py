@@ -16,10 +16,11 @@ import urllib.error
 import urllib.request
 
 MODEL = os.environ.get('ARM_LLM_MODEL', 'qwen3.5:9b')
+ROBOT_NAME = os.environ.get('ARM_ROBOT_NAME', '자비스')
 MAX_TURNS = 3        # 상태·사진을 본 뒤 답하는 정도까지만 반복한다
 OBJECTS = ('white_box', 'red_cube', 'tape_measure', 'unknown')
 
-SYSTEM = """당신은 SO-101 4축 진공흡착 로봇팔의 조작 도우미입니다. 사용자의 한국어 요청을 도구 호출로 바꿉니다.
+SYSTEM = f"""당신은 SO-101 4축 진공흡착 로봇팔 '{ROBOT_NAME}'입니다. 이름을 물으면 {ROBOT_NAME}라고 답하세요. 사용자의 한국어 요청을 도구 호출로 바꿉니다.
 물체: white_box(흰 상자, 기본 1번 칸), red_cube(빨간 정육면체·큐브, 기본 2번 칸), tape_measure(줄자, 기본 3번 칸),
 unknown(목록에 없는 새 물체: 시작 뒤 화면 안내에 따라 사람이 물체를 놓는다). 칸은 1·2·3번뿐입니다.
 - 물체를 넣으라는 요청은 sort_object를 호출하세요. 칸을 말하지 않으면 slot을 빼세요(기본 칸). unknown은 칸이 꼭 필요하니 없으면 되물으세요.
@@ -66,11 +67,34 @@ _PUT = re.compile(r'넣|정리|옮겨|분류|담아|치워')
 _TIDY = re.compile(r'정리|치워|분류')     # 물체 이름 없이 "책상 정리해줘", "치워줘", "분류해줘" = 세 물체 모두 넣기
 _ALL = re.compile(r'(다|전부|모두|세\s*개|셋\s*다|싹\s*다)\s*(다\s*)?(넣|정리|옮겨|분류|담아)')
 _HOME = re.compile(r'(home|홈)\s*(으로|자세로|자세)?\s*(돌아|복귀|가|보내|돌려)|팔\s*(을\s*)?접어|(home|홈)\s*복귀|(home|홈)\s*자세\s*로?\s*[.!]*$', re.I)
+_CALL = re.compile(r'^\s*(자비스|재비스|자비쓰|jarvis)\s*(야|아|님)?[\s,.!~]*', re.I)   # "자비스, 홈으로 가" 같은 부르는 말
+_WHO = re.compile(r'이름이?\s*(뭐|무엇)|누구(야|니|세요|예요|에요)')
+# 움직이지 않는 질문은 LLM(노트북까지 왕복 수 초)을 거치지 않고 바로 답한다
+_LOOK = re.compile(r'(뭐|뭘|무엇|무슨\s*물체).{0,8}(있|보여|넣을|놓여)|작업대|다시\s*(봐|보기)')
+_STATUS = re.compile(r'상태|뭐\s*하고\s*있|어디까지|진행\s*(상황|중)')
+_ARM_STATES = {'ok': '팔은 토크가 켜져 있어 움직일 수 있습니다.',
+               'off_at_home': '팔은 HOME 위치에 있고 토크가 꺼져 있습니다. 작업을 시키면 토크를 자동으로 켭니다.',
+               'off_near_fold': '팔이 접힌 HOME 근처에 있고 토크가 꺼져 있습니다. 작업을 시키면 토크를 켜고 HOME에 맞춘 뒤 시작합니다.',
+               'off_elsewhere': '토크가 꺼져 있고 팔이 HOME이 아닌 곳에 있습니다. 팔을 손으로 받쳐 HOME 자세로 옮겨 주세요.',
+               'mixed': '일부 관절만 토크가 켜져 있습니다.',
+               'unknown': '서보 상태를 읽지 못했습니다(USB와 전원을 확인하세요).'}
+_AGAIN = re.compile(r'^\s*(다시|한\s*번\s*더|재시도)\s*(해|해줘|해\s*줘|해봐|해\s*봐|하자|시도해|시도해줘|실행해|실행해줘)?\s*[.!]*\s*$')
+_CLAIMS_ACTION = re.compile(r'(시작합니다|진행합니다|넣습니다|옮깁니다|정리합니다|돌아갑니다|실행합니다)')   # 도구 없이 이렇게 말하면 거짓 안내다
 _NOT = re.compile(r'(넣|정리|옮기|접)지\s*마|말고|하지\s*마|\?$|까\s*[?.]?\s*$|나요\s*[?.]?\s*$')
 
 
+def strip_call(text):
+    """앞에 붙은 로봇 이름("자비스야,")을 뗀다."""
+    match = _CALL.match(text)
+    return text[match.end():] if match else text
+
+
 def rule_command(text):
-    """분명한 명령이면 ('stop'|'proposal'|'ask', 값), 아니면 None(LLM에 넘긴다)."""
+    """분명한 명령이면 ('stop'|'proposal'|'ask', 값), 아니면 None(LLM에 넘긴다). text는 strip_call을 거친 말."""
+    if not text.strip():                                # 이름만 불렀다
+        return 'ask', f'네, {ROBOT_NAME}입니다. 말씀하세요.'
+    if _WHO.search(text):
+        return 'ask', f'저는 {ROBOT_NAME}입니다. 물체를 칸에 넣거나 책상을 정리해 드려요.'
     if _STOP.match(text):
         return 'stop', None
     t = text.strip()
@@ -266,9 +290,47 @@ def _result_for_model(result):
     return {k: v for k, v in result.items() if k != 'image_jpeg_base64'}
 
 
+def retry(arm):
+    """"다시 해줘": 마지막 작업을 다시 제안한다. 책상 정리는 사진을 새로 찍어 지금 책상에 있는 것만. 돌려주는 것: (제안 또는 None, 답, 장면 또는 None)."""
+    status = arm.status()
+    if status['state'] == 'busy':
+        return None, '지금 작업 중입니다. 끝난 뒤 다시 말해 주세요.', None
+    last = arm.task(status['task_id']) if status['task_id'] else None
+    if not last:
+        return None, '다시 할 작업이 없습니다. 무엇을 할까요?', None
+    params = last.get('params') or {}
+    if last['skill'] == 'pick_all':
+        return tidy(arm)
+    if last['skill'] == 'return_home':
+        proposal = {'action': 'return_home'}
+    elif last['skill'] == 'pick_place' and params.get('object') in OBJECTS:
+        proposal = {'action': 'pick_place', 'object': params['object']}
+        if params.get('slot'):
+            proposal['slot'] = params['slot']
+    else:
+        return None, '마지막 작업은 다시 할 수 없는 종류입니다. 무엇을 할지 말해 주세요.', None
+    proposal = normalize(proposal)
+    return proposal, proposal_reply(proposal), None
+
+
+def status_reply(arm):
+    status = arm.status()
+    if status['state'] == 'busy':
+        return f"{status['phase_label'] or status['skill']} 진행 중입니다({status['elapsed_s']}초)."
+    try:
+        state = arm.read_state()
+    except Exception:
+        state = 'unknown'
+    text = '대기 중입니다. ' + _ARM_STATES.get(state, f'팔 상태: {state}.')
+    if status['task_state'] == 'failed':
+        text += ' 마지막 작업은 실패했습니다.'
+    return text
+
+
 def chat(history, text, arm, client=None):
     """history: [{'role': 'user'|'assistant', 'content': 문자열}] (웹 화면이 보관), text: 이번 말.
     돌려주는 것: {'reply': 문장, 'proposal': 실행 대기 명령 또는 None, 'executed': 바로 실행한 명령 결과 목록, 'scene': 찍은 장면 또는 None}."""
+    text = strip_call(text)
     rule = rule_command(text)
     if rule is not None:
         kind, value = rule
@@ -281,6 +343,16 @@ def chat(history, text, arm, client=None):
             proposal, reply, scene = tidy(arm)
             return dict(reply=reply, proposal=proposal, executed=[], scene=scene, source='rule')
         return dict(reply=proposal_reply(value), proposal=value, executed=[], scene=None, source='rule')
+    if _AGAIN.match(text):
+        proposal, reply, scene = retry(arm)
+        return dict(reply=reply, proposal=proposal, executed=[], scene=scene, source='rule')
+    if not _PUT.search(text) and not _HOME.search(text):
+        if _LOOK.search(text):
+            found = situation(arm)
+            executed = [dict(command='look_at_table', result=dict(ok=True))] if found['scene'] else []
+            return dict(reply=found['reply'], proposal=found['proposal'], executed=executed, scene=found['scene'], source='rule')
+        if _STATUS.search(text):
+            return dict(reply=status_reply(arm), proposal=None, executed=[], scene=None, source='rule')
     messages = [{'role': 'system', 'content': SYSTEM}]
     messages += [{'role': m['role'], 'content': str(m['content'])} for m in history[-20:]
                  if m.get('role') in ('user', 'assistant') and m.get('content')]
@@ -329,4 +401,6 @@ def chat(history, text, arm, client=None):
         reply = proposal_reply(proposal)                 # 제안 뒤 문장은 서버가 정한다("넣는 중" 같은 오해 방지)
     elif any(e['command'] == 'stop' for e in executed):
         reply = stop_reply(next(e['result'] for e in executed if e['command'] == 'stop'))
+    elif not executed and _CLAIMS_ACTION.search(reply or ''):
+        reply = '무엇을 할지 분명하지 않아 아무것도 실행하지 않았습니다. 예: "흰 상자 넣어줘", "책상 정리해줘", "홈으로 돌아가".'
     return dict(reply=reply or '무엇을 할까요? 예: "빨간 큐브 넣어줘", "작업대에 뭐 있어?"', proposal=proposal, executed=executed, scene=scene, source='llm')
