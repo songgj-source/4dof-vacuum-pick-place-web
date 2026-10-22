@@ -40,7 +40,11 @@ def usb_id(tty):
 def cp2102_ports():
     if not BY_PATH.exists():
         return []
-    return [p for p in sorted(BY_PATH.iterdir()) if usb_id(p.resolve().name) == CP2102]
+    ports = {}
+    for path in sorted(BY_PATH.iterdir()):            # 같은 장치가 'usb-'와 'usbv2-' 두 이름으로 나온다 -> 장치 하나로 센다
+        if usb_id(path.resolve().name) == CP2102 and path.resolve() not in ports:
+            ports[path.resolve()] = path
+    return list(ports.values())
 
 
 def is_pump(path, timeout_s=2.5):
