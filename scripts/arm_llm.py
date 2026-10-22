@@ -31,6 +31,7 @@ unknown(목록에 없는 새 물체: 시작 뒤 화면 안내에 따라 사람�
 - "뭐 있어?", "뭘 넣을 수 있어?" 같은 질문은 look_at_table로 사진을 찍어 확인하세요. 로봇은 움직이지 않습니다.
 - 상태를 물으면 get_arm_status, "멈춰", "정지"는 stop_arm을 바로 호출하세요.
 - 움직이는 명령(sort_object, sort_all_objects, arm_return_home)은 호출하면 바로 실행됩니다. 사용자가 분명히 시킨 경우에만 호출하고, 한 번에 하나만 호출하세요. "넣는 중"처럼 이미 움직이는 것처럼 말하지 마세요.
+- "책상으로 가", "휴지통 쪽으로 이동해"처럼 장소로 가라는 말은 move_to_place를 호출하세요(팔 작업이 아닙니다).
 - 물체가 애매하면 추측하지 말고 되물으세요. 답은 한두 문장으로 짧게 하세요."""
 
 
@@ -49,9 +50,11 @@ TOOLS = [
            'slot': {'type': 'integer', 'enum': [1, 2, 3], 'description': '넣을 칸 번호. 사용자가 말했을 때만'}}, ['object_name']),
     _tool('sort_all_objects', '흰 상자 → 빨간 정육면체 → 줄자 순서로 세 물체를 모두 기본 칸에 넣는다. 앞 물체가 실패하면 멈춘다.'),
     _tool('arm_return_home', '팔을 접힌 HOME 자세로 돌려놓는다.'),
+    _tool('move_to_place', '로봇 차를 지도에 저장된 장소(라벨)로 이동시킨 뒤 정면 벽(작업대) 앞에 붙인다. 팔은 HOME으로 접혀 있어야 한다. '
+          '장소 이름은 사용자가 말한 그대로(예: 책상, 휴지통).', {'place': {'type': 'string', 'description': '장소 이름'}}, ('place',)),
     _tool('stop_arm', '실행 중인 동작을 즉시 멈춘다.'),
 ]
-MOTION = {'sort_object', 'sort_all_objects', 'arm_return_home'}
+MOTION = {'sort_object', 'sort_all_objects', 'arm_return_home', 'move_to_place'}
 NAMES = {'white_box': '흰 상자', 'red_cube': '빨간 정육면체', 'tape_measure': '줄자', 'unknown': '새 물체'}
 DEFAULT_SLOT = {'white_box': 1, 'red_cube': 2, 'tape_measure': 3}
 
@@ -59,6 +62,7 @@ DEFAULT_SLOT = {'white_box': 1, 'red_cube': 2, 'tape_measure': 3}
 # 물체·칸 해석은 터미널 명령(run_sort.py --command)과 같은 sorting.sort_job.parse_command를 쓴다.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from sorting.sort_job import parse_command          # noqa: E402
+import base_drive                                   # noqa: E402  팀 주행 서버(map_web)
 
 _SYNONYMS = (('빨간 큐브', '빨간 정육면체'), ('빨간큐브', '빨간 정육면체'), ('큐브', '정육면체'), ('새로운 물체', '새 물체'),
              ('모르는 물체', '새 물체'), ('등록 안 된 물체', '새 물체'), ('새물체', '새 물체'))
@@ -80,6 +84,9 @@ _ARM_STATES = {'ok': '팔은 토크가 켜져 있어 움직일 수 있습니다.
                'unknown': '서보 상태를 읽지 못했습니다(USB와 전원을 확인하세요).'}
 _AGAIN = re.compile(r'^\s*(다시|한\s*번\s*더|재시도)\s*(해|해줘|해\s*줘|해봐|해\s*봐|하자|시도해|시도해줘|실행해|실행해줘)?\s*[.!]*\s*$')
 _CLAIMS_ACTION = re.compile(r'(시작합니다|진행합니다|넣습니다|옮깁니다|정리합니다|돌아갑니다|실행합니다)')   # 도구 없이 이렇게 말하면 거짓 안내다
+# "책상으로 이동해줘", "휴지통 앞으로 가", "밥먹는곳까지 가자" -> 그 장소 라벨로 주행. "홈으로 가"는 위의 _HOME(팔 복귀)이 먼저 잡는다.
+_DRIVE = re.compile(r'^(?P<place>\S.*?)\s*(?:앞|쪽|근처)?\s*(?:으로|로|에|까지)\s*(?:이동|가|와|데려|가자|출발)')
+_WHERE = re.compile(r'^(지금\s*)?(너\s*)?(어디야|어디니|어디에\s*있|어디\s*있|위치\s*(가\s*)?(어디|알려)|현재\s*위치)')
 _NOT = re.compile(r'(넣|정리|옮기|접)지\s*마|말고|하지\s*마|\?$|까\s*[?.]?\s*$|나요\s*[?.]?\s*$')
 
 
@@ -205,6 +212,9 @@ def tidy(arm):
 def proposal_reply(proposal, notes=()):
     if proposal['action'] == 'return_home':
         what = '팔을 HOME 자세로 돌려놓습니다.'
+    elif proposal['action'] == 'drive':
+        what = f"{proposal['label']}(으)로 이동합니다(도착하면 앞 벽에 맞춰 붙습니다)."
+        return what + WAIT
     elif proposal['action'] == 'pick_all' and proposal.get('objects'):
         found = proposal['objects']
         what = (f"책상에서 {', '.join(NAMES[label] for label in found)}를 찾았습니다. {len(found)}개를 차례로 넣습니다"
@@ -234,9 +244,11 @@ def validate(name, args):
         return '알 수 없는 도구입니다.'
     if not isinstance(args, dict):
         return '인자는 객체여야 합니다.'
-    allowed = {'sort_object': {'object_name', 'slot'}}.get(name, set())
+    allowed = {'sort_object': {'object_name', 'slot'}, 'move_to_place': {'place'}}.get(name, set())
     if set(args) - allowed:
         return '알 수 없는 항목이 있습니다.'
+    if name == 'move_to_place' and (not isinstance(args.get('place'), str) or not args['place'].strip()):
+        return 'place(장소 이름)가 필요합니다.'
     if name == 'sort_object':
         if args.get('object_name') not in OBJECTS:
             return 'object_name은 white_box, red_cube, tape_measure, unknown 중 하나입니다.'
@@ -253,6 +265,8 @@ def to_proposal(name, args):
         return {'action': 'pick_all'}
     if name == 'arm_return_home':
         return {'action': 'return_home'}
+    if name == 'move_to_place':
+        return {'action': 'drive', 'label': args['place'].strip()}
     proposal = {'action': 'pick_place', 'object': args['object_name']}
     if 'slot' in args:
         proposal['slot'] = args['slot']
@@ -290,6 +304,27 @@ def _result_for_model(result):
     return {k: v for k, v in result.items() if k != 'image_jpeg_base64'}
 
 
+def drive_proposal(text):
+    """장소로 가라는 말이면 (제안 또는 None, 답), 아니면 None. 지도에 없는 장소면 제안 없이 장소 목록을 알려 준다."""
+    match = _DRIVE.match(text)
+    if not match or _PUT.search(text) or '칸' in match['place']:
+        return None
+    place = match['place'].strip()
+    try:
+        label = base_drive.find_label(place, base_drive.base_state()['labels'])
+    except base_drive.BaseError as exc:
+        return None, str(exc)
+    proposal = {'action': 'drive', 'label': label['name']}
+    return proposal, proposal_reply(proposal)
+
+
+def where_answer():
+    try:
+        return base_drive.where_reply(base_drive.base_state())
+    except base_drive.BaseError as exc:
+        return str(exc)
+
+
 def retry(arm):
     """"다시 해줘": 마지막 작업을 다시 제안한다. 책상 정리는 사진을 새로 찍어 지금 책상에 있는 것만. 돌려주는 것: (제안 또는 None, 답, 장면 또는 None)."""
     status = arm.status()
@@ -303,6 +338,8 @@ def retry(arm):
         return tidy(arm)
     if last['skill'] == 'return_home':
         proposal = {'action': 'return_home'}
+    elif last['skill'] == 'drive' and params.get('label'):
+        proposal = {'action': 'drive', 'label': params['label']}
     elif last['skill'] == 'pick_place' and params.get('object') in OBJECTS:
         proposal = {'action': 'pick_place', 'object': params['object']}
         if params.get('slot'):
@@ -346,6 +383,11 @@ def chat(history, text, arm, client=None):
     if _AGAIN.match(text):
         proposal, reply, scene = retry(arm)
         return dict(reply=reply, proposal=proposal, executed=[], scene=scene, source='rule')
+    if _WHERE.match(text):
+        return dict(reply=where_answer(), proposal=None, executed=[], scene=None, source='rule')
+    drive = drive_proposal(text)
+    if drive is not None:
+        return dict(reply=drive[1], proposal=drive[0], executed=[], scene=None, source='rule')
     if not _PUT.search(text) and not _HOME.search(text):
         if _LOOK.search(text):
             found = situation(arm)
@@ -394,7 +436,13 @@ def chat(history, text, arm, client=None):
                 proposal = normalize(to_proposal(name, args))
                 outcome = dict(ok=True, note='화면이 바로 실행한다.')
             messages.append({'role': 'tool', 'tool_name': name or 'unknown', 'content': json.dumps(outcome, ensure_ascii=False, default=str)})
-    if proposal is not None and proposal['action'] == 'pick_all':
+    if proposal is not None and proposal['action'] == 'drive':
+        try:                                             # 지도에 있는 장소인지 먼저 확인한다
+            proposal = {'action': 'drive', 'label': base_drive.find_label(proposal['label'], base_drive.base_state()['labels'])['name']}
+            reply = proposal_reply(proposal)
+        except base_drive.BaseError as exc:
+            proposal, reply = None, str(exc)
+    elif proposal is not None and proposal['action'] == 'pick_all':
         proposal, reply, taken = tidy(arm)               # 책상 정리: 사진부터 찍고 있는 물체만
         scene = taken or scene
     elif proposal is not None:

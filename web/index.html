@@ -242,6 +242,11 @@
             <select id="uslot" aria-label="놓을 칸"><option value="" selected disabled>놓을 칸 선택</option><option value="1">1번 칸</option><option value="2">2번 칸</option><option value="3">3번 칸</option></select>
             <button id="unknown" class="primary">시작</button>
           </div></li>
+        <li><button class="item" data-open="drive8"><i>8</i>장소로 이동<small>팀 주행 지도의 장소, 도착하면 앞 벽에 붙기</small><code class="api">POST /robot_arm drive</code></button>
+          <div class="sub" id="drive8" hidden>
+            <select id="place" aria-label="장소"><option value="" selected disabled>장소 불러오는 중…</option></select>
+            <button id="drive-go" class="primary">이동</button>
+          </div></li>
       </ol>
     </section>
     </div>
@@ -275,7 +280,7 @@ const DEFAULT_SLOT = { white_box: 1, red_cube: 2, tape_measure: 3, unknown: 3 };
 const REASONS = {
   object_not_found: '물체를 찾지 못했습니다.', slot_too_small: '칸에 들어갈 여유가 부족합니다.', unreachable: '팔이 닿지 않는 위치입니다.',
   tray_not_found: '트레이를 찾지 못했습니다.', tray_moved: '트레이 위치가 바뀌었습니다.', torque_off: '서보 토크가 꺼져 있습니다. 팔을 받치고 토크를 켜 주세요.',
-  arm_state_unknown: '서보가 응답하지 않습니다. 서보 전원(어댑터 전원)과 서보 선을 확인하세요.', base_moving: '차가 움직이는 중이라 팔을 움직이지 않았습니다.', device_absent: '장치 연결을 확인하세요.', cancelled: '정지했습니다.',
+  arm_state_unknown: '서보가 응답하지 않습니다. 서보 전원(어댑터 전원)과 서보 선을 확인하세요.', base_moving: '차가 움직이는 중이라 팔을 움직이지 않았습니다.', arm_not_folded: '팔이 HOME으로 접혀 있지 않아 주행하지 않았습니다. 먼저 HOME으로 복귀하세요.', label_not_found: '지도에 그 장소가 없습니다.', base_unavailable: '주행 서버(map_web)에 연결할 수 없습니다.', wall_failed: '도착했지만 벽에 맞춰 붙지 못했습니다.', drive_failed: '목적지로 가지 못했습니다.', device_absent: '장치 연결을 확인하세요.', cancelled: '정지했습니다.',
   busy: '다른 작업을 실행 중입니다.', camera_busy: '카메라 창이 켜져 있습니다.', object_moved: '물체 위치·크기가 바뀌었습니다.',
   unauthorized: '토큰이 필요합니다. 오른쪽 위 설정에서 입력하세요.',
   multiple_new_objects: '새 물체는 하나씩 놓아 주세요.', not_held: '물체가 집히지 않았습니다.'
@@ -292,6 +297,7 @@ async function api(method, path, body) {
   return { status: r.status, data };
 }
 function describe(cmd) {
+  if (cmd.action === 'drive') return `${cmd.label}(으)로 이동합니다(도착하면 앞 벽에 맞춰 붙습니다).`;
   if (cmd.action === 'return_home') return 'HOME으로 복귀합니다.';
   if (cmd.action === 'pick_all' && cmd.objects) return `${cmd.objects.map((o) => NAMES[o]).join(', ')}를 차례로 넣습니다(책상 정리).`;
   if (cmd.action === 'pick_all') return '세 물체를 모두 넣습니다(흰 상자 → 정육면체 → 줄자, 책상에 없는 것은 건너뜀).';
@@ -301,7 +307,7 @@ function describe(cmd) {
 }
 function confirmRun(text) {
   return new Promise((resolve) => {
-    $('confirm-text').textContent = text + ' 팔 주변을 비웠는지 확인하세요.';
+    $('confirm-text').textContent = text + (text.includes('이동합니다') ? ' 차가 움직입니다. 주변을 비웠는지 확인하세요.' : ' 팔 주변을 비웠는지 확인하세요.');
     const dlg = $('confirm');
     const done = (v) => { $('confirm-yes').onclick = $('confirm-no').onclick = null; dlg.close(); resolve(v); };
     $('confirm-yes').onclick = () => done(true); $('confirm-no').onclick = () => done(false);
@@ -318,7 +324,9 @@ async function run(cmd, { askFirst = true } = {}) {
   if (cmd.menu === 5) { body.object = cmd.object; body.slot = Number(cmd.slot); }
   if (cmd.menu === 7) body.slot = Number(cmd.slot);
   if (cmd.menu === 4 && cmd.objects) body.objects = cmd.objects;
-  const { status, data } = await api('POST', '/api/menu/' + cmd.menu, body);
+  // 주행은 메뉴 번호가 없다: POST /robot_arm {action: 'drive', label}
+  const { status, data } = cmd.action === 'drive' ? await api('POST', '/robot_arm', { action: 'drive', label: cmd.label })
+                                                  : await api('POST', '/api/menu/' + cmd.menu, body);
   if (status !== 202) { say('sys', '실행하지 못했습니다: ' + (REASONS[data.reason_code] || data.reason || status)); return false; }
   watched = data.task_id; lastShown = null; say('sys', describe(cmd).replace('합니다.', '하는 중'));
   poll(); return true;
@@ -337,6 +345,23 @@ document.querySelectorAll('.item[data-open]').forEach((b) => b.onclick = () => {
 $('custom').onclick = () => {
   if (!$('obj').value || !$('slot').value) { say('sys', '물체와 칸을 고르세요.'); return; }
   run({ menu: 5, action: 'pick_place', object: $('obj').value, slot: Number($('slot').value) });
+};
+// 8번: 팀 주행 서버의 장소 라벨을 불러와 고른다(GET /api/base). 팔이 HOME으로 접혀 있어야 서버가 받는다.
+async function loadPlaces() {
+  const sel = $('place');
+  const { status, data } = await api('GET', '/api/base');
+  if (status !== 200) { sel.innerHTML = '<option value="" selected disabled>주행 서버에 연결할 수 없습니다</option>'; return; }
+  sel.innerHTML = '<option value="" selected disabled>장소 선택</option>';
+  for (const label of data.labels || []) {
+    const opt = document.createElement('option'); opt.value = label.name;
+    opt.textContent = label.name + (label.dist_m != null ? ` (${label.dist_m.toFixed(1)} m)` : '') + (label.reachable === false ? ' · 막힘, 가까운 곳까지' : '');
+    sel.appendChild(opt);
+  }
+}
+document.querySelector('[data-open="drive8"]').addEventListener('click', () => { if (!$('drive8').hidden) loadPlaces(); });
+$('drive-go').onclick = () => {
+  if (!$('place').value) { say('sys', '장소를 고르세요.'); return; }
+  run({ action: 'drive', label: $('place').value });
 };
 $('unknown').onclick = () => {          // 메뉴 7번과 같이 칸을 꼭 고르게 한다(기본값 없음)
   if (!$('uslot').value) { say('sys', '놓을 칸을 고르세요.'); return; }
@@ -368,6 +393,7 @@ function bubble(cls, text) {
   $('log').appendChild(d); $('log').scrollTop = $('log').scrollHeight; return d;
 }
 function toRun(p) {          // 제안을 메뉴 번호 실행으로 바꾼다(버튼과 같은 길)
+  if (p.action === 'drive') return { action: 'drive', label: p.label };
   if (p.action === 'return_home') return RUN.home;
   if (p.action === 'pick_all') return p.objects ? { ...RUN.all, objects: p.objects } : RUN.all;
   if (p.object === 'unknown') return { menu: 7, action: 'pick_place', object: 'unknown', slot: p.slot };

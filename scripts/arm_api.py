@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))   # 물체 인식(perception) 모듈
 import sort_menu as menu     # 명령 만들기·실행·상태 판정은 메뉴와 같은 코드를 쓴다
 import arm_stt               # 로컬 음성 인식(faster-whisper는 처음 쓸 때 불러온다)
+import base_drive            # 팀 주행 서버(map_web)로 차를 움직인다: base_state, goto_label_wall
 from hardware import devices
 
 OBJECTS = {'white_box': 1, 'red_cube': 2, 'tape_measure': 3, 'unknown': 3}      # 물체 → 기본 칸
@@ -131,9 +132,11 @@ class EventLog:
 class Arm:
     """한 번에 한 작업을 돌리는 상태. HTTP 핸들러와 작업 스레드가 함께 쓴다."""
 
-    def __init__(self, run=menu.run_streaming, read_state=None, hold=None, base_check=None):
+    def __init__(self, run=menu.run_streaming, read_state=None, hold=None, base_check=None, drive=None, read_pose=None):
         self.run = run
         self.log = EventLog()
+        self.drive = drive or base_drive.goto_label_wall
+        self.read_pose = read_pose or menu.read_arm_state       # {관절: (토크, 위치)} 또는 None
         self.base_check = base_check or base_moving
         self.read_state = read_state or (lambda: menu.classify_arm(menu.read_arm_state()))
         self.hold = hold or (lambda: subprocess.run(HOLD_CMD, cwd=menu.ROOT, capture_output=True, text=True, timeout=60))
@@ -185,6 +188,14 @@ class Arm:
                 return 400, dict(ok=False, reason_code='bad_request', reason=f'objects는 {list(ALL_ORDER)} 중 하나 이상(중복 없이)이어야 합니다.')
             else:
                 command = ('pick_all', dict(objects=[o for o in ALL_ORDER if o in objects]))
+        elif skill == 'drive':
+            label, gap = params.get('label'), params.get('gap')
+            if not isinstance(label, str) or not label.strip() or len(label) > 40:
+                return 400, dict(ok=False, reason_code='bad_request', reason='label(갈 장소 이름)이 필요합니다.')
+            if gap is not None and (isinstance(gap, bool) or not isinstance(gap, (int, float))
+                                    or not base_drive.GAP_LIMITS[0] <= gap <= base_drive.GAP_LIMITS[1]):
+                return 400, dict(ok=False, reason_code='bad_request', reason=f'gap은 {base_drive.GAP_LIMITS[0]}~{base_drive.GAP_LIMITS[1]} m여야 합니다.')
+            command = ('drive', dict(label=label.strip(), **({'gap': float(gap)} if gap is not None else {})))
         else:
             return 404, dict(ok=False, reason_code='bad_request', reason='알 수 없는 명령입니다.')
         with self.lock:
@@ -255,6 +266,10 @@ class Arm:
             self.stop_requested = running          # 아직 프로세스를 띄우기 전이면, 띄우자마자 멈추고 다음 단계로 가지 않는다
         if proc is not None and proc.poll() is None:
             proc.send_signal(signal.SIGINT)
+        with self.lock:
+            driving = running and self.tasks.get(self.current, {}).get('skill') == 'drive'
+        if driving:                                  # 주행: 이동 루프도 멈추지만 차는 바로 세운다
+            threading.Thread(target=base_drive.cancel, daemon=True).start()
         return dict(ok=True, stopped=running)
 
     # ---- 작업 스레드 ----
@@ -307,11 +322,13 @@ class Arm:
                 task['result'] = dict(result, seconds=task['seconds'], warnings=task['warnings'])
                 task['state'] = 'done' if result['ok'] else 'failed'
                 self._log_result(skill, task, result)
-                self.arm_home = True if result['ok'] else None
+                if skill != 'drive':                                   # 주행은 팔 자세를 바꾸지 않는다
+                    self.arm_home = True if result['ok'] else None
                 self.proc = None
                 self.current = None
 
-    QUIET_REASONS = ('base_moving', 'torque_off', 'object_not_found', 'unreachable', 'busy')    # 사용자가 바로 고칠 수 있는 거부
+    QUIET_REASONS = ('base_moving', 'torque_off', 'object_not_found', 'unreachable', 'busy',     # 사용자가 바로 고칠 수 있는 거부
+                     'label_not_found', 'arm_not_folded', 'base_unavailable', 'wall_failed')
 
     def _log_result(self, skill, task, result):
         for warning in task.get('warnings') or []:
@@ -324,6 +341,24 @@ class Arm:
         else:
             self.log.add('warn' if code in self.QUIET_REASONS else 'error', '작업', f"{skill} 실패: {result.get('reason')}",
                          f"task {task['id']}, reason_code={code}, {task['seconds']}초")
+
+    DRIVE_FOLD_PULSES = 120     # 주행 전 팔이 이만큼 안으로 HOME에 접혀 있어야 한다(관절마다, 펄스)
+
+    def _drive(self, task_id, params):
+        """팀 주행 서버로 라벨까지 이동하고 벽에 붙는다. 팔이 접혀 있을 때만(뻗은 채 달리면 부딪히거나 넘어진다)."""
+        pose = self.read_pose()
+        if not pose:
+            return dict(ok=False, reason_code='arm_not_folded', reason='서보가 응답하지 않아 팔이 접혀 있는지 모릅니다. 서보 전원을 확인하세요.')
+        far = {n: pose[n][1] - home for n, home in menu.HOME_RAW.items() if n in pose and abs(pose[n][1] - home) > self.DRIVE_FOLD_PULSES}
+        if far:
+            return dict(ok=False, reason_code='arm_not_folded',
+                        reason='팔이 HOME으로 접혀 있지 않아 주행하지 않습니다(' + ', '.join(f'{n} {d:+d}' for n, d in far.items()) + '). 먼저 "홈으로 돌아가"를 시키세요.')
+        self.log.add('info', '주행', f"{params['label']}(으)로 이동 시작" + (f" (벽 앞 {params['gap']} m)" if 'gap' in params else ''))
+        try:
+            return self.drive(params['label'], gap=params.get('gap'), on_phase=lambda raw, text: self._event(task_id, 'phase', (raw, text)),
+                              stopped=lambda: self.stop_requested)
+        except base_drive.BaseError as exc:
+            return dict(ok=False, reason=str(exc), reason_code=exc.code)
 
     def _ensure_torque(self, task_id, skill):
         """움직여도 되면 None, 아니면 거부 결과. HOME에 놓인 채 토크만 꺼진 팔은 자동으로 토크를 켜서 붙잡는다(접힌 HOME 근처면 HOME에 맞춘다)."""
@@ -356,6 +391,8 @@ class Arm:
         moving = self.base_check()
         if moving:
             return dict(ok=False, reason_code='base_moving', reason=moving + ' 차가 멈춘 뒤 다시 시키세요.')
+        if skill == 'drive':
+            return self._drive(task_id, params)
         if menu.live_view_running():
             return dict(ok=False, reason='카메라 창(live_view.py)이 켜져 있습니다.', reason_code='camera_busy')
         refused = self._ensure_torque(task_id, skill)
@@ -645,6 +682,10 @@ COMMON_API = [
          description='상황 파악: 사진을 찍고 책상 상황(reply·speech), 지금 쓸 수 있는 기능(actions, 예시 문장 포함), 기본 제안(proposal: 정리할 물체가 있으면 책상 정리)을 돌려준다. 로봇은 움직이지 않는다. 웹 화면은 열 때와 작업이 끝날 때마다 부른다.'),
     dict(method='POST', path='/api/stt', body='녹음 파일(webm·ogg·wav, 2MB 이하, Content-Type: audio/webm 등)',
          description='로컬 음성 인식(Whisper, 인터넷 없이 이 PC에서). 응답: text(알아들은 문장, 말소리가 없으면 빈 문자열), seconds. 로봇은 움직이지 않는다. 문장은 /chat으로 보내 명령으로 쓴다.'),
+    dict(method='GET', path='/api/base', body=None,
+         description='주행 상태(base_state, 팀 map_web의 /api/state·/api/drive): 지도 위 위치·방향, 장소 라벨(가까운 순, 거리), 이동·벽 근접 상태, 드라이버 연결. 차는 움직이지 않는다. map_web이 꺼져 있으면 503.'),
+    dict(method='POST', path='/robot_arm', body={'action': 'drive', 'label': '책상', 'gap': 0.05},
+         description='주행(goto_label_wall): 라벨 위치로 이동한 뒤 정면 벽과 수직으로 맞추고 gap(m, 0.02~0.5, 생략하면 map_web 설정값) 앞까지 붙는다. 차가 움직인다. 팔이 HOME으로 접혀 있을 때만 받는다. 진행은 /status의 phase_label, 정지는 /stop.'),
     dict(method='GET', path='/api/logs?since=<번호>', body=None,
          description='최근 사건 기록(최대 500건 중 번호가 since보다 큰 것). 작업 시작·완료·실패의 원문 이유와 실행 프로그램의 마지막 출력, 카메라·API 오류. 응답: boot(서버를 다시 켜면 바뀜), last(마지막 번호), entries[{id, time, level(info/ok/warn/error), source, message, detail}]. 웹 화면의 로그창이 쓴다.'),
     dict(method='GET', path='/status', body=None, description='지금 상태. state(idle/busy), phase_label(지금 단계), task_id, arm_home.'),
@@ -783,6 +824,11 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
                 return self._send(401, dict(ok=False, reason_code='unauthorized'))
             if self.path == '/status':
                 return self._send(200, arm.status())
+            if self.path == '/api/base':
+                try:
+                    return self._send(200, base_drive.base_state())
+                except base_drive.BaseError as exc:
+                    return self._send(503, dict(ok=False, reason_code=exc.code, reason=str(exc)))
             if self.path.split('?')[0] == '/api/logs':
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 try:
@@ -852,9 +898,9 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
                     return self._send(200, arm.status())
                 if action == 'stop':
                     return self._send(200, arm.stop())
-                if action not in ('pick_place', 'pick_all', 'return_home'):
-                    return self._send(400, dict(ok=False, reason_code='bad_request', reason='action은 pick_place, pick_all, return_home, status, stop 중 하나입니다.'))
-                status, body = arm.start(action, {k: v for k, v in params.items() if k in ('object', 'slot', 'objects')})
+                if action not in ('pick_place', 'pick_all', 'return_home', 'drive'):
+                    return self._send(400, dict(ok=False, reason_code='bad_request', reason='action은 pick_place, pick_all, return_home, drive, status, stop 중 하나입니다.'))
+                status, body = arm.start(action, {k: v for k, v in params.items() if k in ('object', 'slot', 'objects', 'label', 'gap')})
                 return self._send(status, body)
             if self.path == '/api/image':
                 status, body = arm.capture()
