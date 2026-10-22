@@ -252,8 +252,9 @@ class Arm:
                     return dict(ok=False, reason=f'토크를 켠 뒤 HOME에 맞추지 못했습니다: {error or f"종료 코드 {code}"}', reason_code=reason_code(error))
             return None
         return dict(ok=False, reason_code='arm_state_unknown' if state == 'unknown' else 'torque_off',
-                    reason=f'팔 상태가 움직여도 되는 상태가 아닙니다({state}). '
-                           + ('팔을 손으로 받쳐 HOME 자세로 옮긴 뒤 다시 시키세요.' if state == 'off_elsewhere' else '사람이 팔을 받치고 토크를 켜야 합니다.'))
+                    reason={'unknown': '서보가 응답하지 않습니다. 서보 전원(어댑터 전원)과 서보 선을 확인하세요.',
+                            'off_elsewhere': '토크가 꺼져 있고 팔이 HOME이 아닙니다. 팔을 손으로 받쳐 HOME 자세로 옮긴 뒤 다시 시키세요.'}.get(
+                                state, f'팔 상태가 움직여도 되는 상태가 아닙니다({state}). 사람이 팔을 받치고 토크를 켜야 합니다.'))
 
     def _execute(self, task_id, skill, params):
         CAMERA.release()                    # 작업(pick_auto 등)이 카메라를 직접 연다

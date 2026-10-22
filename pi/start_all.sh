@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # 노트북에서 한 번에: 음성 인식 서버 + Ollama 중계 + Pi 설정 맞추기 + Pi 서버 + 화면 열기.
-# 켜기만 해서는 로봇이 움직이지 않는다(명령을 받아야 움직인다).
+# 켜기만 해서는 로봇이 움직이지 않는다(명령을 받아야 움직인다). HOME에 놓인 팔은 토크를 켜서 그 자리에 붙잡는다.
 #
 #   bash pi/start_all.sh            # 켜기 (이미 켜진 것은 건너뛴다)
 #   bash pi/start_all.sh stop       # 모두 끄기 (Pi 서버는 진행 중인 작업을 정리한 뒤 끝난다)
 #   bash pi/start_all.sh status     # 무엇이 켜져 있는지
 #   NO_BROWSER=1 bash pi/start_all.sh   # 화면은 열지 않는다
+#   NO_TORQUE=1 bash pi/start_all.sh    # 토크는 켜지 않고 팔 상태만 확인
 #
 # 환경 변수: ROBOT (기본 user@192.168.0.31), REMOTE_DIR (4dof_ik_pi_test), ARM_SSH_KEY,
 #            STT_PY (Whisper가 깔린 파이썬, 기본 ~/miniconda3/envs/lerobot_312/bin/python)
@@ -82,6 +83,12 @@ start() {
 
   say "Pi 장치 점검"
   pi "bash ~/$REMOTE_DIR/pi/arm_api_ctl.sh check" 2>&1 | grep -E '문제|\[ 문제 \]|OK  \] (servo|pump|wrist|openni2)' | sed 's/^/   /'
+
+  say "팔 상태 · 토크 (HOME에 놓인 팔은 토크를 켜서 붙잡는다, NO_TORQUE=1이면 확인만)"
+  local hold=--hold; [ -n "${NO_TORQUE:-}" ] && hold=
+  if ! pi "cd ~/$REMOTE_DIR && set -a && . pi/arm-api.env && set +a && .venv/bin/python scripts/arm_ready.py $hold" 2>&1 | sed 's/^/   /'; then
+    warn "팔을 움직일 수 없는 상태입니다 - 위 안내대로 고친 뒤 bash pi/start_all.sh 를 다시 실행하세요 (서버는 그대로 켭니다)"
+  fi
 
   say "Pi 서버"
   if pi "bash ~/$REMOTE_DIR/pi/arm_api_ctl.sh status" | grep -q '^켜짐'; then
