@@ -119,8 +119,11 @@ start() {
 
   if [ -z "${NO_BROWSER:-}" ]; then
     say "화면"
-    local tabs=()      # 주행 스택이 켜져 있으면 주행 화면(map_web)도 같은 창의 탭으로
-    [ -z "${NO_DRIVE:-}" ] && curl -s -m 2 "http://$PI_IP:8081/api/drive" >/dev/null && tabs+=("http://$PI_IP:8081")
+    local tabs=()      # 주행 화면(map_web)도 같은 창의 탭으로. 늦게 뜨면 그 탭에서 새로 고침
+    if [ -z "${NO_DRIVE:-}" ]; then
+      tabs+=("http://$PI_IP:8081")
+      curl -s -m 3 "http://$PI_IP:8081/api/drive" >/dev/null || warn "주행 화면(8081)이 아직 응답하지 않습니다 - 잠시 뒤 그 탭을 새로 고침하세요"
+    fi
     ARM_URL="http://$PI_IP:8000" bash "$ROOT/pi/open_jarvis.sh" "${tabs[@]}" | sed 's/^/   /'
   fi
   echo
