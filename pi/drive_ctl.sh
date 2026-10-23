@@ -8,7 +8,8 @@
 # 팀과 겹치지 않게: tmux 세션 arm_drive_robot / arm_drive_nav / arm_drive_web, ROS_DOMAIN_ID 43(팀 42),
 # map_web의 라벨·도착 오차·근접 설정은 ~/4dof_ik_pi_test/drive_data(처음 한 번 팀 라벨 파일을 읽어 복사).
 # 팀 주행(드라이버·라이다·map_web·AMCL)이 이미 돌고 있으면 같은 장치를 두고 부딪히므로 켜지 않고 알린다.
-# 환경 변수: ARM_ROS_DOMAIN(43), ARM_DRIVE_MAP(lidarmap: ros2_slam/maps/<이름>.yaml), ARM_DRIVE_INIT("x y yaw", 기본 지도 원점)
+# 환경 변수: ARM_ROS_DOMAIN(43), ARM_DRIVE_MAP(lidarmap: ros2_slam/maps/<이름>.yaml), ARM_DRIVE_INIT("x y yaw", 기본 지도 원점),
+#            ARM_CAR_PORT(차 ESP32 시리얼, 기본 /dev/ttyAMA0 - 이 Pi에서 팀 드라이버도 이것으로 켰다. 사본 launch 기본값 ttyS0은 입출력 오류)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,6 +17,7 @@ WS="$ROOT/ros2_slam"
 DATA="$ROOT/drive_data"
 DOMAIN="${ARM_ROS_DOMAIN:-43}"
 MAP="$WS/maps/${ARM_DRIVE_MAP:-lidarmap}.yaml"
+CAR_PORT="${ARM_CAR_PORT:-/dev/ttyAMA0}"
 read -r INIT_X INIT_Y INIT_YAW <<< "${ARM_DRIVE_INIT:-0.0 0.0 0.0}"
 ENV="export ROS_DISTRO=jazzy ROS_DOMAIN_ID=$DOMAIN RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; source /opt/ros/jazzy/setup.bash; source '$WS/install/setup.bash'"
 SESSIONS=(arm_drive_robot arm_drive_nav arm_drive_web)
@@ -28,8 +30,10 @@ ours_running() { for s in "${SESSIONS[@]}"; do running "$s" && return 0; done; r
 # 다른 주행 프로그램(팀 것 등): 같은 이름의 프로세스 중 ROS_DOMAIN_ID가 우리 것(43)이 아닌 것.
 others() {
   local pid cmd dom
-  pgrep -af 'car2_serial_node|ld_lidar_node|map_web\.py|nav2_amcl|controller_server|async_slam_toolbox' 2>/dev/null \
+  # 실행 파일이 명령 줄 맨 앞(argv[0])인 것만: 'bash -c ...' 같은 껍데기나 이 이름이 들어간 다른 명령은 빼고 진짜 프로그램만 센다
+  pgrep -af '^(\S*/)?(car2_serial_node|ld_lidar_node|amcl|controller_server|async_slam_toolbox_node)( |$)|^\S*python[0-9.]* .*map_web\.py' 2>/dev/null \
     | grep -v pgrep | while read -r pid cmd; do
+        case "$cmd" in *"ROS_DOMAIN_ID=$DOMAIN "*|*"$WS"*) continue ;; esac     # 우리 세션의 실행 줄·우리 사본
         dom="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^ROS_DOMAIN_ID=//p')"
         [ "$dom" = "$DOMAIN" ] && continue
         echo "$pid (ROS_DOMAIN_ID=${dom:-?}) ${cmd:0:110}"
@@ -39,7 +43,7 @@ others() {
 build() {
   [ -f /opt/ros/jazzy/setup.bash ] || { echo "ROS 2 Jazzy가 없습니다."; exit 1; }
   say "ros2_slam 사본 빌드 ($WS)"
-  ( cd "$WS" && export ROS_DISTRO=jazzy && source /opt/ros/jazzy/setup.bash && colcon build 2>&1 | tail -3 )
+  ( set +u; cd "$WS" && export ROS_DISTRO=jazzy && source /opt/ros/jazzy/setup.bash && colcon build 2>&1 | tail -3 )   # ROS 설정 파일은 set -u에서 멈춘다
 }
 
 seed_data() {
@@ -69,7 +73,8 @@ start() {
   fi
   seed_data
   say "내 주행 스택 켜기 (ROS_DOMAIN_ID=$DOMAIN, 지도 $(basename "$MAP"))"
-  start_session arm_drive_robot "$LOGS/robot.log" "ros2 launch car2_bringup robot_lidar.launch.py"
+  [ -e "$CAR_PORT" ] || echo "   주의: 차 시리얼 $CAR_PORT 이 없습니다(ARM_CAR_PORT로 지정)"
+  start_session arm_drive_robot "$LOGS/robot.log" "ros2 launch car2_bringup robot_lidar.launch.py serial_port:=$CAR_PORT"
   sleep 4
   start_session arm_drive_nav "$LOGS/nav.log" "ros2 launch car2_bringup lidar_navigation.launch.py map:='$MAP' use_rviz:=false initial_x:=$INIT_X initial_y:=$INIT_Y initial_yaw:=$INIT_YAW"
   start_session arm_drive_web "$LOGS/web.log" "cd '$WS/test' && exec /usr/bin/python3 -u map_web.py --ros-args -p port:=8081 \

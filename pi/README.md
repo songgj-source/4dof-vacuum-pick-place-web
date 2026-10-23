@@ -101,6 +101,28 @@ bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (
 - 진행(이동 중·남은 거리·벽 맞추는 중·도착 후 사진·정리)은 진행 상태 칸에, 실패 이유는 로그창에 나옵니다. 위쪽에 차 위치(가장 가까운 장소·이동 중)가 3초마다 보입니다.
 - "가서 정리해"는 도착(벽 근접 성공) 뒤 차가 멈춘 것을 확인하고(최대 4초) 사진을 두 장 찍어 정리합니다. 도착이나 벽 맞추기에 실패하면 정리하지 않습니다.
 
+### 내 주행 스택 (팔과 함께, Pi에서)
+`bash pi/start_all.sh`가 팔과 함께 **내 `ros2_slam` 사본으로 주행 스택을 Pi에서 직접** 켭니다(팀 것을 쓰지 않음, `NO_DRIVE=1`이면 팔만).
+노트북 없이 로봇 위 Pi 하나로 돕니다. 노트북에는 Nav2가 없고, Pi에는 Nav2·AMCL·지도 서버가 설치돼 있습니다.
+
+| 순서 | tmux 세션 (Pi) | 내용 |
+|---|---|---|
+| 1 | `arm_drive_robot` | 차 드라이버(`/dev/ttyAMA0`, `ARM_CAR_PORT`) + 라이다(포트 자동 찾기) |
+| 2 | `arm_drive_nav` | 지도(`ros2_slam/maps/lidarmap.yaml`, `ARM_DRIVE_MAP`) + AMCL 위치 추정 + Nav2, RViz 없이 |
+| 3 | `arm_drive_web` | map_web 8081 (자비스가 이것을 부름) |
+| 4 | - | 켜면 '전체 지도에서 위치 찾기'로 처음 위치를 잡음(차는 안 움직임) |
+
+```bash
+ssh user@192.168.0.31 'bash ~/4dof_ik_pi_test/pi/drive_ctl.sh status'        # 상태
+ssh user@192.168.0.31 'bash ~/4dof_ik_pi_test/pi/drive_ctl.sh relocalize'    # 위치 다시 잡기(차를 손으로 옮긴 뒤)
+ssh user@192.168.0.31 'bash ~/4dof_ik_pi_test/pi/drive_ctl.sh log nav'       # 로그 (robot / nav / web)
+```
+- 팀과 겹치지 않게: ROS 도메인 **43**(팀 42), 세션 이름 `arm_drive_*`, 라벨·도착 오차 파일은 `~/4dof_ik_pi_test/drive_data/`(처음 한 번 팀 라벨 파일을 읽어 복사. 이후 라벨을 새로 만들면 우리 파일에만 저장).
+- 팀 주행(드라이버·라이다·map_web·AMCL)이 이미 돌고 있으면 바퀴 드라이버·라이다가 겹치므로 **켜지 않고 알립니다.** 팀 프로그램은 끄지 않습니다.
+- 차 시리얼은 이 Pi에서 `/dev/ttyAMA0`입니다(사본 launch 기본값 `/dev/ttyS0`은 입출력 오류로 드라이버가 죽음, 10-23 확인).
+- 코드를 바꾸면 `bash pi/deploy_to_robot.sh`가 사본을 Pi로 보내고 빌드합니다. 그 뒤 `bash pi/start_all.sh stop && bash pi/start_all.sh`.
+- 지도 위 장소(라벨)는 map_web 화면(`http://192.168.0.31:8081`)에서 만듭니다. 라벨은 책상에서 조금(3 cm 넘게) 떨어진 자리에서 만드세요.
+
 ### 팀 주행 코드 사본(`ros2_slam/`)과 같이 쓰기
 `ros2_slam/`은 팀 저장소(perpet99/dapier_project)의 같은 폴더를 복사한 **우리 사본**입니다(2026-10-23, 팀 저장소 `f27cbc9`, `ros2_slam` 마지막 변경 `0a7ca73` 10-16).
 **고치는 것은 이 사본(우리 환경)에서만 합니다. 팀 저장소와 Pi의 팀 폴더(`~/ros2_slam_robot`)·팀이 띄운 프로그램은 건드리지 않습니다.**
