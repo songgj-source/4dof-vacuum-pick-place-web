@@ -1,0 +1,11 @@
+# image_transport settings for the robot's RGB stream (usb_cam in
+# robot_rgbd.launch.py). image_transport declares these with a leading '.',
+# which neither a launch parameters dict nor a `-p` override can express, but
+# a params file can.
+#
+# jpeg_quality 60 -> ~26KB per 640x480 frame (95 = default: ~120KB), measured
+# on the robot's WiFi link where quality 95 + 30Hz depth only reached the
+# laptop at 4-6Hz.
+/**:
+  ros__parameters:
+    ".image_raw.compressed.jpeg_quality": 60

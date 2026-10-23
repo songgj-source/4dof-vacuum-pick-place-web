@@ -1,0 +1,25 @@
+# Orbbec Astra Pro RGB (UVC) 640x480 -- PLACEHOLDER intrinsics (nominal
+# ~60deg HFOV, no distortion). Calibrate the real sensor with
+#   ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.025 \
+#     --ros-args -r image:=/camera/color/image_raw -r camera:=/camera/color
+# and point robot_rgbd.launch.py's rgb_camera_info_url at the result.
+image_width: 640
+image_height: 480
+camera_name: astra_pro_rgb
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [570.0, 0.0, 319.5, 0.0, 570.0, 239.5, 0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [570.0, 0.0, 319.5, 0.0, 0.0, 570.0, 239.5, 0.0, 0.0, 0.0, 1.0, 0.0]

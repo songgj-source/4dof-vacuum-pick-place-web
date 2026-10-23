@@ -6,7 +6,8 @@
 #   ROBOT=user@192.168.0.31 ARM_SSH_KEY=~/.ssh/id_ed25519_workstation6 bash pi/deploy_to_robot.sh   (주소·키 지정)
 #   설치 옵션을 Pi의 install.sh에 넘기려면 -- 뒤에: bash pi/deploy_to_robot.sh -- --no-apt --openni2 /opt/openni2-orbbec
 #
-# 복사하는 것: git이 관리하는(또는 새로 만든) 코드·설정·보정 파일. 안 하는 것: output/ 실행 기록, 이 노트북의 .venv, x86 OpenNI2.
+# 복사하는 것: git이 관리하는(또는 새로 만든) 코드·설정·보정 파일. 안 하는 것: output/ 실행 기록, 이 노트북의 .venv, x86 OpenNI2,
+# ros2_slam/(팀 주행 코드 사본 - Pi에서는 팀 스크립트가 ~/ros2_slam_robot으로 따로 배포·빌드한다).
 # 올린 뒤 Pi에서: bash ~/4dof_ik_pi_test/pi/arm_api_ctl.sh start   (또는 노트북에서 pi/remote.sh start)
 set -euo pipefail
 
@@ -35,7 +36,7 @@ cd "$ROOT"
 # 보낼 파일 목록: 추적 중인 파일 + 아직 추적 안 하지만 무시 대상이 아닌 새 파일. 지역 값이 든 것과 큰 것은 뺀다.
 list_files() {
   git ls-files -co --exclude-standard -z |
-    grep -zvE '^(output/|portfolio/|하드웨어 설명/|tmp/|\.venv/|config/devices\.json$|pi/arm-api\.env$|calibration/openni2_redist/)'
+    grep -zvE '^(output/|portfolio/|하드웨어 설명/|tmp/|\.venv/|config/devices\.json$|pi/arm-api\.env$|calibration/openni2_redist/|ros2_slam/)'
 }
 COUNT="$(list_files | tr -cd '\0' | wc -c)"
 SIZE="$(list_files | xargs -0 du -ck 2>/dev/null | tail -1 | cut -f1)"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pi에서 로봇팔 서버(arm_api.py)를 켜고 끈다(서비스를 만들지 않는 --no-service 설치용). tmux가 있으면 세션 'arm_api'로, 없으면 백그라운드로 돈다.
 #
-#   bash pi/arm_api_ctl.sh start      # 켜기. Astra를 다른 프로그램이 쓰고 있으면 거부한다(FORCE=1이면 무시)
+#   bash pi/arm_api_ctl.sh start      # 켜기. 다른 OpenNI 카메라 프로그램이 돌고 있으면 알린다
 #   bash pi/arm_api_ctl.sh stop       # 끄기: Ctrl+C(SIGINT)로 집기 프로세스 정리를 마치게 한 뒤 끝낸다
 #   bash pi/arm_api_ctl.sh restart | status | log | attach | check
 #
@@ -23,9 +23,10 @@ have_tmux() { command -v tmux >/dev/null 2>&1; }
 pid_alive() { [ -r "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
 running() { if have_tmux; then tmux has-session -t "$SESSION" 2>/dev/null; else pid_alive; fi; }
 
-# Astra는 한 번에 한 프로그램만 열 수 있다. 팀의 카메라·ROS·hand_eye가 쓰는 중이면 우리 서버가 영상을 못 받는다.
+# 팀의 카메라 노드(openni2_camera, robot_rgbd 등)도 OpenNI 장치를 연다. 우리 카메라 코드는 USB ID(ARM_ASTRA_ID, 기본 2bc5/0401)로
+# 팔 카메라만 고르므로 같이 돌 수 있지만, 팀 노드가 device_id 없이 먼저 켜지면 '첫 장치'로 우리 Astra를 잡을 수 있다.
 camera_users() {
-  pgrep -af 'openni2_camera|astra_camera|robot_rgbd|robot_arm\.py|camera_test\.py|usb_cam|car2_web|hand_eye' 2>/dev/null \
+  pgrep -af 'openni2_camera|astra_camera|robot_rgbd|robot_arm\.py|camera_test\.py|hand_eye' 2>/dev/null \
     | grep -v "pgrep\|arm_api" || true
 }
 
@@ -38,10 +39,9 @@ start() {
     echo "포트 $p 를 다른 프로그램이 쓰고 있습니다. $ENV_FILE 의 ARM_API_PORT를 바꾸세요."; exit 1
   fi
   local users; users="$(camera_users)"
-  if [ -n "$users" ] && [ "${FORCE:-0}" != 1 ]; then
-    echo "Astra 카메라를 쓸 수 있는 다른 프로그램이 돌고 있습니다:"; echo "$users" | sed 's/^/   /' | cut -c1-140
-    echo "팀의 그 프로그램을 먼저 끄세요(예: 노트북에서 ./scripts/remote_robot_rgbd.sh stop). 그래도 켜려면 FORCE=1"
-    exit 1
+  if [ -n "$users" ]; then                    # 막지 않고 알린다: 사진이 안 찍히면 팀 노드가 우리 Astra를 잡은 것이다
+    echo "주의: OpenNI 카메라를 여는 다른 프로그램이 돌고 있습니다:"; echo "$users" | sed 's/^/   /' | cut -c1-140
+    echo "      팔 카메라는 USB ID로 골라 열지만, 사진 오류가 나면 팀 노드에 Astra Pro를 지정(device_id)하거나 잠시 끄세요."
   fi
   : >> "$LOG"
   if have_tmux; then

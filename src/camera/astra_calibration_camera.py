@@ -1,5 +1,7 @@
 """캘리브레이션용 OpenNI2 RGB/Depth. 모터/펌프 모듈을 import하지 않는다."""
 import ctypes
+import os
+import re
 import hashlib
 from pathlib import Path
 import time
@@ -9,6 +11,24 @@ import numpy as np
 
 from hardware import devices
 DEFAULT_RUNTIME = Path(devices.get('openni2_runtime'))   # ARM_OPENNI2_RUNTIME / config/devices.json / calibration/openni2_redist
+# 우리 팔 탑뷰 카메라(Orbbec Astra)의 USB vendor/product. 팀 주행 카메라(Astra Pro, 2bc5/060f)도 OpenNI 장치라서,
+# 둘 다 꽂혀 있으면 '첫 장치'를 열면 남의 카메라를 열 수 있다. 장치 URI(예: 2bc5/0401@1/13) 앞부분으로 고른다.
+ASTRA_ID = os.environ.get('ARM_ASTRA_ID', '2bc5/0401')
+_URI_ID = re.compile(r'^[0-9a-fA-F]{4}/[0-9a-fA-F]{4}')
+
+
+def pick_uri(uris, wanted=ASTRA_ID):
+    """OpenNI 장치 URI 목록에서 팔 카메라를 고른다. USB ID가 맞는 것, 없으면 USB ID 형식이 아닌 장치가 하나뿐일 때 그것."""
+    text = [u.decode(errors='replace') if isinstance(u, bytes) else str(u) for u in uris]
+    if not uris:
+        raise RuntimeError('Astra를 찾지 못했습니다(OpenNI 장치 0개). Astra USB를 다시 꽂아 보세요.')
+    for uri, name in zip(uris, text):
+        if name.lower().startswith(wanted.lower()):
+            return uri
+    if len(uris) == 1 and not _URI_ID.match(text[0]):
+        return uris[0]
+    raise RuntimeError(f'OpenNI 장치 {len(uris)}개 중 팔 카메라({wanted})가 없습니다: {text}. '
+                       '다른 카메라(팀 Astra Pro 등)만 꽂혀 있거나 ID가 다르면 ARM_ASTRA_ID로 지정하세요.')
 
 
 def use_large_device_info(openni2, low):
@@ -40,7 +60,11 @@ class AstraCalibrationCamera:
         openni2.initialize(str(runtime))
         use_large_device_info(openni2, _openni2)
         try:
-            self.device = openni2.Device.open_any()
+            try:
+                uris = openni2.Device.enumerate_uris()
+            except Exception:                        # 목록을 못 읽는 드라이버: 예전처럼 첫 장치
+                uris = None
+            self.device = openni2.Device.open_any() if uris is None else openni2.Device(pick_uri(uris))
             self.color = self.device.create_color_stream()
             self.depth = self.device.create_depth_stream()
             # This Astra driver exposes registration only while streams exist.

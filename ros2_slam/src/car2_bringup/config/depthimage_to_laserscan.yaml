@@ -1,0 +1,11 @@
+depthimage_to_laserscan:
+  ros__parameters:
+    scan_time: 0.1
+    # Orbbec Astra Pro's minimum usable depth range is ~0.6m (closer reads as
+    # empty/noisy) -- see hand_eye/test4.py notes on this same sensor.
+    range_min: 0.6
+    range_max: 6.0
+    # Average a band of rows instead of a single scanline so the "fake lidar"
+    # scan is less sensitive to floor/ceiling noise and single-row dropouts.
+    scan_height: 20
+    output_frame: "camera_depth_frame"

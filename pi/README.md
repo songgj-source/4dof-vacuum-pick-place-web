@@ -91,6 +91,28 @@ bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (
 - 장소 이름은 map_web에 저장된 라벨 그대로입니다. 지도에 없는 장소를 말하면 있는 장소를 알려 줍니다. 주소는 `ARM_BASE_URL`(기본 `http://127.0.0.1:8081`).
 - 진행(이동 중·남은 거리·벽 맞추는 중)은 진행 상태 칸에, 실패 이유는 로그창에 나옵니다.
 
+### 팀 주행 코드 사본(`ros2_slam/`)과 같이 쓰기
+`ros2_slam/`은 팀 저장소(perpet99/dapier_project)의 같은 폴더를 그대로 복사한 것입니다(2026-10-23, 팀 저장소 `f27cbc9`, `ros2_slam` 마지막 변경 `0a7ca73` 10-16).
+**여기서 고치지 않습니다.** 팀 코드 수정은 팀 저장소에서 하고, 새 버전으로 바꿀 때 아래처럼 다시 복사한 뒤 시험(`tests/test_ros2_slam_compat.py`)으로 자비스와 맞는지 봅니다.
+Pi에서는 팀 스크립트가 `~/ros2_slam_robot`으로 따로 배포·빌드하므로, 우리 `deploy_to_robot.sh`는 이 폴더를 보내지 않습니다.
+```bash
+git clone --depth 1 --filter=blob:none --sparse https://github.com/perpet99/dapier_project.git /tmp/dp && git -C /tmp/dp sparse-checkout set ros2_slam
+rm -rf ros2_slam && cp -r /tmp/dp/ros2_slam ./ros2_slam && python -m unittest tests.test_ros2_slam_compat
+```
+
+| 항목 | 팀 주행 | 자비스(팔) | 같이 쓸 때 |
+|---|---|---|---|
+| 웹·API 포트 | map_web 8081, 카메라 웹 8080 | 8000 (노트북 음성 8010, Ollama 중계 11434) | 겹치지 않음 |
+| 차 드라이버 | `/dev/ttyS0`(GPIO UART) | - | 겹치지 않음 |
+| 시리얼 | 라이다 CP2102 `_0001` (기본 by-id) | 펌프 ESP32 CP2102 `_0001` | **이름이 겹침** → 아래 |
+| 카메라 | Astra Pro `2bc5:060f` (openni2_camera, 첫 장치) | Astra `2bc5:0401` (USB ID로 골라 엶, `ARM_ASTRA_ID`) | 팀 노드가 먼저 켜지면 우리 Astra를 잡을 수 있음 → 아래 |
+| 움직임 | Nav2·수동 주행 | 팔 작업 | 팔 작업은 차가 움직이면 시작하지 않음, 자비스 주행은 팔이 접혀 있을 때만 |
+
+- **라이다와 펌프:** 둘 다 CP2102 `_0001`이라 `/dev/serial/by-id` 이름이 하나만 생기고, 어느 쪽을 가리킬지는 꽂은 순서에 따라 바뀝니다(10-22 실제로 라이다 노드가 펌프를 잡음).
+  `python scripts/find_pump_port.py --write`로 펌프를 USB 포트 위치 이름으로 정하고, 출력된 `lidar_port:=/dev/serial/by-path/...`로 라이다를 켭니다:
+  `./scripts/remote_car2_lidar.sh restart lidar_port:=/dev/serial/by-path/...` (팀 저장소 폴더에서). 포트를 옮겨 꽂으면 다시 정합니다(`start_all.sh`가 펌프는 자동으로 다시 찾음).
+- **카메라 2대:** 우리 카메라 코드는 장치 목록에서 `2bc5/0401`을 골라 엽니다(팀 Astra Pro만 꽂혀 있으면 열지 않고 알림). 팀 `openni2_camera`는 `device_id`를 주지 않으면 첫 장치를 열므로, 두 카메라를 함께 쓸 때는 팀 쪽에 Astra Pro를 지정하는 것이 안전합니다. 우리 서버는 팀 카메라 노드가 돌아도 막지 않고 알리기만 합니다.
+
 ### 4. 끄기
 ```bash
 bash pi/remote.sh stop      # Pi 서버 (진행 중인 작업은 정리한 뒤 끝남)
