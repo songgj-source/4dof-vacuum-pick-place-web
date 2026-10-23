@@ -80,8 +80,12 @@ start() {
   say "펌프 포트 (설정한 USB 포트 이름이 사라졌으면 다시 찾는다)"
   local pump; pump="$(pi "cd ~/$REMOTE_DIR && set -a && . pi/arm-api.env && set +a && p=\$ARM_PUMP_PORT; \
     if [ -n \"\$p\" ] && [ ! -e \"\$p\" ]; then echo MISSING; .venv/bin/python scripts/find_pump_port.py --write 2>&1 | grep -E '^(우리 팔|펌프를)' ; fi" 2>&1)"
-  if [ -z "$pump" ]; then echo "   맞음"
-  else echo "$pump" | sed 's/^/   /'; case "$pump" in *ARM_PUMP_PORT=*) changed=1 ;; *) warn "펌프를 찾지 못했습니다 - 펌프 USB와 전원을 확인하세요" ;; esac; fi
+  if [ -n "$pump" ]; then
+    echo "$pump" | sed 's/^/   /'; case "$pump" in *ARM_PUMP_PORT=*) changed=1 ;; *) warn "펌프를 찾지 못했습니다 - 펌프 USB와 전원을 확인하세요" ;; esac
+  fi
+  # 이름만이 아니라 실제로 펌프 펌웨어가 답하는지(식별 q·정지 s만 보낸다. 펌프는 켜지지 않는다). 서버를 다시 켜면 그 사이 작업이 없으니 안전하다
+  pump_ok=1
+  pi "cd ~/$REMOTE_DIR && set -a && . pi/arm-api.env && set +a && .venv/bin/python scripts/find_pump_port.py --check" 2>&1 | sed 's/^/   /' || pump_ok=0
 
   say "Pi Wi-Fi 절전 끄기"
   pi 'sudo -n /usr/sbin/iw dev wlan0 set power_save off 2>/dev/null && /usr/sbin/iw dev wlan0 get power_save' \
@@ -112,7 +116,8 @@ start() {
     ARM_URL="http://$PI_IP:8000" bash "$ROOT/pi/open_jarvis.sh" | sed 's/^/   /'
   fi
   echo
-  if [ "$arm_ready" = 1 ]; then
+  [ "$pump_ok" = 1 ] || warn "펌프가 답하지 않아 흡착이 안 됩니다 - 위 안내를 확인하세요(집기·정리는 실패합니다)"
+  if [ "$arm_ready" = 1 ] && [ "$pump_ok" = 1 ]; then
     echo "준비됐습니다. 움직이는 명령(넣어줘, 정리해, 홈으로)은 묻지 않고 바로 실행됩니다. 끄기: bash pi/start_all.sh stop"
   else
     echo "서버는 켜졌지만 팔을 움직일 수 없는 상태입니다(위 안내 참고). 고친 뒤 bash pi/start_all.sh 를 다시 실행하세요."

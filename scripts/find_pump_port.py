@@ -7,6 +7,7 @@
 
   python scripts/find_pump_port.py           # 찾기만
   python scripts/find_pump_port.py --write   # 찾은 펌프 경로를 pi/arm-api.env의 ARM_PUMP_PORT에 적는다
+  python scripts/find_pump_port.py --check   # 설정된 펌프 포트(ARM_PUMP_PORT)가 펌프 펌웨어로 답하는지만 본다(끝 코드 0/1)
 
 각 장치를 115200으로 열어 식별 명령 'q'를 보내고 'ESP32_VACUUM' 답을 기다린다. 펌프 ESP32는 열 때 재부팅되고
 마지막에 정지('s')를 받으므로 펌프는 꺼진 채로 끝난다. 라이다는 받기만 하는 장치라 'q'는 무시된다.
@@ -85,7 +86,19 @@ def write_env(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--write', action='store_true', help=f'찾은 펌프 경로를 {ENV_FILE.relative_to(ROOT)}에 적는다')
+    parser.add_argument('--check', action='store_true', help='설정된 펌프 포트가 펌프 펌웨어로 답하는지만 본다')
     args = parser.parse_args()
+    if args.check:
+        from hardware import devices
+        port = Path(devices.get('pump_port'))
+        if not port.exists():
+            print(f'펌프 포트가 없습니다: {port}')
+            return 1
+        found = is_pump(port)
+        print({True: f'펌프 응답 OK: {port.name}',
+               False: f'펌프 포트({port.name})의 장치가 펌프 펌웨어로 답하지 않습니다. ESP32에 펌웨어(하드웨어 설명/firmware/esp32_vacuum)를 올렸는지 확인하세요.',
+               None: f'펌프 포트({port.name})를 다른 프로그램이 쓰고 있습니다(라이다 노드가 잡았을 수 있음).'}[found])
+        return 0 if found else 1
     ports = cp2102_ports()
     if not ports:
         print('CP2102 장치가 없습니다(/dev/serial/by-path). 펌프 ESP32가 꽂혀 있는지 확인하세요.')
