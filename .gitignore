@@ -18,3 +18,4 @@ config/devices.json
 .venv/
 pi/arm-api.env
 drive_data/
+output/esp32_repair/
