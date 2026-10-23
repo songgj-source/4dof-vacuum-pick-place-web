@@ -1,11 +1,11 @@
-"""팀 주행 서버(ros2_slam test/map_web.py, 같은 Pi의 8081)의 REST API로 차를 움직인다. 쓰는 기능은 둘뿐이다.
+"""내 주행 서버(ros2_slam test/map_web.py, 같은 Pi의 8082)의 REST API로 차를 움직인다. 쓰는 기능은 둘뿐이다.
 
   base_state       GET /api/state, /api/drive   위치·방향, 라벨 목록, Nav2/벽 근접 상태
   goto_label_wall  POST /api/nav/goto_wall      라벨로 이동한 뒤 정면 벽과 수직으로 맞추고 gap(m) 앞까지 전진
   goto_label_precise  POST /api/nav/goto + /api/drive   라벨의 정확한 위치·방향으로(기본). Nav2로 근처까지 간 뒤 지도 위치를 보며
                    천천히 마무리 정렬한다(라벨을 만든 그 자리, 위치 ±3 cm·방향 ±2°)
 
-주소는 ARM_BASE_URL(기본 http://127.0.0.1:8081). map_web 쪽 코드는 건드리지 않는다.
+주소는 ARM_BASE_URL(기본 http://127.0.0.1:8082).
 goto_wall은 접수만 하고 바로 돌아오므로, 끝날 때까지 /api/state의 nav(이동)·wall(벽 근접)을 읽어 결과를 정한다.
   nav.state   backing / sending / active / canceling → 이동 중, succeeded → 도착, failed / aborted / canceled / rejected / unavailable → 실패
   nav.then_state (goto_wall)  pending → started(벽 근접 시작) / done(이미 gap 안) / failed(벽을 못 찾음)
@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.request
 
-BASE_URL = os.environ.get('ARM_BASE_URL', 'http://127.0.0.1:8081').rstrip('/')
+BASE_URL = os.environ.get('ARM_BASE_URL', 'http://127.0.0.1:8082').rstrip('/')
 NAV_MOVING = ('backing', 'sending', 'active', 'canceling')
 NAV_FAILED = ('failed', 'aborted', 'canceled', 'rejected', 'unavailable')
 DRIVE_TIMEOUT_S = 240.
@@ -113,7 +113,7 @@ def goto_label_wall(name, gap=None, url=None, on_phase=None, stopped=lambda: Fal
             shown = (raw, text)
             on_phase(raw, text)
 
-    phase('drive_start', f"{label['name']}(으)로 출발")
+    phase('drive_start', f"{label['name']}으로 출발")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if stopped():
@@ -130,9 +130,9 @@ def goto_label_wall(name, gap=None, url=None, on_phase=None, stopped=lambda: Fal
             phase('drive_backing', '방향을 돌리려고 후진하는 중')
         elif status in NAV_MOVING:
             distance = nav.get('distance')
-            phase('drive_active', f"{label['name']}(으)로 이동 중" + (f' (남은 {distance:.1f} m)' if isinstance(distance, (int, float)) else ''))
+            phase('drive_active', f"{label['name']}으로 이동 중" + (f' (남은 {distance:.1f} m)' if isinstance(distance, (int, float)) else ''))
         elif status in NAV_FAILED:
-            return dict(ok=False, reason=f"{label['name']}(으)로 가지 못했습니다: {nav.get('message') or status}",
+            return dict(ok=False, reason=f"{label['name']}으로 가지 못했습니다: {nav.get('message') or status}",
                         reason_code='drive_failed', label=label['name'])
         elif status == 'succeeded':
             then = nav.get('then_state')
@@ -151,7 +151,7 @@ def goto_label_wall(name, gap=None, url=None, on_phase=None, stopped=lambda: Fal
                 return dict(ok=False, reason=f"{label['name']}까지는 왔지만 벽에 붙다가 멈췄습니다: {wall.get('message') or wall.get('state')}",
                             reason_code='wall_failed', label=label['name'])
     cancel(url)
-    return dict(ok=False, reason=f"{label['name']}(으)로 {timeout_s:.0f}초 안에 도착하지 못해 멈췄습니다.", reason_code='drive_failed', label=label['name'])
+    return dict(ok=False, reason=f"{label['name']}으로 {timeout_s:.0f}초 안에 도착하지 못해 멈췄습니다.", reason_code='drive_failed', label=label['name'])
 
 
 def cancel(url=None):
@@ -181,7 +181,7 @@ def short_status(state):
     nav = state.get('nav') or {}
     if nav.get('state') in NAV_MOVING:
         left = nav.get('distance')
-        return f"차: {nav.get('target') or '목적지'}(으)로 이동 중" + (f' (남은 {left:.1f} m)' if isinstance(left, (int, float)) else '')
+        return f"차: {nav.get('target') or '목적지'}으로 이동 중" + (f' (남은 {left:.1f} m)' if isinstance(left, (int, float)) else '')
     if state.get('frame') != 'map' or not state.get('pose'):
         return '차: 지도 위 위치 모름'
     near = next((label for label in state.get('labels') or [] if 'dist_m' in label), None)
@@ -323,7 +323,7 @@ def goto_label_precise(name, url=None, on_phase=None, stopped=lambda: False, tim
     phase = on_phase or (lambda raw_phase, text: None)
     started = time.time()
     _call('POST', '/api/nav/goto', {'id': label['id']}, url=url)
-    phase('drive_start', f"{label['name']}(으)로 출발")
+    phase('drive_start', f"{label['name']}으로 출발")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if stopped():
@@ -339,15 +339,15 @@ def goto_label_precise(name, url=None, on_phase=None, stopped=lambda: False, tim
             phase('drive_backing', '방향을 돌리려고 후진하는 중')
         elif status in NAV_MOVING:
             distance = nav.get('distance')
-            phase('drive_active', f"{label['name']}(으)로 이동 중" + (f' (남은 {distance:.1f} m)' if isinstance(distance, (int, float)) else ''))
+            phase('drive_active', f"{label['name']}으로 이동 중" + (f' (남은 {distance:.1f} m)' if isinstance(distance, (int, float)) else ''))
         elif status in NAV_FAILED:
-            return dict(ok=False, reason=f"{label['name']}(으)로 가지 못했습니다: {nav.get('message') or status}",
+            return dict(ok=False, reason=f"{label['name']}으로 가지 못했습니다: {nav.get('message') or status}",
                         reason_code='drive_failed', label=label['name'])
         elif status == 'succeeded':
             result = fine_align(label, url, on_phase, stopped, sleep)
             return dict(result, label=label['name'])
     cancel(url)
-    return dict(ok=False, reason=f"{label['name']}(으)로 {timeout_s:.0f}초 안에 도착하지 못해 멈췄습니다.", reason_code='drive_failed', label=label['name'])
+    return dict(ok=False, reason=f"{label['name']}으로 {timeout_s:.0f}초 안에 도착하지 못해 멈췄습니다.", reason_code='drive_failed', label=label['name'])
 
 
 def drive_to(name, mode='precise', gap=None, url=None, on_phase=None, stopped=lambda: False, timeout_s=DRIVE_TIMEOUT_S, sleep=time.sleep):

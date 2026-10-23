@@ -94,6 +94,7 @@
 
   .side { display: grid; gap: 20px; align-content: start; }
   .status-card { min-height: 220px; }
+  .status-card[hidden] { display: none; }
   .status-head { align-items: center; }
   .status-head h2 { margin: 0; }
   .cam-api { display: block; font-family: var(--mono); font-size: 11.5px; color: var(--faint); margin: 2px 0 12px; }
@@ -199,7 +200,7 @@
     <section class="card chat">
       <div class="status-head"><h2>말로 시키기</h2><button id="look" title="위 카메라로 다시 찍고 상황을 알려 줍니다">다시 보기</button></div>
       <code class="api cam-api">POST /api/situation · /chat · 로컬 LLM(Ollama)</code>
-      <div id="log" class="log" aria-live="polite"><p class="hint">화면을 열면 먼저 책상을 찍어 상황과 할 수 있는 일을 알려 드립니다. 잠시 기다려 주세요.</p></div>
+      <div id="log" class="log" aria-live="polite"><p class="hint">“책상 정리해줘”라고 말하면 책상으로 이동해 정지를 확인한 뒤 사진을 찍고 할 작업을 물어봅니다. 지금 사진만 확인하려면 [다시 보기]를 누르세요.</p></div>
       <form id="chat-form" class="chat-form"><input id="chat-in" maxlength="500" placeholder="명령을 입력하거나 [말하기]를 누르세요 (바로 실행됩니다)" autocomplete="off" aria-label="명령">
         <button type="button" id="mic" title="누르고 말하세요. 예: 자비스, 빨간 큐브 넣어줘 / 실행 / 멈춰"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>말하기</button>
         <button id="chat-send" class="primary">보내기</button></form>
@@ -211,7 +212,7 @@
 
     <div class="side">
 
-    <section class="card status-card">
+    <section class="card status-card" hidden>
       <div class="status-head"><h2>진행 상태</h2></div>
       <div id="banner"></div>
       <div class="now" id="now">대기 중</div>
@@ -288,7 +289,7 @@ const REASONS = {
 };
 const $ = (id) => document.getElementById(id);
 let token = ''; try { token = localStorage.getItem('armToken') || ''; } catch (e) {}
-let busy = false, watched = null, lastShown = null, looked = false;
+let busy = false, watched = null, lastShown = null;
 
 async function api(method, path, body) {
   const headers = { 'Content-Type': 'application/json' };
@@ -298,8 +299,9 @@ async function api(method, path, body) {
   return { status: r.status, data };
 }
 function describe(cmd) {
-  if (cmd.action === 'drive' && cmd.then === 'tidy') return `${cmd.label}(으)로 이동한 뒤 책상을 정리합니다.`;
-  if (cmd.action === 'drive') return `${cmd.label}(으)로 이동합니다(라벨을 만든 자리와 방향에 맞춰 섭니다).`;
+  if (cmd.action === 'drive' && cmd.then === 'inspect') return `${cmd.label}으로 이동한 뒤 사진을 찍고 보이는 물체를 정리합니다.`;
+  if (cmd.action === 'drive' && cmd.then === 'tidy') return `${cmd.label}으로 이동한 뒤 책상을 정리합니다.`;
+  if (cmd.action === 'drive') return `${cmd.label}으로 이동합니다(라벨을 만든 자리와 방향에 맞춰 섭니다).`;
   if (cmd.action === 'return_home') return 'HOME으로 복귀합니다.';
   if (cmd.action === 'pick_all' && cmd.objects) return `${cmd.objects.map((o) => NAMES[o]).join(', ')}를 차례로 넣습니다(책상 정리).`;
   if (cmd.action === 'pick_all') return '세 물체를 모두 넣습니다(흰 상자 → 정육면체 → 줄자, 책상에 없는 것은 건너뜀).';
@@ -437,7 +439,8 @@ function offer(msg, proposal) {          // 제안 → [실행] 버튼. 새 제�
   msg.appendChild(row);
   return cmd;
 }
-// 상황 파악: 사진 → 책상 상황·할 수 있는 일·기본 제안(책상 정리) → 입력을 기다린다. 화면을 열 때, 작업이 끝날 때마다, [다시 보기].
+// 상황 파악은 [다시 보기] 또는 팔 단독 작업 성공 뒤에만 실행한다.
+// 이동 후 정리의 사진은 서버가 도착·연속 정지를 확인한 뒤 촬영한다.
 let looking = false;
 async function lookAround() {
   if (looking || busy) return;
@@ -616,7 +619,6 @@ async function poll() {
   let res; try { res = await api('GET', '/status'); } catch (e) { $('state').className = 'pill down'; $('state').textContent = '서버 연결 끊김'; return; }
   if (res.status === 401) { $('state').className = 'pill down'; $('state').textContent = '토큰 필요(설정)'; return; }
   const s = res.data; setBusy(s.state === 'busy');
-  if (!looked && s.state === 'idle') { looked = true; lookAround(); }       // 화면을 열면 먼저 책상을 찍어 상황을 알린다
   $('state').className = 'pill ' + (s.state === 'busy' ? 'busy' : 'idle');
   $('state').textContent = s.state === 'busy' ? '실행 중' : '대기 중';
   $('home').hidden = s.arm_home == null; $('home').textContent = s.arm_home ? 'HOME 자세' : '';
@@ -628,37 +630,69 @@ async function poll() {
     if (t.status === 200) render(t.data, s);
   }
 }
-// ---------- 로봇 목소리: 진행 알림 ----------
-// 이 화면이 열려 있는 동안 실행 중이었던 작업만 알린다(화면·음성·NOMI 어디서 시작했든). 페이지를 열 때 이미 끝난 작업은 말하지 않는다.
-const seenRunning = new Set(), told = {};
+// ---------- 대화창의 짧은 동작 안내 + 음성 ----------
+const seenRunning = new Set(), told = {}, shownQuestions = new Set();
+function showDeskQuestion(task) {
+  const q = task.result && task.result.question;
+  if (!q || shownQuestions.has(task.id)) return;
+  shownQuestions.add(task.id);
+  const msg = bubble('bot', q.reply);
+  if (q.scene) showScene(q.scene, msg);
+  if (q.actions && q.actions.length) {
+    const list = document.createElement('ul'); list.className = 'actions';
+    q.actions.forEach((text) => { const li = document.createElement('li'); li.textContent = text; list.appendChild(li); });
+    msg.appendChild(list);
+  }
+  offer(msg, q.proposal);       // 선택지만 준비한다. 사용자 답변/클릭 전에는 실행하지 않는다.
+  chatHistory.push({ role: 'assistant', content: q.reply });
+  speak(q.speech || q.reply, false);
+}
+function actionSummary(task, p) {
+  const phase = p.phase || '', place = (task.params || {}).label || '목적지';
+  if (task.skill === 'drive') {
+    if (['drive_start', 'drive_active', 'drive_backing'].includes(phase)) return ['drive', `${place}으로 이동합니다.`];
+    if (phase.startsWith('fine_') || phase === 'drive_wall') return ['align', `${place} 앞에서 위치와 방향을 맞춥니다.`];
+    if (phase === 'drive_settle') return ['stop', '도착했습니다. 차가 완전히 멈췄는지 확인합니다.'];
+    if (phase === 'tidy_look') return ['photo', '차가 멈췄습니다. 책상 사진을 찍습니다.'];
+    if (phase === 'tidy_found' || phase === 'tidy_empty') return ['found', p.label];
+    if (phase === 'plan') return ['plan', '집을 물체의 위치를 확인합니다.'];
+    const item = task.item || (task.params || {}).object;
+    if (item) return ['item:' + item, `${NAMES[item] || '물체'}를 정리합니다.`];
+    return null;
+  }
+  if (phase === 'unknown_wait') return ['wait', '새 물체 하나를 작업 영역에 놓고 손을 빼 주세요.'];
+  if (task.skill === 'return_home' || phase.includes('home')) return ['home', '팔을 HOME으로 복귀합니다.'];
+  if (phase === 'plan') return ['plan', '집을 물체의 위치를 확인합니다.'];
+  const item = task.item || (task.params || {}).object;
+  if (item) return ['item:' + item, `${NAMES[item] || '물체'}를 정리합니다.`];
+  return null;
+}
 function announce(task) {
-  if (task.state === 'running') seenRunning.add(task.id);
+  if (task.state === 'running' || task.id === watched) seenRunning.add(task.id);
   if (!seenRunning.has(task.id)) return;
-  const t = told[task.id] || (told[task.id] = { step: null, waitSaid: false, done: false });
-  if (task.state === 'running') {
-    let step = null, line = null;
-    if (task.phase === 'unknown_wait') {
-      if (!t.waitSaid) { t.waitSaid = true; speak('새 물체 하나를 작업 영역에 놓고 손을 빼 주세요.', false); }
-      return;
-    }
-    if (task.skill === 'pick_all') {
-      if (task.phase === 'plan') { step = 'plan'; line = '책상의 물체 위치를 확인합니다.'; }
-      else if (task.item && task.phase) { step = 'item:' + task.item; line = `${NAMES[task.item]}를 ${DEFAULT_SLOT[task.item]}번 칸에 넣습니다.`; }
-    } else if (task.skill === 'return_home') { step = 'home'; line = 'HOME 자세로 돌아갑니다.'; }
-    else if (task.params && task.params.object) { step = 'pick'; line = task.params.object === 'unknown' ? '새 물체를 넣을 준비를 합니다.' : `${NAMES[task.params.object]}를 ${task.params.slot}번 칸에 넣습니다.`; }
-    if (step && t.step !== step && !(step === 'plan' && t.step)) { t.step = step; speak(line, false); }
-  } else if (task.result && !t.done) {
+  const t = told[task.id] || (told[task.id] = { seen: new Set(), done: false });
+  const phases = task.phases && task.phases.length ? task.phases : [{phase:task.phase}];
+  for (const p of phases) {
+    const summary = actionSummary(task, p);
+    if (!summary || t.seen.has(summary[0])) continue;
+    t.seen.add(summary[0]);
+    bubble('bot', summary[1]); speak(summary[1], false);
+  }
+  if (task.state !== 'running' && task.result && !t.done) {
     t.done = true;
     const r = task.result;
-    if (r.ok) speak((task.skill === 'pick_all' ? '책상 정리를 마쳤습니다.' : task.skill === 'return_home' ? 'HOME으로 돌아왔습니다.' : '넣었습니다.') + (r.note ? ' ' + r.note : ''), false);
-    else if (r.reason_code === 'cancelled') speak('멈췄습니다.', false);
-    else speak('멈췄습니다. ' + (r.reason || REASONS[r.reason_code] || '원인을 확인해 주세요.'), false);
-    if (r.reason_code !== 'cancelled') setTimeout(lookAround, 1500);        // 끝나면 다시 책상을 찍어 다음에 할 일을 알린다(멈춤 뒤에는 기다린다)
+    if (r.awaiting_choice) return;  // 질문은 render에서 한 번만 표시한다.
+    const line = r.ok ? (task.skill === 'drive' ? (['inspect', 'tidy'].includes(task.params.then) ? '책상 정리를 마쳤습니다.' : '목적지에 도착했습니다.')
+      : task.skill === 'return_home' ? 'HOME으로 돌아왔습니다.' : '작업을 마쳤습니다.')
+      : r.reason_code === 'cancelled' ? '멈췄습니다.' : '멈췄습니다. ' + (r.reason || REASONS[r.reason_code] || '원인을 확인해 주세요.');
+    bubble(r.ok ? 'bot' : 'bot err', line); speak(line, false);
   }
 }
 function render(task, s) {
   announce(task);
-  const label = task.skill === 'return_home' ? 'HOME 복귀' : task.skill === 'pick_all' ? (task.params && task.params.objects ? '책상 정리 (' + task.params.objects.map((o) => NAMES[o]).join(', ') + ')' : '세 물체 모두 넣기')
+  if (task.result && task.result.awaiting_choice) showDeskQuestion(task);
+  const label = task.skill === 'drive' ? `${task.params.label} 이동${['inspect', 'tidy'].includes(task.params.then) ? ' 후 정리' : ''}`
+              : task.skill === 'return_home' ? 'HOME 복귀' : task.skill === 'pick_all' ? (task.params && task.params.objects ? '책상 정리 (' + task.params.objects.map((o) => NAMES[o]).join(', ') + ')' : '세 물체 모두 넣기')
               : `${NAMES[task.params.object] || ''} → ${task.params.slot}번 칸`;
   $('now').textContent = task.state === 'running' ? (task.phase_label || '카메라로 위치를 찾는 중') : label;
   $('meta').textContent = task.state === 'running' ? `${label} · ${Math.round(s.elapsed_s || 0)}초` : `${label} · ${task.seconds}초`;

@@ -54,7 +54,7 @@ bash pi/remote.sh start     # 서버 켜기. 켜기만 해서는 로봇이 움�
 
 ### 3. 화면 열기
 ```bash
-bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (터널 없이 마이크 사용 가능). start_all은 주행 화면 :8081도 탭으로 연다
+bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (터널 없이 마이크 사용 가능). start_all은 주행 화면 :8082도 탭으로 연다
 ```
 처음 한 번 [설정]에 접속 토큰을 넣습니다. 토큰 보기:
 `ssh user@192.168.0.31 "grep ^ARM_API_TOKEN= ~/4dof_ik_pi_test/pi/arm-api.env | cut -d= -f2"`
@@ -75,8 +75,8 @@ bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (
 - 팔이 닿는 거리(로봇에서 16~38 cm) 안의 책상에는 정리할 물체만 둡니다. 다른 물건(리튬팩 등)도 물체로 잡혀 집으러 갈 수 있습니다.
 - 팔 밑동에 너무 가까운 물체(약 16 cm 안)는 로봇 자신으로 보고 뺍니다.
 
-### 주행 (팀 map_web과 함께)
-팀원의 주행 서버(`test/map_web.py`, 같은 Pi의 8081)가 켜져 있으면 자비스가 그 API 두 개만 불러 차를 움직입니다.
+### 주행 (내 전용 map_web과 함께)
+내 전용 주행 서버(`test/map_web.py`, 같은 Pi의 8082)가 켜져 있으면 자비스가 그 API 두 개만 불러 차를 움직입니다.
 - `base_state`(`GET /api/state`, `/api/drive`): 지도 위 위치·방향, 저장된 장소(라벨), 이동 상태 → 자비스 `GET /api/base`, "지금 어디야?"
 - `goto_label`(`POST /api/nav/goto`) + 마무리 정렬(`POST /api/drive`): 라벨 자리·방향에 정확히 서기(기본) → "책상으로 이동해줘", 메뉴 8번 "장소로 이동", `POST /robot_arm {"action": "drive", "label": "책상"}`
 - `goto_label_wall`(`POST /api/nav/goto_wall`): 장소로 이동한 뒤 앞 벽(작업대)과 수직으로 맞춰 붙음 → `mode: wall`
@@ -97,9 +97,13 @@ bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (
 - 예전처럼 앞 벽에 붙고 싶으면 `mode: wall`(`POST /robot_arm {"action": "drive", "label": "책상", "mode": "wall", "gap": 0.05}`).
 - **팔이 HOME으로 접혀 있을 때만 주행합니다**(관절마다 HOME에서 120 펄스 안). 아니면 "먼저 홈으로 돌아가"라고 거부합니다.
 - 주행 중에는 팔 작업을 받지 않고, 팔 작업 중에는 주행을 받지 않습니다(한 번에 한 작업). 팔 작업은 차가 움직이면 시작하지 않습니다.
-- 장소 이름은 map_web에 저장된 라벨 그대로입니다. 지도에 없는 장소를 말하면 있는 장소를 알려 줍니다. 주소는 `ARM_BASE_URL`(기본 `http://127.0.0.1:8081`).
-- 진행(이동 중·남은 거리·벽 맞추는 중·도착 후 사진·정리)은 진행 상태 칸에, 실패 이유는 로그창에 나옵니다. 위쪽에 차 위치(가장 가까운 장소·이동 중)가 3초마다 보입니다.
+- 장소 이름은 map_web에 저장된 라벨 그대로입니다. 지도에 없는 장소를 말하면 있는 장소를 알려 줍니다. 주소는 `ARM_BASE_URL`(기본 `http://127.0.0.1:8082`).
+- 진행(이동 중·정지 확인·도착 후 사진·정리)은 대화창에 짧게 나오고 음성으로 안내합니다. 실패 이유는 로그창에 나옵니다.
 - "가서 정리해"는 도착(벽 근접 성공) 뒤 차가 멈춘 것을 확인하고(최대 4초) 사진을 두 장 찍어 정리합니다. 도착이나 벽 맞추기에 실패하면 정리하지 않습니다.
+
+“책상 정리해줘”는 **책상으로 주행 → 0.5초 간격 3회 연속 정지 확인 → 촬영 → “책상에 …가 보입니다. 정리하겠습니다.” 안내 → 팔 정리** 순서입니다.
+사진에서 팔이 닿는 등록 물체만 정리하며, 물체가 없으면 팔 작업을 시작하지 않습니다.
+별도 진행 상태 창 대신 대화창에 짧은 동작 안내를 출력합니다. 새 화면은 Ctrl+Shift+R로 불러오세요.
 
 ### 내 주행 스택 (팔과 함께, Pi에서)
 `bash pi/start_all.sh`가 팔과 함께 **내 `ros2_slam` 사본으로 주행 스택을 Pi에서 직접** 켭니다(팀 것을 쓰지 않음, `NO_DRIVE=1`이면 팔만).
@@ -108,8 +112,8 @@ bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (
 | 순서 | tmux 세션 (Pi) | 내용 |
 |---|---|---|
 | 1 | `arm_drive_robot` | 차 드라이버(`/dev/ttyAMA0`, `ARM_CAR_PORT`) + 라이다(포트 자동 찾기) |
-| 2 | `arm_drive_nav` | 지도(`ros2_slam/maps/lidarmap.yaml`, `ARM_DRIVE_MAP`) + AMCL 위치 추정 + Nav2, RViz 없이 |
-| 3 | `arm_drive_web` | map_web 8081 (자비스가 이것을 부름) |
+| 2 | `arm_drive_nav` | 기본 지도(`ros2_slam/maps/remap_20261023_1156.yaml`, `ARM_DRIVE_MAP`) + AMCL 위치 추정 + Nav2, RViz 없이 |
+| 3 | `arm_drive_web` | map_web 8082 (자비스가 이것을 부름) |
 | 4 | - | 켜면 '전체 지도에서 위치 찾기'로 처음 위치를 잡음(차는 안 움직임) |
 
 ```bash
@@ -121,7 +125,8 @@ ssh user@192.168.0.31 'bash ~/4dof_ik_pi_test/pi/drive_ctl.sh log nav'       # �
 - 팀 주행(드라이버·라이다·map_web·AMCL)이 이미 돌고 있으면 바퀴 드라이버·라이다가 겹치므로 **켜지 않고 알립니다.** 팀 프로그램은 끄지 않습니다.
 - 차 시리얼은 이 Pi에서 `/dev/ttyAMA0`입니다(사본 launch 기본값 `/dev/ttyS0`은 입출력 오류로 드라이버가 죽음, 10-23 확인).
 - 코드를 바꾸면 `bash pi/deploy_to_robot.sh`가 사본을 Pi로 보내고 빌드합니다. 그 뒤 `bash pi/start_all.sh stop && bash pi/start_all.sh`.
-- 지도 위 장소(라벨)는 map_web 화면(`http://192.168.0.31:8081`)에서 만듭니다. 라벨은 책상에서 조금(3 cm 넘게) 떨어진 자리에서 만드세요.
+- 처음 실행할 때 기본 지도의 라벨(`remap_20261023_1156.labels.json`)을 `drive_data/labels.json`으로 복사합니다. 이미 저장된 내 라벨은 덮어쓰지 않습니다.
+- 지도 위 장소(라벨)는 map_web 화면(`http://192.168.0.31:8082`)에서 만듭니다. 라벨은 책상에서 조금(3 cm 넘게) 떨어진 자리에서 만드세요.
 
 ### 팀 주행 코드 사본(`ros2_slam/`)과 같이 쓰기
 `ros2_slam/`은 팀 저장소(perpet99/dapier_project)의 같은 폴더를 복사한 **우리 사본**입니다(2026-10-23, 팀 저장소 `f27cbc9`, `ros2_slam` 마지막 변경 `0a7ca73` 10-16).
@@ -136,7 +141,7 @@ rm -rf ros2_slam && cp -r /tmp/dp/ros2_slam ./ros2_slam && python -m unittest te
 
 | 항목 | 팀 주행 | 자비스(팔) | 같이 쓸 때 |
 |---|---|---|---|
-| 웹·API 포트 | map_web 8081, 카메라 웹 8080 | 8000 (노트북 음성 8010, Ollama 중계 11434) | 겹치지 않음 |
+| 웹·API 포트 | map_web 8081, 카메라 웹 8080 | map_web 8082, 팔 8000 (노트북 음성 8010, Ollama 중계 11434) | 겹치지 않음 |
 | 차 드라이버 | `/dev/ttyS0`(GPIO UART) | - | 겹치지 않음 |
 | 시리얼 | 라이다 CP2102 `_0001` (기본 by-id) | 펌프 ESP32 CP2102 `_0001` | **이름이 겹침** → 아래 |
 | 카메라 | Astra Pro `2bc5:060f` (openni2_camera, 첫 장치) | Astra `2bc5:0401` (USB ID로 골라 엶, `ARM_ASTRA_ID`) | 팀 노드가 먼저 켜지면 우리 Astra를 잡을 수 있음 → 아래 |

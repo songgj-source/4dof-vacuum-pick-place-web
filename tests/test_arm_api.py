@@ -539,7 +539,7 @@ class ChatTests(ApiBase):
                  '모르는 물체 3번 칸에 넣어줘': {'action': 'pick_place', 'object': 'unknown', 'slot': 3},
                  '흰 상자 다 넣어줘': {'action': 'pick_place', 'object': 'white_box'},
                  '다 정리해줘': all_three, '전부 넣어': all_three,
-                 '책상 정리해줘': all_three, '책상 좀 치워줘': all_three, '분류해줘': all_three,
+                 '정리해줘': all_three, '좀 치워줘': all_three, '분류해줘': all_three,
                  'HOME으로 돌아가': {'action': 'return_home'}, '팔 접어': {'action': 'return_home'}, '로봇팔 홈 자세로': {'action': 'return_home'}}
         for text, expected in cases.items():
             status, body = self.chat(FakeLlm([]), text)
@@ -548,6 +548,7 @@ class ChatTests(ApiBase):
         self.assertEqual(self.commands, [])
 
     def test_tidy_takes_a_photo_and_proposes_only_what_is_on_the_desk(self):
+        self.arm.awaiting_desk_choice = True
         a, b = self.fake_scene(('red_cube', True), ('tape_measure', True), ('white_box', False), ('unknown', False))
         with a, b:
             status, body = self.chat(FakeLlm([]), '책상 정리해줘')
@@ -566,6 +567,7 @@ class ChatTests(ApiBase):
         self.assertIn('정리할 물체가 없습니다', body['reply'])
 
     def test_tidy_without_the_camera_still_proposes_and_skips_missing_later(self):
+        self.arm.awaiting_desk_choice = True
         with patch.object(self.arm, 'capture', return_value=(409, dict(ok=False, reason_code='busy', reason='작업 중'))):
             status, body = self.chat(FakeLlm([]), '책상 정리해줘')
         self.assertEqual(body['proposal'], {'action': 'pick_all'})
@@ -607,7 +609,7 @@ class ChatTests(ApiBase):
                      in_tray=[dict(label='tape_measure', name='줄자', slot=3)], available_menus=[2, 5, 6], note='n')
         with patch.object(arm_api, 'grab_astra', return_value=frame), patch.object(arm_api, 'describe_scene', return_value=scene):
             _, body = self.situation()
-            _, tidy = self.chat(FakeLlm([]), '책상 정리해줘')
+            _, tidy = self.chat(FakeLlm([]), '정리해줘')
         self.assertIn('트레이에는 줄자(3번 칸)가 이미 들어 있습니다', body['reply'])
         self.assertEqual(body['proposal'], {'action': 'pick_all', 'objects': ['red_cube']})
         self.assertEqual(tidy['proposal'], {'action': 'pick_all', 'objects': ['red_cube']})
@@ -631,6 +633,7 @@ class ChatTests(ApiBase):
 
     def test_web_page_is_served(self):
         with urllib.request.urlopen(self.base + '/', timeout=5) as response:
+            self.assertEqual(response.headers['Cache-Control'], 'no-store')
             self.assertIn('<title>자비스</title>', response.read().decode())
 
     def test_ollama_down_reports_setup_needed(self):

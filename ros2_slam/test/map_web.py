@@ -1399,6 +1399,12 @@ class MapWeb(Node):
             # a goal still running would fight the backup over /cmd_vel: cancel it first
             if self.goal_handle is not None and self.nav.get('state') in ('sending', 'active'):
                 self.goal_handle.cancel_goal_async()
+            # A new request must not inherit the previous goal's timestamp:
+            # clients use it to distinguish current results from stale ones.
+            # Backup completion and retries below retain this request's start.
+            self.backup = None
+            self.nav = {'state': 'sending', 'target': label, 'label': label,
+                        'started': time.time(), 'backed': 0.0, 'then': self.nav_then}
             bearing = self._goal_bearing(label)
             if self.backup_m <= 0 or bearing is None or abs(bearing) <= math.pi / 2:
                 note = ('' if self.backup_m <= 0 else
@@ -2370,7 +2376,7 @@ async function goLabel(wall) {
   if (!confirm(`로봇이 ${behind ? '(목표가 뒤쪽이라) 먼저 30 cm 후진한 뒤 ' : ''}'${lb.name}' (x ${lb.x.toFixed(2)}, y ${lb.y.toFixed(2)})까지 자율 주행합니다.`
                + (wall ? `\n도착하면 정면 벽과 수직으로 회전한 뒤${gap}까지 전진합니다.` : '')
                + `\n주변이 안전한가요? (중지: 'Navi 취소' / 정지 버튼 / 주행 패드)`)) return;
-  try { await post(wall ? '/api/nav/goto_wall' : '/api/nav/goto', { id: lb.id }); msg('navstate', `'${lb.name}'(으)로 목표 전송`, 'busy'); }
+  try { await post(wall ? '/api/nav/goto_wall' : '/api/nav/goto', { id: lb.id }); msg('navstate', `'${lb.name}'으로 목표 전송`, 'busy'); }
   catch (e) { msg('navstate', e.message, 'err'); }
 }
 $('lgo').onclick = () => goLabel(false);

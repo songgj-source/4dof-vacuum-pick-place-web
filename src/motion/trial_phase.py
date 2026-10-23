@@ -12,7 +12,7 @@ from motion import guard_mode
 
 def phase_pose_tolerance(name, *, pick_tilt_deg=0.):
     """Keep the existing tilted-pick exception; low gain never relaxes arrival."""
-    if pick_tilt_deg and name.startswith(('approach', 'descent', 'lift20')):return .008
+    if pick_tilt_deg and name.startswith(('approach', 'descent', 'lift20', 'lift_to_clear')):return .008
     if guard_mode.relaxed() and not name.startswith(('approach', 'descent')):return guard_mode.RELAXED_POSE_TOLERANCE_M   # 접근·하강은 5mm 보정이 이 검사에 의존한다
     return .005
 

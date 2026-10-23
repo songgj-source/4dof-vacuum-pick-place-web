@@ -16,7 +16,7 @@ from hardware.servo_mapping import MappingProfile
 from hardware.servo_transport import ServoTransport
 from hardware.servo_driver import ServoDriver
 from robot.planar_kinematics import PlanarGeometry,NAMES
-from motion.hover_trial import run_hover_trial,TRAVEL_PERIOD_S,TRAVEL_PULSES_PER_STEP,TRAVEL_GOAL_SPEED,TRAVEL_GOAL_ACCELERATION,TRAVEL_ACCEL
+from motion.hover_trial import run_hover_trial,TRAVEL_PERIOD_S,TRAVEL_PULSES_PER_STEP,TRAVEL_GOAL_SPEED,TRAVEL_GOAL_ACCELERATION,TRAVEL_ACCEL,LIFT_MAX_M
 from motion.home_trial import run_recorded_home_trial
 from motion.trial_phase import finish_pose_phase,candidate_xyz,release_after_return,release_at_slot,stationary_snapshot,phase_pose_tolerance,approach_correction_target,approach_feedforward_target,PoseToleranceError
 from sorting.place_exec import run_place,DEFAULT_MAX_CARRY_S
@@ -35,7 +35,7 @@ from optional.wrist_centering.wrist_hover_center import run_center_once
 from camera.wrist_contact_rgb import record_observation,outcome_context,camera_worker,unknown as unknown_contact_rgb
 
 BASE=ROOT/'output/ik_resume_20261012'
-SLOW_RATE_PPS=100.   # 천천히 움직이는 동작의 속도(펄스/초), 2026-10-21 사용자 지정(이전: 하강 60, 접촉 직전 13, 탐색 이동 약 17)
+SLOW_RATE_PPS=150.   # 천천히 움직이는 동작의 속도(펄스/초), 2026-10-23 사용자 요청: 100→150
 # 세 물체 연속 정리(2026-10-21 사용자): 앞 물체를 놓은 트레이 위에서 HOME을 거치지 않고 다음 물체로 간다.
 CHAIN_START_Z=(.070,.135)      # 놓기가 끝나는 운반 높이(70~130mm). 이 밖이면 기존 HOME 리셋
 CHAIN_START_R=(.14,.32)        # HOME 복귀 시작 구간과 같은 반경(먼 칸은 놓은 뒤 이 안으로 물러나 선다)
@@ -44,6 +44,22 @@ CHAIN_TRANSIT_Z=.120           # 트레이에서 물체로 갈 때의 최소 높
 from hardware import devices
 PUMP=devices.get('pump_port')      # ARM_PUMP_PORT / config/devices.json / 기본값
 WRIST_CAMERA=Path(devices.get('wrist_camera'))
+
+
+def post_pick_rise(hover, fresh_xyz, contact, *, placing):
+    """After suction, stream two checked lift segments to 70 mm for a place job."""
+    if placing:
+        start=tuple(fresh_xyz())
+        if math.hypot(start[0]-contact[0],start[1]-contact[1])>.003:
+            raise ValueError('post-pick lift start moved more than 3 mm sideways')
+        rise=.070-start[2]
+        if .010<=rise<=2*LIFT_MAX_M:
+            midpoint=(start[0],start[1],start[2]+rise/2)
+            hover('lift_to_clear',(start[0],start[1],.070),lift_m=rise,via=(midpoint,),
+                  via_pulses=2,continuous_lift=True)
+            return 'lift_to_clear'
+    hover('lift20',(*contact[:2],contact[2]+.020),lift_m=.020)
+    return 'lift20'
 
 
 def main(argv=None):
@@ -89,11 +105,11 @@ def main(argv=None):
     parser.add_argument('--skip-home-after-place',action='store_true',help='place only: after a completed place stay above the tray with the tool vertical (the next object follows with --start-above-tray); failed picks/releases still return HOME')
     parser.add_argument('--start-above-tray',action='store_true',help='start from where the previous --skip-home-after-place cycle ended (above the tray, tool vertical) and go straight to the object without HOME; other start poses use the existing HOME reset')
     parser.add_argument('--home-rate',type=float,default=150.,help='place only: automatic HOME return speed in pulses/s, 50-300 (default 150, the speed that passes the return_home.py 16-pulse follow-error guard: at 200 and 300 the shoulder lags 17 and the guard stops the return (measured 2026-10-15))')
-    parser.add_argument('--held-rate',type=float,default=100.,help='pulses/s while the object hangs on the cup: lift20, lifts/lowers in place and the table return, 0 = old slow profile (26-33), else 40-150 (default 100, 2026-10-20 user: slower shook more)')
+    parser.add_argument('--held-rate',type=float,default=150.,help='pulses/s while the object hangs on the cup: post-pick rise, lifts/lowers in place and the table return, 0 = old slow profile (26-33), else 40-150 (default 150)')
     parser.add_argument('--approach-feedforward-mm',type=float,nargs=2,default=[3.5,3.0],metavar=('RADIAL','UP'),help='send the approach/approach_b hover this far outward and up (P32 stops short the same way: 2026-10-20, 15 runs); 0 0 disables, each 0-6 mm')
-    parser.add_argument('--descent-rate',type=float,default=100.,help='pulses/s while lowering from above (pick descent; place lower uses --held-rate), 13-100 (default 60 since 2026-10-20, was 33). The last 20 pulses before contact stay at 13 pulses/s; lifting off the table is unchanged')
+    parser.add_argument('--descent-rate',type=float,default=150.,help='pulses/s while lowering from above (pick descent; place lower uses --held-rate), 13-150 (default 150)')
     parser.add_argument('--place-pulses-per-step',type=int,choices=[2,4],default=2,help='place carry: pulses per tick (tick = pulses/--place-rate). Past records show the arm shakes unless the tick is about 13.4 ms; 2 pulses at 150 pulses/s gives that tick at a lower speed than 4 at 300')
-    parser.add_argument('--hold-check',choices=['enforce','record','off'],default='off',help='(default off since 2026-10-19: the colour-based check misjudged a white box on the white table as "nothing under the cup" although it was lifted; user asked to remove the verdict) place only: after lifting 20 mm compare the wrist photo with the contact photo; enforce = if the object clearly did not come up with the cup, release the suction, skip place, return HOME and exit with code 3 (run_sort.py then picks again). record = only log; off = no check')
+    parser.add_argument('--hold-check',choices=['enforce','record','off'],default='off',help='optional diagnostic after the post-pick rise: compare a wrist photo with the contact photo; enforce = stop if it appears unheld, record = log only, off = no photo check (default)')
     parser.add_argument('--min-contact-z-mm',type=float,default=10.,help='lowest cup height for contact/lift moves, 5-30 mm (default 10). The old 30 mm floor was removed on user instruction so low objects (white box top 24 mm) can be picked; this minimum only keeps the cup off the table')
     parser.add_argument('--place-max-s',type=float,default=DEFAULT_MAX_CARRY_S,help='stop (without releasing) if the place sequence takes longer than this many seconds')
     args=parser.parse_args(argv)
@@ -109,7 +125,7 @@ def main(argv=None):
     approach_period=approach_pulses/travel_rate
     approach_limit=32 if args.fast_space else 16
     if not math.isfinite(args.pick_tilt_deg) or not 0.<=args.pick_tilt_deg<=20.:parser.error('--pick-tilt-deg must be 0-20')
-    if not math.isfinite(args.descent_rate) or not 13.<=args.descent_rate<=100.:parser.error('--descent-rate must be 13-100 pulses/s')
+    if not math.isfinite(args.descent_rate) or not 13.<=args.descent_rate<=150.:parser.error('--descent-rate must be 13-150 pulses/s')
     if not all(math.isfinite(v) and 0.<=v<=6. for v in args.approach_feedforward_mm):parser.error('--approach-feedforward-mm must be 0-6 mm each')
     if not math.isfinite(args.held_rate) or not (args.held_rate==0 or 40.<=args.held_rate<=150.):parser.error('--held-rate must be 0 or 40-150 pulses/s')
     if not math.isfinite(args.min_contact_z_mm) or not 5.<=args.min_contact_z_mm<=30.:parser.error('--min-contact-z-mm must be 5-30 mm')
@@ -192,13 +208,13 @@ def main(argv=None):
                 if args.pick_tilt_deg or abs(manual['contact_z']*1000.-(object_geometry['height_mm']-CONTACT_PRESS_MM))>.1:
                     raise ValueError('unknown 목표 높이가 관측값과 다르거나 수직 집기가 아닙니다.')
             place_model=load_planar_model(ROOT);place_catalog=load_catalog(ROOT/'config/object_catalog.json')
-            preview_start=(*manual['target_xy'],.070 if args.place_empty_run else manual['contact_z']+.020)
+            preview_start=(*manual['target_xy'],.070 if args.place_empty_run or args.held_rate and manual['contact_z']<=.060 else manual['contact_z']+.020)
             preview=build_plan(place_job,place_model,place_catalog,preview_start,args.place_max_tilt_deg,args.pick_tilt_deg)
         except ValueError as exc:parser.error(str(exc))
-    plan=dict(home_raw=home,contact_rgb_mode='disabled' if args.no_contact_rgb_log else 'record_only',contact_rgb_can_block_motion=False,target_source=manual['target_source'] if manual is not None else 'fresh HOME RGB-depth matched to selected measurement' if args.depth_measurement else 'camera at HOME, computed this run',hover_heights_m=[.120,.070],lift_m=.020,normal_execution_enabled=False,space_pulses_per_step=approach_pulses if args.fast_space else 1,
+    plan=dict(home_raw=home,contact_rgb_mode='disabled' if args.no_contact_rgb_log else 'record_only',contact_rgb_can_block_motion=False,target_source=manual['target_source'] if manual is not None else 'fresh HOME RGB-depth matched to selected measurement' if args.depth_measurement else 'camera at HOME, computed this run',hover_heights_m=[.120,.070],lift_m=(round(.070-manual['contact_z'],4) if place_job is not None and args.held_rate and manual['contact_z']<=.060 else .020),normal_execution_enabled=False,space_pulses_per_step=approach_pulses if args.fast_space else 1,
               motion_profile=dict(center_cup=args.center_cup,hover_center=args.hover_center,fast_space=args.fast_space,travel_rate_pulses_s=travel_rate,clear_period_s=approach_period,
                                   goal_speed=TRAVEL_GOAL_SPEED,goal_acceleration=TRAVEL_GOAL_ACCELERATION,path_acceleration=TRAVEL_ACCEL,
-                                  physically_validated=False,smooth_motion=True,native_moves=args.native_moves,descent_rate_pulses_s=args.descent_rate,min_contact_z_mm=args.min_contact_z_mm,
+                                  physically_validated=False,smooth_motion=True,native_moves=args.native_moves,descent_rate_pulses_s=args.descent_rate,held_rate_pulses_s=args.held_rate,slow_rate_pulses_s=SLOW_RATE_PPS,min_contact_z_mm=args.min_contact_z_mm,
                                   travel_p=args.travel_p,contact_p=args.pitch_p,base_p=args.base_p,base_d=args.base_d,
                                   approach_pose_tolerance_m=phase_pose_tolerance('approach',pick_tilt_deg=args.pick_tilt_deg)))
     if place_job is not None:
@@ -207,7 +223,7 @@ def main(argv=None):
                            return_home=dict(enabled=not (args.no_return_home or args.skip_home_after_place),rate_pulses_s=args.home_rate,skip_after_place=args.skip_home_after_place),rim_height_mm=place_job['rim_height_mm'],
                            start_assumed_xyz=list(preview_start),plan=preview,
                            note=('empty run: no suction and no release; starts from the 70 mm hover' if args.place_empty_run else
-                                 'assumed start is contact z + 20 mm; the real plan is recomputed from the measured pose after lifting'),
+                                 'assumed start is 70 mm after the continuous post-pick rise when the contact is low; the real plan is recomputed from the measured pose after lifting'),
                            physically_validated=False)
         if place_job['label']=='unknown':
             plan['place']['object_geometry']=place_job['object_geometry']
@@ -351,7 +367,7 @@ def main(argv=None):
                     return receipt
                 def hover(name,target,**kwargs):
                     nonlocal driver
-                    if args.pick_tilt_deg and name.startswith(('approach','descent','lift20','return','probe','rise','recenter','redescend')):
+                    if args.pick_tilt_deg and name.startswith(('approach','descent','lift20','lift_to_clear','return','probe','rise','recenter','redescend')):
                         kwargs.setdefault('pitch_rad',-math.pi/2+math.radians(args.pick_tilt_deg))   # far object: pick with the tool tilted
                     kwargs.setdefault('min_contact_z',args.min_contact_z_mm/1000.)  # only matters for contact/lift moves
                     fast_place=kwargs.pop('fast',False) and name.startswith('place')   # place moves that may use the clear-space profile
@@ -359,7 +375,7 @@ def main(argv=None):
                     if name.startswith(('probe','place')):travel=False  # a few-millimetre hover probe is always the slow 1-pulse profile
                     kwargs['pulses_per_step']=approach_pulses if travel else 1;kwargs['fast_travel']=travel
                     if travel:kwargs.update(tick_s=approach_period,tracking_limit=approach_limit)
-                    # Never speed up near contact or while the box hangs on the cup: the seal needs time.
+                    # The low moves use their own bounded pulse rate and tracking guard.
                     kwargs['quick_ticks']=args.fast_space and not name.startswith(('contact','lift20','return','probe','place'))
                     if fast_place:
                         # place carry speed (--place-rate): same fixed-rate profile as the approach, only for moves place_exec marked fast
@@ -371,29 +387,28 @@ def main(argv=None):
                         kwargs['fast_travel']=True;kwargs['quick_ticks']=True;kwargs['pulses_per_step']=approach_pulses
                         kwargs['tick_s']=approach_period;kwargs['tracking_limit']=args.approach_tracking_limit if args.fast_space else approach_limit;kwargs['native']=args.native_moves
                     if args.fast_space and name.startswith('descent'):
-                        kwargs['tail']=(20,13.)  # last 20 pulses slow, as the old contact stage (2026-10-20: 14→20, upper part now 60 pulses/s)
-                        kwargs['tick_s']=1./args.descent_rate  # a little faster than the default quick tick; only the part above the tail
+                        kwargs['tick_s']=1./args.descent_rate
                     if name.startswith('place_lower'):
-                        # lowering into the tray slot: same profile as the pick descent (quick tick + slow last 14 pulses), not the 13 pulses/s contact profile
-                        kwargs.update(quick_ticks=True,tick_s=1./args.descent_rate,tail=(14,13.))
-                    if args.held_rate and ('lift_m' in kwargs or 'measured_gap_m' in kwargs) and name.startswith(('lift20','place','return')):
-                        # 2026-10-20 사용자: 흡착한 채(들기·칸 안 내리기·제자리 내려놓기) 26~33펄스/초는 느려서 오히려 떨린다 → --held-rate(기본 100).
-                        # 틱당 2펄스(20ms). 칸 안 내리기는 바닥에 닿지 않으므로(놓는 높이 +20mm) 끝 느린 구간 없이, 책상에 내려놓는 return만 끝 14펄스를 느리게 둔다.
+                        kwargs.update(quick_ticks=True,tick_s=1./args.descent_rate)
+                    if args.held_rate and ('lift_m' in kwargs or 'measured_gap_m' in kwargs) and name.startswith(('lift20','lift_to_clear','place','return')):
+                        # 흡착한 채 움직일 때의 속도는 --held-rate를 적용한다.
                         kwargs.update(quick_ticks=True,pulses_per_step=2,tick_s=2./args.held_rate,tracking_limit=max(kwargs.get('tracking_limit',16),32))
                         if name.startswith('place'):kwargs.pop('tail',None)
                         elif name.startswith('return'):kwargs['tail']=(14,13.)
                     if not kwargs.get('fast_travel'):
-                        # 2026-10-21 사용자: 천천히 움직이는 동작(하강·칸 안 내리기·책상에 내려놓기·탐색/재정렬 이동)은 모두 100펄스/초.
-                        # 접촉 직전 13펄스/초 끝 구간도 없앤다. 빨라진 만큼 추종 오차 가드는 흡착한 채 이동과 같은 32펄스로 둔다.
+                        # 기본 저속 동작은 150펄스/초. 명시한 하강·흡착 운반 속도는 유지한다.
                         kwargs.pop('tail',None)
                         pps=kwargs.get('pulses_per_step',1)
-                        # 틱당 2펄스·20ms(흡착한 채 이동과 같은 틱). 낮은 상자 위 호버만 1펄스 규칙(hover_trial)이 있어 1펄스·10ms.
-                        # 2026-10-21 사용자 "천천히 접근할 때 너무 떤다": 하강이 1펄스·10ms로 남아(조건이 100펄스/초를 이미 맞춘 것으로 봄)
-                        # 한 번 주고받는 데 약 37ms라 실제 약 26펄스/초로 1펄스씩 끊겨 움직였다(밑동 1펄스 반전 초당 3~6번).
-                        # 2펄스 틱인 들기(lift20)는 반전이 거의 0이었다 → 하강도 2펄스 틱으로 바꾼다.
+                        # 틱당 2펄스. 낮은 상자 위 호버만 hover_trial의 1펄스 규칙을 유지한다.
                         if pps==1 and not (kwargs.get('box_top_m') is not None and target[2]<.080):pps=2
-                        if not kwargs.get('quick_ticks') or pps!=kwargs.get('pulses_per_step',1) or pps/kwargs.get('tick_s',1.)<SLOW_RATE_PPS:
-                            kwargs.update(quick_ticks=True,pulses_per_step=pps,tick_s=pps/SLOW_RATE_PPS)
+                        held_move=('lift_m' in kwargs or 'measured_gap_m' in kwargs) and name.startswith(('lift20','lift_to_clear','place','return'))
+                        rate=(args.held_rate if held_move and args.held_rate else
+                              args.descent_rate if name.startswith('descent') or name.startswith('place_lower') else
+                              SLOW_RATE_PPS)
+                        if held_move and not args.held_rate:
+                            pass  # explicit legacy slow profile
+                        elif not kwargs.get('quick_ticks') or pps!=kwargs.get('pulses_per_step',1) or pps/kwargs.get('tick_s',1.)<rate:
+                            kwargs.update(quick_ticks=True,pulses_per_step=pps,tick_s=pps/rate)
                         kwargs['tracking_limit']=max(kwargs.get('tracking_limit',16),32)
                     def move(record,goal,**extra):
                         return run_hover_trial(driver,geometry,zeros,goal,math.hypot(*goal[:2]),supported=True,record=record,cancelled=is_cancelled,batch_slow_joints=args.batch_base,smooth_motion=True,**{**kwargs,**extra})
@@ -646,7 +661,7 @@ def main(argv=None):
                 # 흡착이 붙으며 컵이 눌려 팔이 목표에서 6~7펄스 밀려 서면 lift20 출발 검사("hold is not settled")가 막는다(2026-10-19 실물).
                 # 움직임이 끝난 뒤 지금 자리를 새 목표로 다시 인계한다(이동 없음, 5mm·가드는 그대로).
                 driver=ServoDriver(bus,profile);driver.hold_existing_torque(supported=True,attempts=4,settle_s=.4,takeover_attempts=4)
-                hover('lift20',(*contact[:2],contact[2]+.020),lift_m=.020)
+                post_pick_rise(hover,fresh_xyz,contact,placing=place_job is not None and bool(args.held_rate))
                 result['time_to_lift_s']=time.monotonic()-cycle_start
                 lifted=fresh_xyz();result['lifted_candidate_xyz']=lifted;result['candidate_lift_m']=lifted[2]-contact[2]
                 if args.evidence_photos:capture('lifted')

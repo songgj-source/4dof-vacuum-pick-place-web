@@ -61,6 +61,19 @@ class ChainFlagTests(unittest.TestCase):
                          [['--skip-home-after-place'], ['--skip-home-after-place', '--start-above-tray'], ['--start-above-tray']])
         self.assertEqual(sort_menu.chain_flags(0, 1), [])                # 하나뿐이면 평소처럼(놓은 뒤 HOME)
 
+    def test_stored_tray_plan_switches_to_live_camera_when_tray_moved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            frame = (Path(directory) / 'rgb.png', Path(directory) / 'depth.npy')
+            for path in frame:
+                path.touch()
+            with patch.object(sort_menu, 'TRAY_FRAME', frame):
+                command = sort_menu.sort_command('white_box')
+        self.assertIn('--tray-frame', command)
+        self.assertIn('--tray-fallback-live', command)
+
+    def test_white_box_does_not_pause_for_post_pick_photo_check(self):
+        self.assertNotIn('--hold-check', sort_menu.sort_command('white_box', use_tray_frame=False))
+
 
 if __name__ == '__main__':
     unittest.main()

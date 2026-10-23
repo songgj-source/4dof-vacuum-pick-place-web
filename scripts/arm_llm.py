@@ -53,7 +53,7 @@ TOOLS = [
     _tool('move_to_place', '로봇 차를 지도에 저장된 장소(라벨)를 만든 그 자리·방향으로 정확히 이동시킨다. 팔은 HOME으로 접혀 있어야 한다. '
           '장소 이름은 사용자가 말한 그대로(예: 책상, 휴지통). "책상 가서 정리해"처럼 도착 후 정리까지 시키면 then_tidy를 true로.',
           {'place': {'type': 'string', 'description': '장소 이름'},
-           'then_tidy': {'type': 'boolean', 'description': '도착하면 사진을 찍어 팔이 닿는 물체를 정리'}}, ('place',)),
+           'then_tidy': {'type': 'boolean', 'description': '도착과 정지를 확인하면 사진에서 물체를 확인하고 바로 정리'}}, ('place',)),
     _tool('stop_arm', '실행 중인 동작을 즉시 멈춘다.'),
 ]
 MOTION = {'sort_object', 'sort_all_objects', 'arm_return_home', 'move_to_place'}
@@ -90,6 +90,7 @@ _CLAIMS_ACTION = re.compile(r'(시작합니다|진행합니다|넣습니다|옮�
 _DRIVE = re.compile(r'^(?P<place>\S.*?)\s*(?:앞|쪽|근처)?\s*(?:으로|로|에|까지)\s*(?:이동|가|와|데려|가자|출발)')
 # "책상으로 가서 정리해줘", "휴지통 앞으로 이동해서 치워줘" -> 그 장소로 간 뒤 사진을 찍어 정리. 일반 '정리해' 규칙보다 먼저 본다.
 _DRIVE_THEN_TIDY = re.compile(r'^(?P<place>\S.*?)\s*(?:앞|쪽|근처)?\s*(?:으로|로|에)?\s*(?:가서|이동해서|가가지고|가선)\s*.*?(?:정리|치워|치우|분류|다\s*넣)')
+_DESK_REQUEST = re.compile(r'^책상\s*(?:을\s*)?(?:좀\s*)?(?:정리|치워|치우|분류)')
 _WHERE = re.compile(r'^(지금\s*)?(너\s*)?(어디야|어디니|어디에\s*있|어디\s*있|위치\s*(가\s*)?(어디|알려)|현재\s*위치)')
 _NOT = re.compile(r'(넣|정리|옮기|접)지\s*마|말고|하지\s*마|\?$|까\s*[?.]?\s*$|나요\s*[?.]?\s*$')
 
@@ -159,11 +160,11 @@ def tray_sentence(in_tray):
     return f'트레이에는 {listed}가 이미 들어 있습니다(정리 대상에서 뺐습니다).'
 
 
-def situation(arm):
+def situation(arm, scene=None, ask_only=False):
     """대화 시작(그리고 작업이 끝날 때마다): 먼저 사진을 찍어 책상 상황을 알리고, 지금 쓸 수 있는 기능을 예시 문장과 함께 보여 준다.
     정리할 물체가 있으면 기본 행동인 책상 정리를 제안으로 준비한다('실행'이면 시작). 로봇은 움직이지 않는다.
     돌려주는 것: dict(reply, speech(소리로 읽을 짧은 문장), actions(기능 목록), proposal, scene)."""
-    status, scene = arm.capture()
+    status, scene = (200, scene) if scene is not None else arm.capture()
     always = ["HOME 복귀: '홈으로 돌아가'", "멈춤: '멈춰'", "다시 보기: '작업대에 뭐 있어?'"]
     if status != 200:
         why = scene.get('reason') or scene.get('reason_code') or status
@@ -188,6 +189,8 @@ def situation(arm):
         tail = "기본으로 책상 정리를 준비했습니다. '실행'이나 '정리해'라고 하면 바로 시작하고, 다른 일을 원하면 말해 주세요."
     else:
         proposal, tail = None, '무엇을 할까요?'
+    if ask_only:
+        tail = '어떤 작업을 할까요? 원하는 물체와 작업을 말씀해 주세요.'
     return dict(reply=' '.join([head, tail]), speech=' '.join([head, tail]), actions=actions, proposal=proposal, scene=scene)
 
 
@@ -216,11 +219,13 @@ def tidy(arm):
 def proposal_reply(proposal, notes=()):
     if proposal['action'] == 'return_home':
         what = '팔을 HOME 자세로 돌려놓습니다.'
+    elif proposal['action'] == 'drive' and proposal.get('then') == 'inspect':
+        return f"{proposal['label']}으로 이동하고, 정지를 확인한 뒤 사진을 찍어 보이는 물체를 정리하겠습니다."
     elif proposal['action'] == 'drive' and proposal.get('then') == 'tidy':
-        what = f"{proposal['label']}(으)로 이동한 뒤, 도착하면 사진을 찍어 팔이 닿는 물체를 정리합니다."
+        what = f"{proposal['label']}으로 이동한 뒤, 도착하면 사진을 찍어 팔이 닿는 물체를 정리합니다."
         return what + WAIT
     elif proposal['action'] == 'drive':
-        what = f"{proposal['label']}(으)로 이동합니다(라벨을 만든 자리와 방향에 맞춰 섭니다)."
+        what = f"{proposal['label']}으로 이동합니다(라벨을 만든 자리와 방향에 맞춰 섭니다)."
         return what + WAIT
     elif proposal['action'] == 'pick_all' and proposal.get('objects'):
         found = proposal['objects']
@@ -381,6 +386,13 @@ def chat(history, text, arm, client=None):
     """history: [{'role': 'user'|'assistant', 'content': 문자열}] (웹 화면이 보관), text: 이번 말.
     돌려주는 것: {'reply': 문장, 'proposal': 실행 대기 명령 또는 None, 'executed': 바로 실행한 명령 결과 목록, 'scene': 찍은 장면 또는 None}."""
     text = strip_call(text)
+    if _DESK_REQUEST.match(text):
+        if _NOT.search(text):
+            return dict(reply='주행과 팔 작업을 실행하지 않았습니다. 원하시면 “책상 정리해줘”라고 말씀해 주세요.',
+                        proposal=None, executed=[], scene=None, source='rule')
+        if not getattr(arm, 'awaiting_desk_choice', False):
+            proposal, reply = drive_proposal('책상으로 가서 정리해줘')
+            return dict(reply=reply, proposal=proposal, executed=[], scene=None, source='rule')
     if _DRIVE_THEN_TIDY.match(text):                     # '정리'가 들어 있어도 '가서 정리'는 주행 먼저
         drive = drive_proposal(text)
         if drive is not None:

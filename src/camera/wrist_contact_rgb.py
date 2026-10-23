@@ -102,7 +102,7 @@ def outcome_context(run):
     ack=any(bool((p.get('controller_receipt') or {}).get('controller_acknowledged')) for p in suction)
     return dict(suction_command_recorded=bool(suction),suction_controller_acknowledged=ack,
                 pressure_verified=False,vacuum_pressure_kpa=None,
-                lift_motion_complete=any(p.get('phase')=='lift20' for p in run.get('phases',[])),
+                lift_motion_complete=any(p.get('phase') in ('lift20','lift_to_clear') for p in run.get('phases',[])),
                 candidate_lift_m=run.get('candidate_lift_m'),
                 motion_cycle_complete=run.get('motion_cycle_complete',False),
                 actual_contact_observed=None,actual_lift_observed=None,

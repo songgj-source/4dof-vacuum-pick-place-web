@@ -27,6 +27,7 @@ TRAVEL_GOAL_SPEED=600
 TRAVEL_GOAL_ACCELERATION=20
 TRAVEL_PULSES_PER_STEP=4
 MAX_TILT_RAD=math.radians(60.)   # place only: the tool may tilt forward from straight down by at most this much (slots beyond 0.30 m need about 43 degrees; user instruction 2026-10-15; 50->60 2026-10-21: 1번 칸 36.7cm)
+HOVER_RADIUS_MAX_M=.355  # 2026-10-23: user-requested 5 mm increase; planner and via points share this bound
 TRAVEL_PERIOD_S=.020
 QUICK_PERIOD_S=.040
 # Commanded acceleration (path pulses/s^2). The servo acceleration register limits what it
@@ -54,7 +55,8 @@ LIFT_PERIOD_S=.038
 def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=False,
                     cancelled=lambda:False,record=lambda event:None,measured_gap_m=None,lift_m=None,pulses_per_step=1,box_top_m=None,
                     batch_slow_joints=False,fast_travel=False,quick_ticks=False,tick_s=None,tracking_limit=16,
-                    via=(),via_pulses=2,tail=None,native=False,smooth_motion=False,pitch_rad=-math.pi/2,min_contact_z=.030):
+                    via=(),via_pulses=2,tail=None,native=False,smooth_motion=False,pitch_rad=-math.pi/2,min_contact_z=.030,
+                    continuous_lift=False):
     target=finite_vector(target,3,'hover target')
     # Contact/lift height floor: default 30 mm for other callers; pick_auto passes a lower one (user instruction 2026-10-15: remove the 30 mm floor,
     # keep only a minimum that stops the cup reaching the table) so low objects such as the white box (top 24 mm) can be picked.
@@ -71,15 +73,21 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
     if gap is not None and not .005<=gap<=.080:
         raise ValueError('measured descent gap outside trial range')
     lift=None if lift_m is None else finite_vector((lift_m,),1,'lift')[0]
-    if lift is not None and (gap is not None or not .005<=lift<=LIFT_MAX_M):
+    if type(continuous_lift) is not bool:
+        raise ValueError('continuous lift flag must be boolean')
+    if lift is not None and (gap is not None or not .005<=lift<=(2*LIFT_MAX_M if continuous_lift else LIFT_MAX_M)):
         raise ValueError('small lift only, without a descent gap')
+    if continuous_lift and (lift is None or len(via)!=1 or box_top_m is not None or fast_travel or native
+                            or batch_slow_joints or tail is not None or not quick_ticks or pulses_per_step!=2
+                            or via_pulses!=2 or tick_s is None or target[2]>.080):
+        raise ValueError('continuous lift needs two bounded low vertical segments at the held rate')
     if type(pulses_per_step) is not int or pulses_per_step not in (1,2,4):
         raise ValueError('pulse step must be 1, 2 or 4')
-    # 2026-10-20 사용자: 흡착한 채 들기/내리기가 26~33펄스/초로 느려 오히려 떨린다 → 100펄스/초(틱당 2펄스, 20ms)까지 허용. 4펄스는 여전히 금지.
+    # 접촉 주변과 상승에서는 틱당 최대 2펄스만 허용한다. 호출자가 속도를 설정한다.
     if pulses_per_step not in (1,2) and (gap is not None or lift is not None):
         raise ValueError('fast mode is forbidden near contact or during lift')
     box_top=None if box_top_m is None else finite_vector((box_top_m,),1,'box top')[0]
-    if via and (box_top is None or not (fast_travel or quick_ticks) or via_pulses not in (1,2,4) or gap is not None or lift is not None):
+    if via and not continuous_lift and (box_top is None or not (fast_travel or quick_ticks) or via_pulses not in (1,2,4) or gap is not None or lift is not None):
         raise ValueError('via points need a box plane, the fixed-rate profile and no gap/lift')
     if tail is not None and (not (fast_travel or quick_ticks) or len(tail)!=2 or tail[0]<1 or not 0<tail[1]<=40):
         raise ValueError('invalid slow tail')
@@ -88,7 +96,7 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
     if box_top is not None and target[2]<.080 and pulses_per_step!=1 and not fast_travel:
         raise ValueError('fast mode forbidden for low box hover')
     minimum_height=max(.070,box_top+.030) if box_top is not None else min_contact_z if gap is not None or lift is not None else .080
-    if not minimum_height<=target[2]<=.250 or not .1<=math.hypot(*target[:2])<=.350:
+    if not minimum_height<=target[2]<=.250 or not .1<=math.hypot(*target[:2])<=HOVER_RADIUS_MAX_M:
         raise ValueError('measured descent target outside safety envelope' if gap is not None else 'high hover only; contact/low target prohibited')
     if abs(math.hypot(*target[:2])-measured)>.030:
         raise ValueError('camera target and independent radial measurement disagree')
@@ -113,6 +121,12 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
             if (abs(target[2]-initial_xyz[2]-lift)>.002
                     or math.hypot(initial_xyz[0]-target[0],initial_xyz[1]-target[1])>.003):
                 raise ValueError('small lift must be vertical and match declared distance')
+            if continuous_lift:
+                midpoint=finite_vector(via[0],3,'continuous lift midpoint')
+                if (math.hypot(midpoint[0]-initial_xyz[0],midpoint[1]-initial_xyz[1])>.003
+                        or not .005<=midpoint[2]-initial_xyz[2]<=LIFT_MAX_M
+                        or not .005<=target[2]-midpoint[2]<=LIFT_MAX_M):
+                    raise ValueError('continuous lift segment must be vertical and 5-36 mm')
         if gap is not None:
             initial_xyz=geometry.forward(angles(origin))[:3]
             drop=initial_xyz[2]-target[2]
@@ -127,7 +141,7 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
         limits={n:tuple(sorted(joints[n].direction*(r-zeros[n])*pulse for r in (joints[n].raw_min+16,joints[n].raw_max-16))) for n in NAMES}
         q_prev=angles(origin);goals=[]
         for point in [finite_vector(v,3,'via point') for v in via]+[target]:
-            if not minimum_height<=point[2]<=.250 or not .1<=math.hypot(*point[:2])<=.350:
+            if not minimum_height<=point[2]<=.250 or not .1<=math.hypot(*point[:2])<=HOVER_RADIUS_MAX_M:
                 raise ValueError('via point outside safety envelope')
             options=geometry.solve(point,pitch_rad,limits)
             if not options:raise ValueError('hover has no direct-branch solution')
@@ -144,7 +158,7 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
         return _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,cancelled,pulses_per_step,batch,
                              TRAVEL_GOAL_SPEED if travel else 40,period,tracking_limit,
                              goals if via else None,[via_pulses]*len(via)+[pulses_per_step] if via else None,tail,
-                             native and travel_ok)
+                             native and travel_ok,continuous_segments=continuous_lift)
 
 
 def ramped_indices(steps,pulses_per_step,period_s,accel,smooth_s=SMOOTH_WINDOW_S,caps=None):
@@ -243,8 +257,8 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
     if native and waypoints is None:
         waypoints=[goal];seg_pulses=[pulses_per_step];path,seg_ends=_build_path(origin,waypoints,NAMES)
     if continuous_segments:
-        # HOME만 기존 두 구간을 하나의 스트림으로 잇는다. 각 구간 1600펄스,
-        # 전체 3200펄스 이내이며 전 경로 사전검사·실시간 검사는 동일하다.
+        # HOME 또는 검증된 수직 상승의 두 구간을 하나의 스트림으로 잇는다.
+        # 각 구간 1600펄스, 전체 3200펄스 이내이며 전 경로를 사전·실시간 검사한다.
         if (native or period_s is None or batch_pulses or waypoints is None
                 or len(waypoints)!=2 or waypoints[-1]!=goal or seg_pulses!=[pulses_per_step]*2
                 or steps>3200 or any(not 0<end-begin<=1600 for begin,end in zip([0]+seg_ends,seg_ends))):

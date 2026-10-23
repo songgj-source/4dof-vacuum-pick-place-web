@@ -161,9 +161,7 @@ def sort_command(label, slot=None, execute=True, use_tray_frame=True):
     if slot is not None:
         cmd += ['--slot', str(slot)]
     if use_tray_frame and all(p.exists() for p in TRAY_FRAME):      # 저장한 빈 트레이 위치(밀렸으면 밀린 만큼 옮겨 쓴다). 칸에 물체가 들어가도 칸 위치를 안다
-        cmd += ['--tray-frame', str(TRAY_FRAME[0]), str(TRAY_FRAME[1])]
-    if label == 'white_box':                       # 흰 상자는 흰 책상과 섞여 집힘 판정이 틀린다: 기록만 하고 중단하지 않는다
-        cmd += ['--hold-check', 'record']
+        cmd += ['--tray-frame', str(TRAY_FRAME[0]), str(TRAY_FRAME[1]), '--tray-fallback-live']
     return cmd
 
 

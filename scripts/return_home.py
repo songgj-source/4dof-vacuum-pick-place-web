@@ -23,7 +23,7 @@ from motion.home_trial import run_recorded_home_trial
 from motion.trial_gains import TemporaryPitchGains
 from motion.home_return_profile import choose_pitch_p,home_arrival
 from motion.home_return_profile import return_profile,near_fold
-from motion.return_corridor import start_in_corridor
+from motion.return_corridor import start_in_corridor,interrupted_near_home_start
 from optional.video_recording.astra_recorder import AstraRecorder
 from robot.robot_frame import SHOULDER_HEIGHT_M
 class AlreadyAtHome(Exception):pass
@@ -85,10 +85,13 @@ with ServoTransport(profile) as bus:
                               home_return_complete=True,home_requested_raw=home_raw,home_actual_snapshot=initial)
                 raise AlreadyAtHome(deviation)
             # Same vertical reset corridor as scripts/pick_auto.py (contact up to the 70-120 mm hover over a box).
-            folded=near_fold({n:initial['joints'][n]['position'] for n in driver.names},home_raw)
+            current_raw={n:initial['joints'][n]['position'] for n in driver.names}
+            folded=near_fold(current_raw,home_raw)
+            interrupted=not folded and interrupted_near_home_start(contact_xyz,current_raw,home_raw)
             if folded:result['fold_near_home_start']=True      # 접힌 HOME 근처: 접힌 채 관절 값으로 바로 HOME에 맞춘다(수직 복귀 구간·올리기·중간 지점 생략)
+            elif interrupted:result['interrupted_near_home_start']=True  # 접근 중 정지: 직접 HOME 경로의 모든 관절·링크 점을 사전 검사한다
             elif not args.any_start and not start_in_corridor(contact_xyz):raise ValueError('not at HOME and outside the vertical reset corridor')
-            if args.any_start and not folded and not start_in_corridor(contact_xyz):result['start_outside_corridor']=True
+            if args.any_start and not (folded or interrupted) and not start_in_corridor(contact_xyz):result['start_outside_corridor']=True
             result.update(start_snapshot=initial,start_candidate_xyz=contact_xyz,travel_rate_pulse_s=args.travel_rate,home_travel_profile=travel)
             if recorder:recorder.snapshot('start')
             def stage(name,operation,expected_xyz=None,expected_raw=None):
@@ -112,7 +115,7 @@ with ServoTransport(profile) as bus:
                         if grade=='near':result['home_deviation_pulses']=deviation   # 8 넘게 어긋나도 다음 사이클 시작 허용선(32) 안에서 멈췄으면 성공으로 기록
                     result['phases'][-1].update(observed=observed,candidate_xyz=xyz)
                 driver=home_driver(bus,profile);driver.hold_existing_torque(supported=True,keep_goal=True,load_offset=True,settle_s=.3,takeover_attempts=4)  # 보상한 목표를 현재 위치로 덮어쓰지 않는다
-            for index in range(0 if folded else 3):
+            for index in range(0 if folded or interrupted else 3):
                 current=driver._snapshot(torque=1);xyz=tcp(current)[:3]
                 if xyz[2]>=.080:break
                 target=(*xyz[:2],xyz[2]+.030)

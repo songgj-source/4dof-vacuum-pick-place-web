@@ -48,8 +48,9 @@ class MapWebContractTests(unittest.TestCase):
     def test_goto_wall_takes_a_label_id(self):
         self.assertIn('POST /api/nav/goto_wall {"id": "..."}', self.map_web)
 
-    def test_default_ports_do_not_clash(self):
-        map_port = int(re.search(r"declare_parameter\('port', (\d+)\)", self.map_web)[1])
+    def test_launched_ports_do_not_clash(self):
+        launcher = (ROOT / 'pi' / 'drive_ctl.sh').read_text()
+        map_port = int(re.search(r'map_web.py --ros-args -p port:=(\d+)', launcher)[1])
         camera_port = int(re.search(r"declare_parameter\('port', (\d+)\)", (SLAM / 'test' / 'camera_test.py').read_text())[1])
         self.assertEqual(map_port, urlsplit(base_drive.BASE_URL).port)        # 자비스가 기본으로 부르는 곳
         self.assertNotIn(8000, (map_port, camera_port))                       # 자비스 서버

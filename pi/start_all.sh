@@ -44,6 +44,16 @@ start() {
   say "노트북 $me  →  Pi $PI_IP"
   reach_pi || exit 1
 
+  # 음성 인식·팔 점검에서 중단되더라도 주행 서버는 먼저 켠다.
+  if [ -z "${NO_DRIVE:-}" ]; then
+    say "내 주행 스택 (드라이버·라이다 → 위치 추정·Nav2 → map_web :8082, ROS 도메인 43)"
+    if pi "bash ~/$REMOTE_DIR/pi/drive_ctl.sh start" 2>&1 | sed 's/^/   /'; then
+      echo "   주행 화면: http://$PI_IP:8082"
+    else
+      warn "주행 스택을 켜지 못했습니다(위 안내 참고) - 팔은 그대로 씁니다"
+    fi
+  fi
+
   say "음성 인식 서버 (Whisper, :$STT_PORT)"
   if stt_running; then echo "   이미 켜져 있음"
   else
@@ -67,9 +77,9 @@ start() {
     sleep 1; fwd_running "$me" && echo "   켬" || warn "켜지지 않았습니다: tail ~/ollama_fwd.log"
   fi
 
-  say "Pi 설정 (노트북 주소)"
+  say "Pi 설정 (노트북 주소 · 내 주행 서버 :8082)"
   local changed=0 want_stt="http://$me:$STT_PORT/api/stt" want_llm="http://$me:$OLLAMA_PORT" kv key
-  for kv in "ARM_STT_URL=$want_stt" "OLLAMA_HOST=$want_llm"; do
+  for kv in "ARM_STT_URL=$want_stt" "OLLAMA_HOST=$want_llm" "ARM_BASE_URL=http://127.0.0.1:8082"; do
     key="${kv%%=*}"
     if [ "$(pi_env "$key")" != "${kv#*=}" ]; then
       pi "f=$REMOTE_ENV; if grep -q '^$key=' \$f; then sed -i 's|^$key=.*|$kv|' \$f; else echo '$kv' >> \$f; fi" && changed=1
@@ -102,11 +112,6 @@ start() {
     arm_ready=0
   fi
 
-  if [ -z "${NO_DRIVE:-}" ]; then
-    say "내 주행 스택 (드라이버·라이다 → 위치 추정·Nav2 → map_web, ROS 도메인 43, NO_DRIVE=1이면 건너뜀)"
-    pi "bash ~/$REMOTE_DIR/pi/drive_ctl.sh start" 2>&1 | sed 's/^/   /' || warn "주행 스택을 켜지 못했습니다(위 안내 참고) - 팔은 그대로 씁니다"
-  fi
-
   say "Pi 서버"
   if pi "bash ~/$REMOTE_DIR/pi/arm_api_ctl.sh status" | grep -q '^켜짐'; then
     if [ "$changed" = 1 ]; then
@@ -121,8 +126,8 @@ start() {
     say "화면"
     local tabs=()      # 주행 화면(map_web)도 같은 창의 탭으로. 늦게 뜨면 그 탭에서 새로 고침
     if [ -z "${NO_DRIVE:-}" ]; then
-      tabs+=("http://$PI_IP:8081")
-      curl -s -m 3 "http://$PI_IP:8081/api/drive" >/dev/null || warn "주행 화면(8081)이 아직 응답하지 않습니다 - 잠시 뒤 그 탭을 새로 고침하세요"
+      tabs+=("http://$PI_IP:8082")
+      curl -s -m 3 "http://$PI_IP:8082/api/drive" >/dev/null || warn "주행 화면(8082)이 아직 응답하지 않습니다 - 잠시 뒤 그 탭을 새로 고침하세요"
     fi
     ARM_URL="http://$PI_IP:8000" bash "$ROOT/pi/open_jarvis.sh" "${tabs[@]}" | sed 's/^/   /'
   fi

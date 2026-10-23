@@ -24,6 +24,7 @@ import argparse
 import collections
 import hmac
 import json
+import math
 import os
 import re
 import signal
@@ -53,7 +54,7 @@ HOLD_CMD = [menu.PY, str(menu.ROOT / 'scripts' / 'servo_driver.py'), 'hold', '--
 AUTO_TORQUE = os.environ.get('ARM_AUTO_TORQUE', '1') != '0'
 # 팀 주행(ros2_slam test/map_web.py, 같은 Pi)에 차가 움직이는지 묻는다(읽기만). 움직이면 팔 작업을 시작하지 않는다.
 # map_web이 꺼져 있으면(주행을 안 쓰는 중) 그냥 진행한다. 빈 값이면 확인하지 않는다.
-BASE_URL = os.environ.get('ARM_BASE_URL', 'http://127.0.0.1:8081').rstrip('/')
+BASE_URL = os.environ.get('ARM_BASE_URL', 'http://127.0.0.1:8082').rstrip('/')
 BASE_MOVING_NAV = ('backing', 'sending', 'active', 'canceling')     # map_web nav.state: Go to 진행 중
 BASE_LINEAR, BASE_ANGULAR = .01, .03                                 # odom 실제 속도가 이보다 크면 움직이는 중
 
@@ -81,6 +82,30 @@ def base_moving(url=BASE_URL, timeout_s=1.5):
         return None
     if nav.get('state') in BASE_MOVING_NAV:
         return f"차가 목적지로 이동하는 중입니다(Nav2 {nav.get('state')}"+ (f", {nav['target']}" if nav.get('target') else '') + ').'
+    return None
+
+
+def base_stationary(url=BASE_URL):
+    """Combined drive/arm task: unknown state never counts as a stopped base."""
+    if not url:
+        return '주행 서버 주소가 없어 정지 상태를 확인할 수 없습니다.'
+    try:
+        drive = base_drive._call('GET', '/api/drive', url=url, timeout_s=1.5)
+        state = base_drive._call('GET', '/api/state', url=url, timeout_s=1.5)
+    except base_drive.BaseError as exc:
+        return str(exc)
+    odom = drive.get('odom')
+    if drive.get('driver_connected') is not True or not isinstance(odom, dict):
+        return '차 드라이버 연결 또는 최신 속도 정보를 확인할 수 없습니다.'
+    speeds = (odom.get('linear'), odom.get('angular'))
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in speeds):
+        return '차의 속도 정보가 올바르지 않아 정지를 확인할 수 없습니다.'
+    if drive.get('moving') is not False or abs(speeds[0]) > BASE_LINEAR or abs(speeds[1]) > BASE_ANGULAR:
+        return '차가 아직 움직이거나 주행 명령이 들어가는 중입니다.'
+    if (state.get('nav') or {}).get('state') in BASE_MOVING_NAV:
+        return '목적지로 주행 중입니다.'
+    if any((state.get(k) or {}).get('state') == 'running' for k in ('wall', 'approach')):
+        return '책상 근접 이동이 진행 중입니다.'
     return None
 
 # 실패 원문 → 고정 코드(호출한 쪽이 문장 대신 코드로 분기한다). 위에서부터 처음 맞는 것.
@@ -132,12 +157,14 @@ class EventLog:
 class Arm:
     """한 번에 한 작업을 돌리는 상태. HTTP 핸들러와 작업 스레드가 함께 쓴다."""
 
-    def __init__(self, run=menu.run_streaming, read_state=None, hold=None, base_check=None, drive=None, read_pose=None):
+    def __init__(self, run=menu.run_streaming, read_state=None, hold=None, base_check=None, drive=None, read_pose=None,
+                 arrival_check=None):
         self.run = run
         self.log = EventLog()
         self.drive = drive or base_drive.drive_to
         self.read_pose = read_pose or menu.read_arm_state       # {관절: (토크, 위치)} 또는 None
         self.base_check = base_check or base_moving
+        self.arrival_check = arrival_check or base_stationary
         self.read_state = read_state or (lambda: menu.classify_arm(menu.read_arm_state()))
         self.hold = hold or (lambda: subprocess.run(HOLD_CMD, cwd=menu.ROOT, capture_output=True, text=True, timeout=60))
         self.lock = threading.Lock()
@@ -145,6 +172,7 @@ class Arm:
         self.stop_requested = False
         self.capturing = False
         self.scene = None                     # 마지막 get image 결과(웹 화면 표시용 JPEG 포함)
+        self.awaiting_desk_choice = False
         self.tasks = {}
         self.current = None
         self.arm_home = None                  # True/False/None(모름): 성공한 작업 뒤에는 HOME, 중단·실패 뒤에는 모름
@@ -198,8 +226,8 @@ class Arm:
             then, mode = params.get('then'), params.get('mode', 'precise')
             if mode not in base_drive.MODES:
                 return 400, dict(ok=False, reason_code='bad_request', reason=f'mode는 {base_drive.MODES} 중 하나입니다(precise: 라벨 자리 그대로, wall: 앞 벽에 붙기).')
-            if then not in (None, 'tidy'):
-                return 400, dict(ok=False, reason_code='bad_request', reason="then은 'tidy'(도착하면 책상 정리)만 됩니다.")
+            if then not in (None, 'tidy', 'inspect'):
+                return 400, dict(ok=False, reason_code='bad_request', reason="then은 'inspect' 또는 'tidy'(촬영 후 정리) 중 하나입니다.")
             command = ('drive', dict(label=label.strip(), mode=mode, **({'gap': float(gap)} if gap is not None else {}), **({'then': then} if then else {})))
         else:
             return 404, dict(ok=False, reason_code='bad_request', reason='알 수 없는 명령입니다.')
@@ -212,6 +240,7 @@ class Arm:
                                        started=time.monotonic(), seconds=0.)
             self.current = task_id
             self.stop_requested = False
+            self.awaiting_desk_choice = False
         self.log.add('info', '작업', f'{command[0]} 시작 {json.dumps(command[1], ensure_ascii=False)}', f'task {task_id}')
         threading.Thread(target=self._work, args=(task_id, *command), daemon=True).start()
         return 202, dict(ok=True, task_id=task_id)
@@ -228,22 +257,25 @@ class Arm:
             if menu.live_view_running():
                 return 409, dict(ok=False, reason_code='camera_busy', reason='카메라 창(live_view.py)이 켜져 있습니다.')
             bgr, scene = self._steady_scene(grab or grab_astra)
-            import base64
-            import cv2
-            ok, jpeg = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if not ok:
-                raise OSError('JPEG 변환 실패')
-            scene.update(ok=True, captured_at=time.strftime('%Y-%m-%dT%H:%M:%S'), image_url='/api/image/latest.jpg',
-                         image_jpeg_base64=base64.b64encode(jpeg.tobytes()).decode())
-            with self.lock:
-                self.scene = dict(scene, jpeg=jpeg.tobytes())
-            return 200, scene
+            return 200, self._remember_scene(bgr, scene)
         except Exception as exc:
             self.log.add('error', '카메라', f'{type(exc).__name__}: {str(exc)[:300]}', traceback.format_exc())
             return 500, dict(ok=False, reason_code='camera_error', reason=f'{type(exc).__name__}: {str(exc)[:200]}')
         finally:
             with self.lock:
                 self.capturing = False
+
+    def _remember_scene(self, bgr, scene):
+        import base64
+        import cv2
+        ok, jpeg = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not ok:
+            raise OSError('JPEG 변환 실패')
+        scene = dict(scene, ok=True, captured_at=time.strftime('%Y-%m-%dT%H:%M:%S'),
+                     image_url='/api/image/latest.jpg', image_jpeg_base64=base64.b64encode(jpeg.tobytes()).decode())
+        with self.lock:
+            self.scene = dict(scene, jpeg=jpeg.tobytes())
+        return scene
 
     @staticmethod
     def _steady_scene(grab, shots_max=3):
@@ -269,6 +301,7 @@ class Arm:
             proc = self.proc
             running = bool(self.current)
             self.stop_requested = running          # 아직 프로세스를 띄우기 전이면, 띄우자마자 멈추고 다음 단계로 가지 않는다
+            self.awaiting_desk_choice = False
         if proc is not None and proc.poll() is None:
             proc.send_signal(signal.SIGINT)
         with self.lock:
@@ -327,7 +360,7 @@ class Arm:
                 task['result'] = dict(result, seconds=task['seconds'], warnings=task['warnings'])
                 task['state'] = 'done' if result['ok'] else 'failed'
                 self._log_result(skill, task, result)
-                if skill != 'drive' or params.get('then'):            # 주행만 하면 팔 자세는 그대로, 도착 후 정리하면 HOME으로 끝난다
+                if skill != 'drive' or params.get('then') in ('tidy', 'inspect'):
                     self.arm_home = True if result['ok'] else None
                 self.proc = None
                 self.current = None
@@ -358,39 +391,56 @@ class Arm:
         if far:
             return dict(ok=False, reason_code='arm_not_folded',
                         reason='팔이 HOME으로 접혀 있지 않아 주행하지 않습니다(' + ', '.join(f'{n} {d:+d}' for n, d in far.items()) + '). 먼저 "홈으로 돌아가"를 시키세요.')
-        self.log.add('info', '주행', f"{params['label']}(으)로 이동 시작 ({'라벨 자리 그대로' if params.get('mode', 'precise') == 'precise' else '앞 벽에 붙기'})" + (f" (벽 앞 {params['gap']} m)" if 'gap' in params else ''))
+        self.log.add('info', '주행', f"{params['label']}으로 이동 시작 ({'라벨 자리 그대로' if params.get('mode', 'precise') == 'precise' else '앞 벽에 붙기'})" + (f" (벽 앞 {params['gap']} m)" if 'gap' in params else ''))
         try:
             result = self.drive(params['label'], mode=params.get('mode', 'precise'), gap=params.get('gap'),
                                 on_phase=lambda raw, text: self._event(task_id, 'phase', (raw, text)), stopped=lambda: self.stop_requested)
         except base_drive.BaseError as exc:
             return dict(ok=False, reason=str(exc), reason_code=exc.code)
-        if result.get('ok') and params.get('then') == 'tidy' and not self.stop_requested:
+        if result.get('ok') and params.get('then') in ('tidy', 'inspect') and not self.stop_requested:
             return self._tidy_here(task_id, params['label'])
         return result
 
-    def _tidy_here(self, task_id, place):
+    def _tidy_here(self, task_id, place, ask=False):
         """도착한 곳에서 위 카메라로 찍어 팔이 닿는 등록 물체를 정리한다("책상으로 가서 정리해줘"의 뒷부분)."""
-        self._event(task_id, 'phase', ('tidy_look', f'{place} 도착, 사진으로 정리할 물체 확인'))
-        for _ in range(8):                               # 벽 근접 직후 차가 완전히 멈출 때까지(최대 4초)
-            if not self.base_check():
+        self._event(task_id, 'phase', ('drive_settle', f'{place} 도착, 차가 완전히 멈췄는지 확인'))
+        steady = 0
+        for _ in range(8):                               # 0.5초 간격으로 3회 연속 정지 확인
+            if self.stop_requested:
+                return dict(ok=False, reason_code='cancelled', reason='cancelled')
+            problem = self.arrival_check()
+            steady = 0 if problem else steady + 1
+            if steady >= 3:
                 break
             time.sleep(.5)
         else:
-            return dict(ok=False, reason_code='base_moving', reason=f'{place}에 도착했지만 차가 멈추지 않아 정리하지 않았습니다.')
+            return dict(ok=False, reason_code='base_moving',
+                        reason=f'{place}에 도착했지만 연속 정지를 확인하지 못해 사진과 팔 작업을 시작하지 않았습니다. {problem or "정지 확인 시간 부족"}')
+        if self.stop_requested:
+            return dict(ok=False, reason_code='cancelled', reason='cancelled')
+        self._event(task_id, 'phase', ('tidy_look', f'{place} 정지 확인 완료, 책상 사진 촬영'))
         try:
-            _, scene = self._steady_scene(grab_astra)
+            bgr, scene = self._steady_scene(grab_astra)
+            if bgr is not None:
+                self._remember_scene(bgr, scene)
         except Exception as exc:
             return dict(ok=False, reason_code='camera_error', reason=f'{place}에 도착했지만 사진을 찍지 못했습니다: {type(exc).__name__}: {str(exc)[:160]}')
         finally:
             CAMERA.release()                             # 집기 프로그램이 카메라를 직접 연다
+        if self.stop_requested:
+            return dict(ok=False, reason_code='cancelled', reason='cancelled')
         objects = [label for label in ALL_ORDER if any(o['label'] == label and o.get('pickable') for o in scene.get('objects') or [])]
         if not objects:
+            self._event(task_id, 'phase', ('tidy_empty', f'{place}에 정리할 물체가 보이지 않습니다.'))
             return dict(ok=True, reason=None, reason_code=None, note=f'{place}에 도착했습니다. 팔이 닿는 곳에 정리할 물체가 없습니다.')
+        announcement = f"{place}에 {', '.join(NAMES[label] for label in objects)}가 보입니다. 정리하겠습니다."
+        self._event(task_id, 'phase', ('tidy_found', announcement))
         self.log.add('info', '작업', f"{place}에서 정리: {', '.join(NAMES[label] for label in objects)}")
         refused = self._ensure_torque(task_id, 'pick_all')
         if refused:
             return refused
         outcome = self._pick_all(task_id, objects)
+        outcome['announcement'] = announcement
         if outcome['ok']:
             outcome['note'] = f'{place}에 도착해 정리했습니다.' + (f" {outcome['note']}" if outcome.get('note') else '')
         return outcome
@@ -845,6 +895,7 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.send_header('Content-Length', str(len(data)))
+                self.send_header('Cache-Control', 'no-store')
                 self.end_headers()
                 return self.wfile.write(data)
             if self.path == '/health':

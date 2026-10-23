@@ -7,6 +7,7 @@ import math
 
 from sorting.carry_path import polar_path
 from robot.robot_model import reachable
+from motion.hover_trial import HOVER_RADIUS_MAX_M
 
 ENVELOPE_M = (.16, .30)        # 집기에서 검증된 작업 거리
 CARRY_Z = .130                 # 든 채 옮길 때 높이의 상한(m). 2026-10-20: 높이 41mm unknown이 2번 칸에 122mm가 필요해 120→130(IK·HOME 복귀 범위 0.135 안). 필요한 가장 낮은 높이만 쓴다
@@ -183,6 +184,8 @@ def plan_place(model, slot, start_xyz, *, carry_z=CARRY_Z, min_carry_z=None, hel
     target_radius = radius
 
     def result(legs, z, pull_mm, tilt_deg=0.):
+        if any(math.hypot(*item[1][:2]) > HOVER_RADIUS_MAX_M for item in legs):
+            raise ValueError('planned tray move exceeds the hover radius before pickup')
         out = []
         for item in legs:
             leg = dict(name=item[0], target=item[1])
@@ -200,7 +203,7 @@ def plan_place(model, slot, start_xyz, *, carry_z=CARRY_Z, min_carry_z=None, hel
     blocked = None
     for z in (_carry_heights(floor, carry_z, rim_z=min_carry_z or 0.) if start_tilt_deg == 0 else ()):
         legs = [('raise', (*start_xy, z)), ('carry', (sx, sy, z)), ('lower', (sx, sy, drop)), ('retreat', (sx, sy, z))]
-        if all(reachable(model, point) for _, point in legs) and _segment_reachable(model, start_xy, slot_xy, z):
+        if radius <= HOVER_RADIUS_MAX_M and all(reachable(model, point) for _, point in legs) and _segment_reachable(model, start_xy, slot_xy, z):
             try:
                 if held is not None:
                     _check_clearance('carry', start_xy, slot_xy, z, held, contact_offset_mm, obstacles, held_radius)
@@ -223,6 +226,9 @@ def plan_place(model, slot, start_xyz, *, carry_z=CARRY_Z, min_carry_z=None, hel
             pitch = VERTICAL + math.radians(tilt)
             shift = (float(held_height_mm) if held_height_mm is not None else 0.) / 1000. * math.sin(math.radians(tilt))
             radius = target_radius - shift
+            if radius > HOVER_RADIUS_MAX_M:
+                tilt += TILT_STEP_DEG
+                continue
             sx, sy = target_xy[0] * radius / target_radius, target_xy[1] * radius / target_radius
             slot_xy = (sx, sy)
             blocked = None

@@ -110,7 +110,7 @@ class BaseDriveTests(unittest.TestCase):
         self.assertTrue({'/api/nav/cancel', '/api/wall/stop', '/api/drive/stop'} <= {path for path, _ in fake.posts})
 
     def test_short_status(self):
-        self.assertEqual(base_drive.short_status(dict(nav=dict(state='active', target='책상', distance=1.24))), '차: 책상(으)로 이동 중 (남은 1.2 m)')
+        self.assertEqual(base_drive.short_status(dict(nav=dict(state='active', target='책상', distance=1.24))), '차: 책상으로 이동 중 (남은 1.2 m)')
         self.assertEqual(base_drive.short_status(dict(frame='map', pose=dict(x=0, y=0, yaw_deg=0), labels=[dict(name='휴지통', dist_m=0.42)], nav={})),
                          '차: 휴지통 근처 (0.4 m)')
         self.assertEqual(base_drive.short_status(dict(frame='odom', pose=None, labels=[], nav={})), '차: 지도 위 위치 모름')
@@ -242,7 +242,7 @@ class ArmDriveTests(unittest.TestCase):
         calls = []
         def fake_drive(label, mode='precise', gap=None, on_phase=None, stopped=None):
             calls.append((label, gap)); self.modes.append(mode)
-            on_phase('drive_active', f'{label}(으)로 이동 중'); return dict(ok=True, reason=None, reason_code=None)
+            on_phase('drive_active', f'{label}으로 이동 중'); return dict(ok=True, reason=None, reason_code=None)
         self.modes = []
         arm = arm_api.Arm(run=lambda *a, **k: (0, {}, 0.), read_state=lambda: 'ok', base_check=lambda: None,
                           drive=drive or fake_drive, read_pose=lambda: pose)
@@ -279,6 +279,7 @@ class ArmDriveTests(unittest.TestCase):
     def tidy_arm(self, scene_objects, base_reason=None):
         arm, calls = self.arm(self.HOME)
         arm.base_check = lambda: base_reason
+        arm.arrival_check = lambda: base_reason
         picked = []
         arm._pick_all = lambda task_id, objects=None: picked.append(objects) or dict(ok=True, reason=None, reason_code=None)
         scene = dict(objects=[dict(label=label, pickable=True) for label in scene_objects], in_tray=[])
@@ -304,6 +305,7 @@ class ArmDriveTests(unittest.TestCase):
         arm, calls, picked, scene = self.tidy_arm(['red_cube'])
         moving = iter([None] + ['차가 움직이는 중'] * 3 + [None] * 20)            # 출발 전엔 멈춤, 도착 직후 잠깐 움직임
         arm.base_check = lambda: next(moving)
+        arm.arrival_check = arm.base_check
         with patch.object(arm_api.Arm, '_steady_scene', staticmethod(lambda grab: (None, scene))), patch.object(arm_api.time, 'sleep'):
             task = self.run_task(arm, {'label': '책상', 'then': 'tidy'})
         self.assertEqual((task['state'], picked), ('done', [['red_cube']]))
