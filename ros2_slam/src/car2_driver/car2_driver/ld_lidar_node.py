@@ -12,7 +12,8 @@ Measured on car2's unit (2026-10-02): ~4000 points/s, 6 Hz rotation
 (~670 points/rev, ~0.54 deg), ranges 0.19 .. 8 m in a room.
 
 Parameters:
-  port               serial device (default: the CP2102 by-id path, stable across reboots)
+  port               serial device, or 'auto': probe the USB serial ports and take the one that streams
+                     LD packets (the arm's pump ESP32 has the same CP2102 '_0001' by-id name)
   baud_rate          230400
   frame_id           laser_frame
   angle_resolution_deg 0.5  LaserScan bin size
@@ -37,6 +38,8 @@ import serial
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
+
+from car2_driver.serial_probe import find_ld_lidar
 
 PACKET_LEN = 47
 POINTS_PER_PACKET = 12
@@ -85,7 +88,8 @@ class LdLidarNode(Node):
         self.declare_parameter('self_mask_deg', [0.0])        # [0.0] = no mask (ROS can't declare an empty list)
         self.declare_parameter('self_mask_range', 0.35)
 
-        self.port = self.get_parameter('port').value
+        self.port_param = self.get_parameter('port').value
+        self.port = self.port_param
         self.baud = int(self.get_parameter('baud_rate').value)
         self.frame_id = self.get_parameter('frame_id').value
         self.res = math.radians(float(self.get_parameter('angle_resolution_deg').value))
@@ -118,8 +122,19 @@ class LdLidarNode(Node):
     # ---------------------------------------------------------------- serial
     def _open(self):
         while self._running and rclpy.ok():
+            if self.port_param == 'auto':                 # find the lidar by its packets, again after every disconnect
+                found = find_ld_lidar(self.baud)
+                if found is None:
+                    self.get_logger().error('auto: no USB serial port streams LD lidar packets (powered? plugged?) -- retrying',
+                                            throttle_duration_sec=10.0)
+                    time.sleep(3.0)
+                    continue
+                if found != self.port:
+                    self.get_logger().info(f'auto: lidar found on {found}')
+                self.port = found
             try:
-                return serial.Serial(self.port, self.baud, timeout=0.5)
+                # exclusive: never share a port another program holds (e.g. the arm's pump ESP32)
+                return serial.Serial(self.port, self.baud, timeout=0.5, exclusive=True)
             except (serial.SerialException, OSError) as exc:
                 self.get_logger().error(f'cannot open {self.port}: {exc} (retrying)', throttle_duration_sec=10.0)
                 time.sleep(2.0)

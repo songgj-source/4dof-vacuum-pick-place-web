@@ -186,6 +186,7 @@
   <div class="brand"><b>자비스</b><span>SO-101 진공흡착 로봇팔 · 물체 분류</span></div>
   <span id="state" class="pill">연결 중</span>
   <span id="home" class="pill" hidden></span>
+  <span id="base" class="pill" hidden title="팀 주행 서버(map_web)에서 읽은 차 위치"></span>
   <span class="spacer"></span>
   <a class="doclink" href="/docs" target="_blank" rel="noopener">API 설명</a>
   <a class="doclink" href="#logcard" title="작업·오류 로그로 이동">로그<span id="log-badge" class="count" hidden>0</span></a>
@@ -297,6 +298,7 @@ async function api(method, path, body) {
   return { status: r.status, data };
 }
 function describe(cmd) {
+  if (cmd.action === 'drive' && cmd.then === 'tidy') return `${cmd.label}(으)로 이동한 뒤 책상을 정리합니다.`;
   if (cmd.action === 'drive') return `${cmd.label}(으)로 이동합니다(도착하면 앞 벽에 맞춰 붙습니다).`;
   if (cmd.action === 'return_home') return 'HOME으로 복귀합니다.';
   if (cmd.action === 'pick_all' && cmd.objects) return `${cmd.objects.map((o) => NAMES[o]).join(', ')}를 차례로 넣습니다(책상 정리).`;
@@ -325,7 +327,7 @@ async function run(cmd, { askFirst = true } = {}) {
   if (cmd.menu === 7) body.slot = Number(cmd.slot);
   if (cmd.menu === 4 && cmd.objects) body.objects = cmd.objects;
   // 주행은 메뉴 번호가 없다: POST /robot_arm {action: 'drive', label}
-  const { status, data } = cmd.action === 'drive' ? await api('POST', '/robot_arm', { action: 'drive', label: cmd.label })
+  const { status, data } = cmd.action === 'drive' ? await api('POST', '/robot_arm', { action: 'drive', label: cmd.label, ...(cmd.then ? { then: cmd.then } : {}) })
                                                   : await api('POST', '/api/menu/' + cmd.menu, body);
   if (status !== 202) { say('sys', '실행하지 못했습니다: ' + (REASONS[data.reason_code] || data.reason || status)); return false; }
   watched = data.task_id; lastShown = null; say('sys', describe(cmd).replace('합니다.', '하는 중'));
@@ -359,6 +361,21 @@ async function loadPlaces() {
   }
 }
 document.querySelector('[data-open="drive8"]').addEventListener('click', () => { if (!$('drive8').hidden) loadPlaces(); });
+// 위쪽 '차' 표시: 3초마다 GET /api/base. 주행 서버가 꺼져 있으면 '주행 꺼짐'.
+async function pollBase() {
+  if (document.hidden) return;
+  let res; try { res = await api('GET', '/api/base'); } catch (e) { return; }
+  const pill = $('base');
+  if (res.status === 401) { pill.hidden = true; return; }
+  pill.hidden = false;
+  if (res.status !== 200) { pill.className = 'pill'; pill.textContent = '주행 꺼짐'; return; }
+  const d = res.data, nav = d.nav || {}, moving = ['backing', 'sending', 'active', 'canceling'].includes(nav.state);
+  const near = (d.labels || []).find((l) => l.dist_m != null);
+  pill.className = 'pill' + (moving ? ' busy' : '');
+  pill.textContent = moving ? `차 이동 중 → ${nav.target || ''}${nav.distance != null ? ' ' + nav.distance.toFixed(1) + ' m' : ''}`
+                            : (near ? `차: ${near.name} ${near.dist_m.toFixed(1)} m` : (d.frame === 'map' ? '차: 대기' : '차: 위치 모름'));
+}
+setInterval(pollBase, 3000); pollBase();
 $('drive-go').onclick = () => {
   if (!$('place').value) { say('sys', '장소를 고르세요.'); return; }
   run({ action: 'drive', label: $('place').value });
@@ -393,7 +410,7 @@ function bubble(cls, text) {
   $('log').appendChild(d); $('log').scrollTop = $('log').scrollHeight; return d;
 }
 function toRun(p) {          // 제안을 메뉴 번호 실행으로 바꾼다(버튼과 같은 길)
-  if (p.action === 'drive') return { action: 'drive', label: p.label };
+  if (p.action === 'drive') return p.then ? { action: 'drive', label: p.label, then: p.then } : { action: 'drive', label: p.label };
   if (p.action === 'return_home') return RUN.home;
   if (p.action === 'pick_all') return p.objects ? { ...RUN.all, objects: p.objects } : RUN.all;
   if (p.object === 'unknown') return { menu: 7, action: 'pick_place', object: 'unknown', slot: p.slot };

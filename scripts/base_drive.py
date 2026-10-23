@@ -163,3 +163,15 @@ def where_reply(state):
     places = ', '.join(label['name'] for label in state.get('labels') or []) or '없음'
     moving = ' 지금 이동 중입니다.' if state.get('nav', {}).get('state') in NAV_MOVING or state.get('moving') else ''
     return f'{where}. 갈 수 있는 장소: {places}.{moving}'
+
+
+def short_status(state):
+    """'상태 어때?'와 웹 위쪽 표시에 쓰는 한 줄: 이동 중이면 목적지와 남은 거리, 아니면 가장 가까운 장소."""
+    nav = state.get('nav') or {}
+    if nav.get('state') in NAV_MOVING:
+        left = nav.get('distance')
+        return f"차: {nav.get('target') or '목적지'}(으)로 이동 중" + (f' (남은 {left:.1f} m)' if isinstance(left, (int, float)) else '')
+    if state.get('frame') != 'map' or not state.get('pose'):
+        return '차: 지도 위 위치 모름'
+    near = next((label for label in state.get('labels') or [] if 'dist_m' in label), None)
+    return f"차: {near['name']} 근처 ({near['dist_m']:.1f} m)" if near else '차: 저장된 장소 없음'

@@ -56,6 +56,43 @@ class MapWebContractTests(unittest.TestCase):
         self.assertNotEqual(map_port, camera_port)
 
 
+@unittest.skipUnless((SLAM / 'src' / 'car2_driver' / 'car2_driver' / 'serial_probe.py').exists(), 'ros2_slam 사본이 없다')
+class LidarAutoPortTests(unittest.TestCase):
+    """우리 사본의 라이다 port:=auto: 내용(47바이트 묶음)으로 라이다 포트를 고르고, 펌프 ESP32·사용 중인 포트는 건너뛴다."""
+
+    def setUp(self):
+        sys.path.insert(0, str(SLAM / 'src' / 'car2_driver'))
+        from car2_driver import serial_probe
+        self.probe = serial_probe
+
+    def lidar_bytes(self, packets=6):
+        packet = b'\x54\x2c' + bytes(45)
+        return b'\x00\x13' + packet * packets
+
+    def test_recognises_lidar_packets_only(self):
+        self.assertTrue(self.probe.looks_like_ld(self.lidar_bytes()))
+        self.assertFalse(self.probe.looks_like_ld(b'ESP32_VACUUM_L9110S GPIO26/25 ready p/d/s/q\r\n' * 20))
+        self.assertFalse(self.probe.looks_like_ld(b''))
+
+    def test_finds_the_lidar_and_skips_busy_ports_and_the_pump(self):
+        class Link:
+            def __init__(self, data): self.data = data
+            def read(self, n): chunk, self.data = self.data[:n], self.data[n:]; return chunk
+            def close(self): pass
+        streams = {'pump': b'ESP32_VACUUM ready\r\n', 'lidar': self.lidar_bytes()}
+        def opener(port):
+            if port == 'busy':
+                raise OSError('Could not exclusively lock port')
+            return Link(streams[port])
+        found = self.probe.find_ld_lidar(listen_s=.05, ports=['busy', 'pump', 'lidar'], opener=opener)
+        self.assertEqual(found, 'lidar')
+        self.assertIsNone(self.probe.find_ld_lidar(listen_s=.05, ports=['pump'], opener=opener))
+
+    def test_launch_defaults_to_auto(self):
+        launch = (SLAM / 'src' / 'car2_bringup' / 'launch' / 'robot_lidar.launch.py').read_text()
+        self.assertIn("LIDAR_PORT = 'auto'", launch)
+
+
 class AstraPickTests(unittest.TestCase):
     """팔 카메라(Astra 2bc5/0401)와 팀 카메라(Astra Pro 2bc5/060f)가 같이 꽂혀도 팔 카메라를 고른다."""
 

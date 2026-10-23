@@ -109,6 +109,12 @@ class BaseDriveTests(unittest.TestCase):
         self.assertEqual(result['reason_code'], 'cancelled')
         self.assertTrue({'/api/nav/cancel', '/api/wall/stop', '/api/drive/stop'} <= {path for path, _ in fake.posts})
 
+    def test_short_status(self):
+        self.assertEqual(base_drive.short_status(dict(nav=dict(state='active', target='책상', distance=1.24))), '차: 책상(으)로 이동 중 (남은 1.2 m)')
+        self.assertEqual(base_drive.short_status(dict(frame='map', pose=dict(x=0, y=0, yaw_deg=0), labels=[dict(name='휴지통', dist_m=0.42)], nav={})),
+                         '차: 휴지통 근처 (0.4 m)')
+        self.assertEqual(base_drive.short_status(dict(frame='odom', pose=None, labels=[], nav={})), '차: 지도 위 위치 모름')
+
     def test_unreachable_map_web_is_a_clear_error(self):
         with self.assertRaises(base_drive.BaseError) as caught:
             base_drive.base_state('http://127.0.0.1:9')
@@ -153,10 +159,43 @@ class ArmDriveTests(unittest.TestCase):
         arm, calls = self.arm(None)
         self.assertEqual(self.run_task(arm, {'label': '책상'})['result']['reason_code'], 'arm_not_folded')
 
+    def tidy_arm(self, scene_objects, base_reason=None):
+        arm, calls = self.arm(self.HOME)
+        arm.base_check = lambda: base_reason
+        picked = []
+        arm._pick_all = lambda task_id, objects=None: picked.append(objects) or dict(ok=True, reason=None, reason_code=None)
+        scene = dict(objects=[dict(label=label, pickable=True) for label in scene_objects], in_tray=[])
+        return arm, calls, picked, scene
+
+    def test_drive_then_tidy_picks_what_the_photo_shows(self):
+        arm, calls, picked, scene = self.tidy_arm(['tape_measure', 'red_cube'])
+        with patch.object(arm_api.Arm, '_steady_scene', staticmethod(lambda grab: (None, scene))):
+            task = self.run_task(arm, {'label': '책상', 'then': 'tidy'})
+        self.assertEqual((task['state'], calls), ('done', [('책상', None)]))
+        self.assertEqual(picked, [['red_cube', 'tape_measure']])                   # 정리 순서(흰 상자 → 정육면체 → 줄자)
+        self.assertIn('책상에 도착해 정리했습니다', task['result']['note'])
+        self.assertTrue(arm.arm_home)                                              # 정리는 HOME으로 끝난다
+
+    def test_drive_then_tidy_with_nothing_on_the_desk(self):
+        arm, _, picked, scene = self.tidy_arm([])
+        with patch.object(arm_api.Arm, '_steady_scene', staticmethod(lambda grab: (None, scene))):
+            task = self.run_task(arm, {'label': '책상', 'then': 'tidy'})
+        self.assertEqual((task['state'], picked), ('done', []))
+        self.assertIn('정리할 물체가 없습니다', task['result']['note'])
+
+    def test_drive_then_tidy_waits_for_the_car_to_stop(self):
+        arm, calls, picked, scene = self.tidy_arm(['red_cube'])
+        moving = iter([None] + ['차가 움직이는 중'] * 3 + [None] * 20)            # 출발 전엔 멈춤, 도착 직후 잠깐 움직임
+        arm.base_check = lambda: next(moving)
+        with patch.object(arm_api.Arm, '_steady_scene', staticmethod(lambda grab: (None, scene))), patch.object(arm_api.time, 'sleep'):
+            task = self.run_task(arm, {'label': '책상', 'then': 'tidy'})
+        self.assertEqual((task['state'], picked), ('done', [['red_cube']]))
+
     def test_bad_drive_requests(self):
         arm, _ = self.arm(self.HOME)
         self.assertEqual(arm.start('drive', {})[0], 400)
         self.assertEqual(arm.start('drive', {'label': '책상', 'gap': 2})[0], 400)
+        self.assertEqual(arm.start('drive', {'label': '책상', 'then': 'dance'})[0], 400)
 
 
 class ChatDriveTests(unittest.TestCase):
@@ -176,6 +215,15 @@ class ChatDriveTests(unittest.TestCase):
         for text in ('책상으로 이동해줘', '자비스, 책상 앞으로 가줘'):
             body = self.chat(text)
             self.assertEqual((body['proposal'], body['source']), ({'action': 'drive', 'label': '책상'}, 'rule'))
+
+    def test_go_and_tidy_is_one_command_not_a_plain_tidy(self):
+        for text in ('책상으로 가서 정리해줘', '자비스, 책상 가서 정리해'):
+            body = self.chat(text)
+            self.assertEqual(body['proposal'], {'action': 'drive', 'label': '책상', 'then': 'tidy'})
+        self.assertIn('정리합니다', body['reply'])
+
+    def test_status_includes_the_car(self):
+        self.assertIn('차: 책상 근처', self.chat('상태 어때?')['reply'])
 
     def test_unknown_place_lists_the_known_ones(self):
         body = self.chat('부엌으로 가')

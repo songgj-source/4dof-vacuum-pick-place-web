@@ -27,7 +27,10 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-LIDAR_PORT = '/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0'
+# 'auto': ld_lidar_node picks the USB serial port that actually streams lidar packets. The by-id name
+# (/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0) is shared with the
+# arm's pump ESP32 (same CP2102 serial '0001'), so it may point to the pump. A fixed path still works: lidar_port:=...
+LIDAR_PORT = 'auto'
 
 
 def generate_launch_description():
