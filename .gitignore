@@ -17,3 +17,4 @@ calibration/openni2_redist/
 config/devices.json
 .venv/
 pi/arm-api.env
+drive_data/

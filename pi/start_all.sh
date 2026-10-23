@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 노트북에서 한 번에: 음성 인식 서버 + Ollama 중계 + Pi 설정 맞추기 + Pi 서버 + 화면 열기.
+# 노트북에서 한 번에: 음성 인식 서버 + Ollama 중계 + Pi 설정 맞추기 + 내 주행 스택(Pi) + Pi 서버 + 화면 열기.
 # 켜기만 해서는 로봇이 움직이지 않는다(명령을 받아야 움직인다). HOME에 놓인 팔은 토크를 켜서 그 자리에 붙잡는다.
 #
 #   bash pi/start_all.sh            # 켜기 (이미 켜진 것은 건너뛴다)
@@ -7,6 +7,7 @@
 #   bash pi/start_all.sh status     # 무엇이 켜져 있는지
 #   NO_BROWSER=1 bash pi/start_all.sh   # 화면은 열지 않는다
 #   NO_TORQUE=1 bash pi/start_all.sh    # 토크는 켜지 않고 팔 상태만 확인
+#   NO_DRIVE=1 bash pi/start_all.sh     # 주행 스택은 켜지 않음(팔만)
 #
 # 환경 변수: ROBOT (기본 user@192.168.0.31), REMOTE_DIR (4dof_ik_pi_test), ARM_SSH_KEY,
 #            STT_PY (Whisper가 깔린 파이썬, 기본 ~/miniconda3/envs/lerobot_312/bin/python)
@@ -101,6 +102,11 @@ start() {
     arm_ready=0
   fi
 
+  if [ -z "${NO_DRIVE:-}" ]; then
+    say "내 주행 스택 (드라이버·라이다 → 위치 추정·Nav2 → map_web, ROS 도메인 43, NO_DRIVE=1이면 건너뜀)"
+    pi "bash ~/$REMOTE_DIR/pi/drive_ctl.sh start" 2>&1 | sed 's/^/   /' || warn "주행 스택을 켜지 못했습니다(위 안내 참고) - 팔은 그대로 씁니다"
+  fi
+
   say "Pi 서버"
   if pi "bash ~/$REMOTE_DIR/pi/arm_api_ctl.sh status" | grep -q '^켜짐'; then
     if [ "$changed" = 1 ]; then
@@ -126,7 +132,11 @@ start() {
 
 stop() {
   say "Pi 서버"
-  if reach_pi; then pi "bash ~/$REMOTE_DIR/pi/arm_api_ctl.sh stop" | sed 's/^/   /'; fi
+  if reach_pi; then
+    pi "bash ~/$REMOTE_DIR/pi/arm_api_ctl.sh stop" | sed 's/^/   /'
+    say "내 주행 스택"
+    pi "bash ~/$REMOTE_DIR/pi/drive_ctl.sh stop" | sed 's/^/   /'
+  fi
   say "음성 인식 서버"
   pkill -f "scripts/stt_server.py" && echo "   끔" || echo "   꺼져 있음"
   say "Ollama 중계"
@@ -141,6 +151,7 @@ status() {
   if reach_pi 2>/dev/null; then
     echo "Pi 서버:        $(pi "bash ~/$REMOTE_DIR/pi/arm_api_ctl.sh status" | head -1)"
     echo "Pi Wi-Fi 절전:  $(pi '/usr/sbin/iw dev wlan0 get power_save 2>/dev/null')"
+    echo "내 주행 스택:"; pi "bash ~/$REMOTE_DIR/pi/drive_ctl.sh status" 
   fi
 }
 
