@@ -135,7 +135,7 @@ class Arm:
     def __init__(self, run=menu.run_streaming, read_state=None, hold=None, base_check=None, drive=None, read_pose=None):
         self.run = run
         self.log = EventLog()
-        self.drive = drive or base_drive.goto_label_wall
+        self.drive = drive or base_drive.drive_to
         self.read_pose = read_pose or menu.read_arm_state       # {관절: (토크, 위치)} 또는 None
         self.base_check = base_check or base_moving
         self.read_state = read_state or (lambda: menu.classify_arm(menu.read_arm_state()))
@@ -195,10 +195,12 @@ class Arm:
             if gap is not None and (isinstance(gap, bool) or not isinstance(gap, (int, float))
                                     or not base_drive.GAP_LIMITS[0] <= gap <= base_drive.GAP_LIMITS[1]):
                 return 400, dict(ok=False, reason_code='bad_request', reason=f'gap은 {base_drive.GAP_LIMITS[0]}~{base_drive.GAP_LIMITS[1]} m여야 합니다.')
-            then = params.get('then')
+            then, mode = params.get('then'), params.get('mode', 'precise')
+            if mode not in base_drive.MODES:
+                return 400, dict(ok=False, reason_code='bad_request', reason=f'mode는 {base_drive.MODES} 중 하나입니다(precise: 라벨 자리 그대로, wall: 앞 벽에 붙기).')
             if then not in (None, 'tidy'):
                 return 400, dict(ok=False, reason_code='bad_request', reason="then은 'tidy'(도착하면 책상 정리)만 됩니다.")
-            command = ('drive', dict(label=label.strip(), **({'gap': float(gap)} if gap is not None else {}), **({'then': then} if then else {})))
+            command = ('drive', dict(label=label.strip(), mode=mode, **({'gap': float(gap)} if gap is not None else {}), **({'then': then} if then else {})))
         else:
             return 404, dict(ok=False, reason_code='bad_request', reason='알 수 없는 명령입니다.')
         with self.lock:
@@ -356,10 +358,10 @@ class Arm:
         if far:
             return dict(ok=False, reason_code='arm_not_folded',
                         reason='팔이 HOME으로 접혀 있지 않아 주행하지 않습니다(' + ', '.join(f'{n} {d:+d}' for n, d in far.items()) + '). 먼저 "홈으로 돌아가"를 시키세요.')
-        self.log.add('info', '주행', f"{params['label']}(으)로 이동 시작" + (f" (벽 앞 {params['gap']} m)" if 'gap' in params else ''))
+        self.log.add('info', '주행', f"{params['label']}(으)로 이동 시작 ({'라벨 자리 그대로' if params.get('mode', 'precise') == 'precise' else '앞 벽에 붙기'})" + (f" (벽 앞 {params['gap']} m)" if 'gap' in params else ''))
         try:
-            result = self.drive(params['label'], gap=params.get('gap'), on_phase=lambda raw, text: self._event(task_id, 'phase', (raw, text)),
-                                stopped=lambda: self.stop_requested)
+            result = self.drive(params['label'], mode=params.get('mode', 'precise'), gap=params.get('gap'),
+                                on_phase=lambda raw, text: self._event(task_id, 'phase', (raw, text)), stopped=lambda: self.stop_requested)
         except base_drive.BaseError as exc:
             return dict(ok=False, reason=str(exc), reason_code=exc.code)
         if result.get('ok') and params.get('then') == 'tidy' and not self.stop_requested:
@@ -720,8 +722,8 @@ COMMON_API = [
          description='로컬 음성 인식(Whisper, 인터넷 없이 이 PC에서). 응답: text(알아들은 문장, 말소리가 없으면 빈 문자열), seconds. 로봇은 움직이지 않는다. 문장은 /chat으로 보내 명령으로 쓴다.'),
     dict(method='GET', path='/api/base', body=None,
          description='주행 상태(base_state, 팀 map_web의 /api/state·/api/drive): 지도 위 위치·방향, 장소 라벨(가까운 순, 거리), 이동·벽 근접 상태, 드라이버 연결. 차는 움직이지 않는다. map_web이 꺼져 있으면 503.'),
-    dict(method='POST', path='/robot_arm', body={'action': 'drive', 'label': '책상', 'gap': 0.05, 'then': 'tidy'},
-         description='주행(goto_label_wall): 라벨 위치로 이동한 뒤 정면 벽과 수직으로 맞추고 gap(m, 0.02~0.5, 생략하면 map_web 설정값) 앞까지 붙는다. 차가 움직인다. 팔이 HOME으로 접혀 있을 때만 받는다. then=\'tidy\'면 도착한 뒤 사진을 찍어 팔이 닿는 물체를 정리한다("책상으로 가서 정리해줘"). 진행은 /status의 phase_label, 정지는 /stop.'),
+    dict(method='POST', path='/robot_arm', body={'action': 'drive', 'label': '책상', 'mode': 'precise', 'then': 'tidy'},
+         description='주행: mode=precise(기본)는 라벨을 만든 그 자리(위치 ±3 cm·방향 ±2°)로 간다(Nav2로 근처까지 → 지도 위치를 보며 마무리 정렬). mode=wall은 라벨로 간 뒤 정면 벽과 수직으로 맞추고 gap(m, 0.02~0.5) 앞까지 붙는다. 차가 움직인다. 팔이 HOME으로 접혀 있을 때만 받는다. then=\'tidy\'면 도착한 뒤 사진을 찍어 팔이 닿는 물체를 정리한다("책상으로 가서 정리해줘"). 진행은 /status의 phase_label, 정지는 /stop.'),
     dict(method='GET', path='/api/logs?since=<번호>', body=None,
          description='최근 사건 기록(최대 500건 중 번호가 since보다 큰 것). 작업 시작·완료·실패의 원문 이유와 실행 프로그램의 마지막 출력, 카메라·API 오류. 응답: boot(서버를 다시 켜면 바뀜), last(마지막 번호), entries[{id, time, level(info/ok/warn/error), source, message, detail}]. 웹 화면의 로그창이 쓴다.'),
     dict(method='GET', path='/status', body=None, description='지금 상태. state(idle/busy), phase_label(지금 단계), task_id, arm_home.'),
@@ -936,7 +938,7 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
                     return self._send(200, arm.stop())
                 if action not in ('pick_place', 'pick_all', 'return_home', 'drive'):
                     return self._send(400, dict(ok=False, reason_code='bad_request', reason='action은 pick_place, pick_all, return_home, drive, status, stop 중 하나입니다.'))
-                status, body = arm.start(action, {k: v for k, v in params.items() if k in ('object', 'slot', 'objects', 'label', 'gap', 'then')})
+                status, body = arm.start(action, {k: v for k, v in params.items() if k in ('object', 'slot', 'objects', 'label', 'gap', 'then', 'mode')})
                 return self._send(status, body)
             if self.path == '/api/image':
                 status, body = arm.capture()

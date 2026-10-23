@@ -50,7 +50,7 @@ TOOLS = [
            'slot': {'type': 'integer', 'enum': [1, 2, 3], 'description': '넣을 칸 번호. 사용자가 말했을 때만'}}, ['object_name']),
     _tool('sort_all_objects', '흰 상자 → 빨간 정육면체 → 줄자 순서로 세 물체를 모두 기본 칸에 넣는다. 앞 물체가 실패하면 멈춘다.'),
     _tool('arm_return_home', '팔을 접힌 HOME 자세로 돌려놓는다.'),
-    _tool('move_to_place', '로봇 차를 지도에 저장된 장소(라벨)로 이동시킨 뒤 정면 벽(작업대) 앞에 붙인다. 팔은 HOME으로 접혀 있어야 한다. '
+    _tool('move_to_place', '로봇 차를 지도에 저장된 장소(라벨)를 만든 그 자리·방향으로 정확히 이동시킨다. 팔은 HOME으로 접혀 있어야 한다. '
           '장소 이름은 사용자가 말한 그대로(예: 책상, 휴지통). "책상 가서 정리해"처럼 도착 후 정리까지 시키면 then_tidy를 true로.',
           {'place': {'type': 'string', 'description': '장소 이름'},
            'then_tidy': {'type': 'boolean', 'description': '도착하면 사진을 찍어 팔이 닿는 물체를 정리'}}, ('place',)),
@@ -220,7 +220,7 @@ def proposal_reply(proposal, notes=()):
         what = f"{proposal['label']}(으)로 이동한 뒤, 도착하면 사진을 찍어 팔이 닿는 물체를 정리합니다."
         return what + WAIT
     elif proposal['action'] == 'drive':
-        what = f"{proposal['label']}(으)로 이동합니다(도착하면 앞 벽에 맞춰 붙습니다)."
+        what = f"{proposal['label']}(으)로 이동합니다(라벨을 만든 자리와 방향에 맞춰 섭니다)."
         return what + WAIT
     elif proposal['action'] == 'pick_all' and proposal.get('objects'):
         found = proposal['objects']

@@ -2,6 +2,8 @@
 
   base_state       GET /api/state, /api/drive   위치·방향, 라벨 목록, Nav2/벽 근접 상태
   goto_label_wall  POST /api/nav/goto_wall      라벨로 이동한 뒤 정면 벽과 수직으로 맞추고 gap(m) 앞까지 전진
+  goto_label_precise  POST /api/nav/goto + /api/drive   라벨의 정확한 위치·방향으로(기본). Nav2로 근처까지 간 뒤 지도 위치를 보며
+                   천천히 마무리 정렬한다(라벨을 만든 그 자리, 위치 ±3 cm·방향 ±2°)
 
 주소는 ARM_BASE_URL(기본 http://127.0.0.1:8081). map_web 쪽 코드는 건드리지 않는다.
 goto_wall은 접수만 하고 바로 돌아오므로, 끝날 때까지 /api/state의 nav(이동)·wall(벽 근접)을 읽어 결과를 정한다.
@@ -21,6 +23,15 @@ NAV_MOVING = ('backing', 'sending', 'active', 'canceling')
 NAV_FAILED = ('failed', 'aborted', 'canceled', 'rejected', 'unavailable')
 DRIVE_TIMEOUT_S = 240.
 GAP_LIMITS = (0.02, 0.5)         # map_web /api/wall/config의 gap 허용 범위(m)
+MODES = ('precise', 'wall')
+# 마무리 정렬: Nav2는 장애물 옆 라벨(책상 앞 등)을 비용이 낮은 곳으로 옮겨 가고(최대 1.5 m) 방향도 ±0.25 rad까지 도착으로 친다.
+XY_TOL = 0.03                    # 라벨 위치 허용 오차(m)
+YAW_TOL_DEG = 2.0                # 라벨 방향 허용 오차(°)
+FINE_MAX_M = 0.6                 # 이보다 멀면 마무리 정렬을 하지 않는다(Nav2가 엉뚱한 곳에 섰다)
+FINE_SPEED = (0.03, 0.06)        # 직진 속도 범위(m/s): 남은 거리에 비례
+TURN_SPEED = (0.10, 0.35)        # 회전 속도 범위(rad/s)
+CLEAR_M = 0.03                   # 진행 방향 차체 끝에서 이만큼 안에 라이다 점이 있으면 멈춘다
+TICK_S = 0.1                     # map_web 주행 명령은 0.5초만 유효하다 -> 0.1초마다 다시 보낸다
 
 
 class BaseError(RuntimeError):
@@ -175,3 +186,174 @@ def short_status(state):
         return '차: 지도 위 위치 모름'
     near = next((label for label in state.get('labels') or [] if 'dist_m' in label), None)
     return f"차: {near['name']} 근처 ({near['dist_m']:.1f} m)" if near else '차: 저장된 장소 없음'
+
+
+# ---------------------------------------------------------------------------- 정확한 도착
+def _wrap(angle):
+    return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
+def _drive_cmd(linear, angular, url):
+    _call('POST', '/api/drive', {'linear': round(linear, 3), 'angular': round(angular, 3)}, url=url, timeout_s=2.)
+
+
+def _stop(url):
+    try:
+        _call('POST', '/api/drive/stop', {}, url=url, timeout_s=2.)
+    except BaseError:
+        pass
+
+
+def _pose_and_scan(url):
+    state = _call('GET', '/api/state', url=url, timeout_s=2.)
+    if state.get('frame') != 'map' or not state.get('pose'):
+        raise BaseError('지도 위 위치를 몰라 라벨에 정확히 맞출 수 없습니다(내비게이션·위치 추정이 켜져 있는지 확인).', 'drive_failed')
+    pose = state['pose']
+    return (pose['x'], pose['y'], pose['yaw']), state.get('scan') or []
+
+
+def _blocked(pose, scan, robot, direction):
+    """direction: +1 앞으로, -1 뒤로, 0 제자리 회전. 부딪힐 라이다 점이 있으면 그 거리(m), 없으면 None."""
+    x, y, yaw = pose
+    c, s_ = math.cos(yaw), math.sin(yaw)
+    hits = []
+    for px, py in scan:
+        fx, fy = (px - x) * c + (py - y) * s_, -(px - x) * s_ + (py - y) * c      # 로봇 기준(앞 +x, 왼쪽 +y)
+        if direction == 0:
+            if math.hypot(fx, fy) < robot['radius']:
+                hits.append(math.hypot(fx, fy))
+        elif abs(fy) < robot['radius']:
+            edge = robot['front'] if direction > 0 else robot['back']
+            ahead = fx * direction
+            if 0 < ahead - edge < CLEAR_M:
+                hits.append(ahead - edge)
+    return min(hits) if hits else None
+
+
+def _turn_to(target_yaw, tol, url, robot, stopped, sleep, timeout_s=15.):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if stopped():
+            return 'cancelled'
+        pose, scan = _pose_and_scan(url)
+        error = _wrap(target_yaw - pose[2])
+        if abs(error) <= tol:
+            _stop(url)
+            return None
+        if _blocked(pose, scan, robot, 0) is not None:
+            _stop(url)
+            return '제자리 회전하면 주변 물체에 닿을 수 있어 멈췄습니다'
+        speed = min(TURN_SPEED[1], max(TURN_SPEED[0], 1.2 * abs(error)))
+        _drive_cmd(0., math.copysign(speed, error), url)
+        sleep(TICK_S)
+    _stop(url)
+    return '회전이 제시간에 끝나지 않았습니다'
+
+
+def _move_to(target, heading, direction, url, robot, stopped, sleep, timeout_s=20.):
+    """heading 방향을 유지하며 direction(+1 앞, -1 뒤)으로 target에 가장 가까워질 때까지 직진한다."""
+    deadline = time.monotonic() + timeout_s
+    ux, uy = math.cos(heading) * direction, math.sin(heading) * direction    # 실제로 움직이는 방향
+    while time.monotonic() < deadline:
+        if stopped():
+            return 'cancelled'
+        pose, scan = _pose_and_scan(url)
+        remaining = (target[0] - pose[0]) * ux + (target[1] - pose[1]) * uy  # 진행 방향으로 남은 거리
+        if remaining <= XY_TOL / 2:
+            _stop(url)
+            return None
+        gap = _blocked(pose, scan, robot, direction)
+        if gap is not None:
+            _stop(url)
+            return f'진행 방향 {gap * 100:.0f} cm 앞에 물체가 있어 멈췄습니다'
+        speed = min(FINE_SPEED[1], max(FINE_SPEED[0], 0.6 * remaining))
+        steer = max(-0.15, min(0.15, 1.5 * _wrap(heading - pose[2])))       # 곧게 가도록 방향만 살짝 보정
+        _drive_cmd(speed * direction, steer, url)
+        sleep(TICK_S)
+    _stop(url)
+    return '마무리 이동이 제시간에 끝나지 않았습니다'
+
+
+def fine_align(label, url=None, on_phase=None, stopped=lambda: False, sleep=time.sleep):
+    """지금 위치에서 라벨의 x, y, 방향으로 천천히 맞춘다(map_web /api/drive). 돌려주는 것: dict(ok, reason, reason_code, note)."""
+    phase = on_phase or (lambda raw, text: None)
+    info = _call('GET', '/api/get_map_info', url=url)
+    robot = {'radius': 0.26, 'front': 0.16, 'back': 0.16, **(info.get('robot') or {})}      # map_web 값이 있으면 그것
+    target = (label['x'], label['y'])
+    try:
+        for _ in range(3):                               # 회전·직진 뒤 남은 옆 오차를 한두 번 더 줄인다
+            pose, _ = _pose_and_scan(url)
+            dx, dy = target[0] - pose[0], target[1] - pose[1]
+            distance = math.hypot(dx, dy)
+            if distance <= XY_TOL:
+                break
+            if distance > FINE_MAX_M:
+                return dict(ok=False, reason_code='drive_failed',
+                            reason=f"{label['name']} 라벨에서 {distance:.2f} m 떨어진 곳에 섰습니다(마무리 정렬 한도 {FINE_MAX_M} m). 지도 위치(AMCL)를 다시 잡아 보세요.")
+            bearing = math.atan2(dy, dx)
+            forward = abs(_wrap(bearing - pose[2])) <= abs(_wrap(bearing + math.pi - pose[2]))   # 덜 도는 쪽(앞으로 또는 뒤로)
+            heading = bearing if forward else _wrap(bearing + math.pi)
+            phase('fine_turn', f"{label['name']} 라벨 위치로 방향 맞추는 중 ({distance * 100:.0f} cm 남음)")
+            problem = _turn_to(heading, math.radians(4), url, robot, stopped, sleep)
+            if not problem:
+                phase('fine_move', f"{label['name']} 라벨 위치로 {'전진' if forward else '후진'} ({distance * 100:.0f} cm)")
+                problem = _move_to(target, heading, 1 if forward else -1, url, robot, stopped, sleep)
+            if problem:
+                return dict(ok=False, reason=problem, reason_code='cancelled' if problem == 'cancelled' else 'drive_failed')
+        phase('fine_yaw', f"{label['name']} 라벨 방향 맞추는 중")
+        problem = _turn_to(label['yaw'], math.radians(YAW_TOL_DEG), url, robot, stopped, sleep)
+        if problem:
+            return dict(ok=False, reason=problem, reason_code='cancelled' if problem == 'cancelled' else 'drive_failed')
+        pose, _ = _pose_and_scan(url)
+        off = math.hypot(target[0] - pose[0], target[1] - pose[1])
+        yaw_off = abs(math.degrees(_wrap(label['yaw'] - pose[2])))
+        note = f"{label['name']} 라벨 위치 오차 {off * 100:.1f} cm, 방향 {yaw_off:.1f}°"
+        if off > XY_TOL * 1.5 or yaw_off > YAW_TOL_DEG * 1.5:
+            return dict(ok=False, reason=f'라벨에 정확히 맞추지 못했습니다: {note}', reason_code='drive_imprecise', note=note)
+        return dict(ok=True, reason=None, reason_code=None, note=note)
+    finally:
+        _stop(url)
+
+
+def goto_label_precise(name, url=None, on_phase=None, stopped=lambda: False, timeout_s=DRIVE_TIMEOUT_S, sleep=time.sleep):
+    """라벨을 만든 그 자리(위치·방향)로 간다: Nav2로 근처까지(/api/nav/goto) → fine_align. 차가 움직인다."""
+    state = _call('GET', '/api/state', url=url)
+    raw = {label['id']: label for label in state.get('labels') or []}
+    label = raw[find_label(name, base_state(url)['labels'])['id']]
+    phase = on_phase or (lambda raw_phase, text: None)
+    started = time.time()
+    _call('POST', '/api/nav/goto', {'id': label['id']}, url=url)
+    phase('drive_start', f"{label['name']}(으)로 출발")
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if stopped():
+            cancel(url)
+            return dict(ok=False, reason='cancelled', reason_code='cancelled', label=label['name'])
+        sleep(.5)
+        nav = _call('GET', '/api/state', url=url).get('nav') or {}
+        target = (nav.get('label') or nav.get('target') or {}).get('id')
+        if target not in (None, label['id']) or (nav.get('started') or started) < started - 2:
+            continue
+        status = nav.get('state')
+        if status == 'backing':
+            phase('drive_backing', '방향을 돌리려고 후진하는 중')
+        elif status in NAV_MOVING:
+            distance = nav.get('distance')
+            phase('drive_active', f"{label['name']}(으)로 이동 중" + (f' (남은 {distance:.1f} m)' if isinstance(distance, (int, float)) else ''))
+        elif status in NAV_FAILED:
+            return dict(ok=False, reason=f"{label['name']}(으)로 가지 못했습니다: {nav.get('message') or status}",
+                        reason_code='drive_failed', label=label['name'])
+        elif status == 'succeeded':
+            result = fine_align(label, url, on_phase, stopped, sleep)
+            return dict(result, label=label['name'])
+    cancel(url)
+    return dict(ok=False, reason=f"{label['name']}(으)로 {timeout_s:.0f}초 안에 도착하지 못해 멈췄습니다.", reason_code='drive_failed', label=label['name'])
+
+
+def drive_to(name, mode='precise', gap=None, url=None, on_phase=None, stopped=lambda: False, timeout_s=DRIVE_TIMEOUT_S, sleep=time.sleep):
+    """precise(기본): 라벨의 정확한 위치·방향으로. wall: 라벨로 간 뒤 앞 벽과 수직으로 gap까지 붙는다."""
+    if mode == 'wall':
+        return goto_label_wall(name, gap=gap, url=url, on_phase=on_phase, stopped=stopped, timeout_s=timeout_s, sleep=sleep)
+    if mode != 'precise':
+        raise BaseError(f'mode는 {MODES} 중 하나입니다.', 'bad_request')
+    return goto_label_precise(name, url=url, on_phase=on_phase, stopped=stopped, timeout_s=timeout_s, sleep=sleep)

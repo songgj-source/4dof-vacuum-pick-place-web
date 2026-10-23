@@ -243,7 +243,7 @@
             <select id="uslot" aria-label="놓을 칸"><option value="" selected disabled>놓을 칸 선택</option><option value="1">1번 칸</option><option value="2">2번 칸</option><option value="3">3번 칸</option></select>
             <button id="unknown" class="primary">시작</button>
           </div></li>
-        <li><button class="item" data-open="drive8"><i>8</i>장소로 이동<small>팀 주행 지도의 장소, 도착하면 앞 벽에 붙기</small><code class="api">POST /robot_arm drive</code></button>
+        <li><button class="item" data-open="drive8"><i>8</i>장소로 이동<small>팀 주행 지도의 장소, 라벨 자리·방향에 정확히</small><code class="api">POST /robot_arm drive</code></button>
           <div class="sub" id="drive8" hidden>
             <select id="place" aria-label="장소"><option value="" selected disabled>장소 불러오는 중…</option></select>
             <button id="drive-go" class="primary">이동</button>
@@ -299,7 +299,7 @@ async function api(method, path, body) {
 }
 function describe(cmd) {
   if (cmd.action === 'drive' && cmd.then === 'tidy') return `${cmd.label}(으)로 이동한 뒤 책상을 정리합니다.`;
-  if (cmd.action === 'drive') return `${cmd.label}(으)로 이동합니다(도착하면 앞 벽에 맞춰 붙습니다).`;
+  if (cmd.action === 'drive') return `${cmd.label}(으)로 이동합니다(라벨을 만든 자리와 방향에 맞춰 섭니다).`;
   if (cmd.action === 'return_home') return 'HOME으로 복귀합니다.';
   if (cmd.action === 'pick_all' && cmd.objects) return `${cmd.objects.map((o) => NAMES[o]).join(', ')}를 차례로 넣습니다(책상 정리).`;
   if (cmd.action === 'pick_all') return '세 물체를 모두 넣습니다(흰 상자 → 정육면체 → 줄자, 책상에 없는 것은 건너뜀).';
