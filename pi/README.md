@@ -92,9 +92,11 @@ bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (
 - 진행(이동 중·남은 거리·벽 맞추는 중)은 진행 상태 칸에, 실패 이유는 로그창에 나옵니다.
 
 ### 팀 주행 코드 사본(`ros2_slam/`)과 같이 쓰기
-`ros2_slam/`은 팀 저장소(perpet99/dapier_project)의 같은 폴더를 그대로 복사한 것입니다(2026-10-23, 팀 저장소 `f27cbc9`, `ros2_slam` 마지막 변경 `0a7ca73` 10-16).
-**여기서 고치지 않습니다.** 팀 코드 수정은 팀 저장소에서 하고, 새 버전으로 바꿀 때 아래처럼 다시 복사한 뒤 시험(`tests/test_ros2_slam_compat.py`)으로 자비스와 맞는지 봅니다.
-Pi에서는 팀 스크립트가 `~/ros2_slam_robot`으로 따로 배포·빌드하므로, 우리 `deploy_to_robot.sh`는 이 폴더를 보내지 않습니다.
+`ros2_slam/`은 팀 저장소(perpet99/dapier_project)의 같은 폴더를 복사한 **우리 사본**입니다(2026-10-23, 팀 저장소 `f27cbc9`, `ros2_slam` 마지막 변경 `0a7ca73` 10-16).
+**고치는 것은 이 사본(우리 환경)에서만 합니다. 팀 저장소와 Pi의 팀 폴더(`~/ros2_slam_robot`)·팀이 띄운 프로그램은 건드리지 않습니다.**
+고친 뒤에는 시험(`tests/test_ros2_slam_compat.py`)으로 자비스와 여전히 맞는지 봅니다. Pi에서 지금 도는 주행은 팀 스크립트가 `~/ros2_slam_robot`에서 띄운 것이라,
+우리 `deploy_to_robot.sh`는 이 폴더를 보내지 않습니다(우리 사본을 Pi에서 돌리려면 팀 폴더와 다른 곳에 따로 올려야 합니다).
+팀의 새 버전을 받아 올 때는 아래처럼 다시 복사합니다. **우리가 고친 내용은 덮어써지니**, 먼저 커밋해 두고 `git diff`로 다시 합칩니다.
 ```bash
 git clone --depth 1 --filter=blob:none --sparse https://github.com/perpet99/dapier_project.git /tmp/dp && git -C /tmp/dp sparse-checkout set ros2_slam
 rm -rf ros2_slam && cp -r /tmp/dp/ros2_slam ./ros2_slam && python -m unittest tests.test_ros2_slam_compat
