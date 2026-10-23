@@ -119,7 +119,9 @@ start() {
 
   if [ -z "${NO_BROWSER:-}" ]; then
     say "화면"
-    ARM_URL="http://$PI_IP:8000" bash "$ROOT/pi/open_jarvis.sh" | sed 's/^/   /'
+    local tabs=()      # 주행 스택이 켜져 있으면 주행 화면(map_web)도 같은 창의 탭으로
+    [ -z "${NO_DRIVE:-}" ] && curl -s -m 2 "http://$PI_IP:8081/api/drive" >/dev/null && tabs+=("http://$PI_IP:8081")
+    ARM_URL="http://$PI_IP:8000" bash "$ROOT/pi/open_jarvis.sh" "${tabs[@]}" | sed 's/^/   /'
   fi
   echo
   [ "$pump_ok" = 1 ] || warn "펌프가 답하지 않아 흡착이 안 됩니다 - 위 안내를 확인하세요(집기·정리는 실패합니다)"

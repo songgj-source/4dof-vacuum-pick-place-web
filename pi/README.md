@@ -54,7 +54,7 @@ bash pi/remote.sh start     # 서버 켜기. 켜기만 해서는 로봇이 움�
 
 ### 3. 화면 열기
 ```bash
-bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (터널 없이 마이크 사용 가능)
+bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (터널 없이 마이크 사용 가능). start_all은 주행 화면 :8081도 탭으로 연다
 ```
 처음 한 번 [설정]에 접속 토큰을 넣습니다. 토큰 보기:
 `ssh user@192.168.0.31 "grep ^ARM_API_TOKEN= ~/4dof_ik_pi_test/pi/arm-api.env | cut -d= -f2"`
