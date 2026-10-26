@@ -84,7 +84,9 @@ class Tests(unittest.TestCase):
   target=dict(label='red_cube',target_xy=[.217,.085],contact_z=.034,radius_m=.23,pickable=True,problems=[],suction_verified=True,pick_tilt_deg=0.)
   tray=dict(found=True,slots={2:dict(x_mm=220.,y_mm=70.,floor_height_mm=10.)},rim_height_mm=40.)
   catalog=load_catalog(ROOT/'config/object_catalog.json');result=build_job([target],tray,catalog,'red_cube',2)
-  self.assertEqual(result['manual_target_mm'],[217.,85.,34.]);self.assertEqual(result['job']['slot']['drop_z_mm'],71.5)
+  from perception import pick_correction            # 집기 옆 방향 보정(config/pick_xy_correction.json)은 설정값을 따른다
+  x,y,_=pick_correction.apply(217.,85.)
+  self.assertEqual(result['manual_target_mm'],[x,y,34.]);self.assertEqual(result['job']['slot']['drop_z_mm'],71.5)
   self.assertNotIn('object_geometry',result['job']);self.assertEqual(result['job']['label'],'red_cube')
 
 class WatchTests(unittest.TestCase):
