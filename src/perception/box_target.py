@@ -27,9 +27,12 @@ class BoxNotFound(ValueError):
     pass
 
 
-def red_candidates(bgr):
+def red_candidates(bgr, hue_max=None):
+    """hue_max: 빨강 색상(OpenCV 0~179)의 위쪽 끝(기본 RED_LOW의 4). 조명에 따라 정육면체 색이 5~6으로 치우치면(2026-10-26 Pi 보정 p2: 중앙값 6)
+    기본값으로는 못 찾는다. 더 넓히면 빨간 전선·트레이가 섞이므로 필요한 곳에서만 쓴다(보정 스크립트 6)."""
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, *RED_LOW) | cv2.inRange(hsv, *RED_HIGH)
+    low = RED_LOW if hue_max is None else (RED_LOW[0], (hue_max, *RED_LOW[1][1:]))
+    mask = cv2.inRange(hsv, *low) | cv2.inRange(hsv, *RED_HIGH)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     count, _, stats, _ = cv2.connectedComponentsWithStats(mask)
@@ -38,9 +41,9 @@ def red_candidates(bgr):
     return sorted(found, key=lambda item: -item[1])
 
 
-def detect_box(bgr):
+def detect_box(bgr, hue_max=None):
     """가장 큰 빨간 덩어리의 bbox와 윗면 중심 픽셀을 돌려준다. 모호하면 거부."""
-    found = red_candidates(bgr)
+    found = red_candidates(bgr, hue_max)
     if not found:
         raise BoxNotFound('red box not found in image')
     (x, y, w, h), area = found[0]

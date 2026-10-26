@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'src'))
 OUT=ROOT/'카메라 보정';POINTS=OUT/'재보정_점.jsonl'
 PY=sys.executable
+HUE_MAX=6      # 상자 색 판정의 위쪽 끝(기본 4). Pi에서 조명이 조금 달라 정육면체 색상이 6이 되면 기본값으로는 못 찾았다(2026-10-26 p2)
 
 
 def last_json(text,key):
@@ -55,7 +56,7 @@ def record(label,x,y):
         bgr=bgr.copy()
     finally:cam.close()
     cv2.imwrite(str(OUT/('재보정_'+label+'.png')),bgr)
-    box=detect_box(bgr)
+    box=detect_box(bgr,hue_max=HUE_MAX)
     row=dict(label=label,pixel=[float(v) for v in box['pixel']],bbox=[int(v) for v in box['bbox']],area_px=int(box['area_px']),
              arm_fk_xy_m=[x,y],time=time.strftime('%Y-%m-%dT%H:%M:%S'))
     with POINTS.open('a') as f:f.write(json.dumps(row,ensure_ascii=False)+'\n')
@@ -122,7 +123,14 @@ def main():
         if answer=='q':raise SystemExit('취소: 기록 안 함')
         if a.replace and a.label in labels():
             rows=[l for l in POINTS.open() if json.loads(l)['label']!=a.label];POINTS.write_text(''.join(rows))
-        row=record(a.label,x,y)
+        from perception.box_target import BoxNotFound
+        while True:
+            try:row=record(a.label,x,y);break
+            except BoxNotFound as exc:
+                # 팔은 이미 HOME이고 상자는 컵 아래 그 자리에 있다: 같은 자리에서 다시 찍을 수 있다(점을 처음부터 다시 하지 않는다)
+                print('상자를 찾지 못했습니다(%s). 사진: 카메라 보정/재보정_%s.png'%(exc,a.label))
+                if input('상자를 그 자리에 그대로 두고 Enter = 다시 촬영 / q = 기록 없이 끝내기: ').strip().lower()=='q':
+                    raise SystemExit('취소: 기록 안 함')
         print('기록:',json.dumps(row,ensure_ascii=False));print('현재 점 %d개: %s'%(len(labels()),' '.join(labels())))
     if a.fit or a.fit_only:fit_camera()
 
