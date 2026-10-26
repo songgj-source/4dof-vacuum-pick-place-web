@@ -454,8 +454,19 @@ def main(argv=None):
                     result['place_plan']=plan_now;save()
                     print(json.dumps(dict(place_plan=plan_now),ensure_ascii=False,default=float),flush=True)
                     def release(expected):
+                        nonlocal driver
                         result['release']=release_at_slot(driver,geometry,zeros,expected,pump)
                         result['pump_commands'].extend([dict(command='vent_place',pressure_verified=False),dict(command='stop_place',pressure_verified=False)])
+                        # 물체를 놓아 하중이 빠지면 관절이 1~2펄스 옮겨 선다. 놓기 전에 붙잡은 목표·보상값을 그대로 쓰면 다음 이동 첫 틱의
+                        # 목표 읽기 검사(2펄스)에 걸린다(2026-10-26 Pi: 놓은 뒤 base 목표 2295·위치 2291로 'unexpected hover goal readback',
+                        # 책상 정리가 HOME으로 빠짐). 지금 목표를 그대로 두고(쓰기 없음) 위치와의 차이만 다시 받아 붙잡는다. 안 되면 예전 driver로 간다.
+                        fresh=ServoDriver(bus,profile)
+                        try:
+                            fresh.hold_existing_torque(supported=True,keep_goal=True,load_offset=True,settle_s=.3,takeover_attempts=4)
+                        except ValueError as exc:
+                            result['release_rehold_error']=str(exc)
+                        else:
+                            driver=fresh
                     def exit_path(transition):
                         # 놓은 뒤 물러나기→빠지기→세우기를 한 번에(사용자 지시 2026-10-26). 칸 안은 place_rate의 절반, 벽 위는 place_rate.
                         # 준비 단계 거부(ExitPathRefused)는 run_place가 받아 예전처럼 단계별로 간다
