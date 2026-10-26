@@ -171,6 +171,35 @@ def locate_unknowns(bgr, depth, baseline_depth, root, *, locator=None, model=Non
     return found
 
 
+DESK_FILL_MARGIN_PX = 6      # 지우는 범위: 덩어리 사각형보다 이만큼 넓게(덩어리 가장자리 픽셀까지)
+DESK_FILL_MIN_HEIGHT_MM = 5.
+
+
+def desk_baseline(bgr, depth, root, *, tray_slots=None, locator=None):
+    """'바로 집기'용 가상 기준 깊이: 지금 책상에 있는 등록 안 된 물체 자리를 책상 높이로 지운 깊이.
+    이 기준과 비교하면 그 물체가 '새로 놓인 물체'로 보이므로, 기존 unknown 검사(높이·윗면·흡착 면·칸 여유·움직이기 전 재확인)를
+    그대로 쓴다. 등록 물체·트레이·로봇 자신·작업 범위 밖 덩어리는 그대로 둔다(그것들은 새 물체가 아니다).
+    돌려주는 것: (기준 깊이 uint16, 지운 물체 목록 [{bbox_px, xy, top_mm}]). 트레이 칸 안 덩어리(칸막이 등)는 빼고 센다."""
+    from perception.object_classify import classify_objects
+    from perception.object_targets import default_locator, desk_blobs
+    from tray.occupancy import slot_containing
+    _validate(bgr, depth)
+    locator = locator or default_locator(root)
+    found = [(item, geometry) for item, geometry in desk_blobs([i for i in classify_objects(bgr, depth) if i['label'] == 'unknown'], locator)
+             if not tray_slots or slot_containing(geometry['xy'], tray_slots, radius_mm=70.) is None]
+    height = table_height_mm(depth)
+    baseline = depth.astype(np.int32)
+    for item, _ in found:
+        x, y, w, h = item['bbox_px']
+        m = DESK_FILL_MARGIN_PX
+        y0, y1, x0, x1 = max(0, y - m), min(depth.shape[0], y + h + m), max(0, x - m), min(depth.shape[1], x + w + m)
+        region = (height[y0:y1, x0:x1] > DESK_FILL_MIN_HEIGHT_MM) & (depth[y0:y1, x0:x1] > 0)
+        # 위에서 내려다보는 카메라라 솟은 높이만큼 깊이를 더하면 책상면에 가깝다(새 물체 판정은 8mm 차이만 본다)
+        baseline[y0:y1, x0:x1][region] += np.round(height[y0:y1, x0:x1][region]).astype(np.int32)
+    objects = [dict(bbox_px=item['bbox_px'], xy=geometry['xy'], top_mm=round(geometry['top_mm'], 1)) for item, geometry in found]
+    return np.clip(baseline, 0, 65535).astype(np.uint16), objects
+
+
 class StableUnknown:
     """중복 대상·위치·높이 변화가 있으면 연속 안정 표본을 다시 센다."""
     def __init__(self, samples=3):

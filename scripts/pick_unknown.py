@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""기준 장면 뒤 추가된 물체 하나를 unknown으로 자동 선택한다. 기본은 계획만."""
+"""등록 안 된 물체 하나를 unknown으로 자동 선택해 집는다. 기본은 계획만(--execute --supported로 실행).
+
+기본(바로 집기, 2026-10-26 사용자): 지금 책상(트레이 밖)에 있는 등록 안 된 물체 하나를 사진으로 바로 찾는다.
+  그 물체 자리를 책상 높이로 지운 가상 기준(unknown_objects.desk_baseline)과 비교해 '새 물체'로 보고, 기존 검사를 그대로 쓴다.
+--wait-new: 예전 방식. 기준 장면을 찍은 뒤 사람이 새 물체를 놓을 때까지 기다린다(--timeout초).
+"""
 import argparse
 import hashlib
 from datetime import datetime, timezone
@@ -14,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 
 from motion.graceful_child import run_until_clean_exit
-from perception.unknown_objects import locate_unknowns, StableUnknown
+from perception.unknown_objects import locate_unknowns, StableUnknown, desk_baseline
 
 
 def emit(**data):
@@ -75,6 +80,16 @@ def wait_for_new_object(read, baseline, timeout, *, detector=locate_unknowns, no
     raise TimeoutError('unknown 대기 시간 초과: ' + last_issue)
 
 
+def live_tray_slots(bgr, depth):
+    """지금 사진의 트레이 칸(칸 안 덩어리를 후보에서 빼려고). 못 찾으면 None(그때는 크기·거리 조건만으로 고른다)."""
+    try:
+        from tray.tray_detect import detect_tray
+        tray = detect_tray(bgr, depth, ROOT, first_end='far_from_base')
+        return tray['slots'] if tray.get('found') else None
+    except Exception:
+        return None
+
+
 def verify_before_motion(job, root, manual_target_xy=None):
     """저장한 후보를 그대로 실행하지 않고, 모터를 열기 전에 새 관측으로 재확인."""
     import numpy as np
@@ -126,7 +141,8 @@ def verify_before_motion(job, root, manual_target_xy=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--slot', type=int, choices=[1, 2, 3], default=3)
-    parser.add_argument('--timeout', type=float, default=90.)
+    parser.add_argument('--timeout', type=float, default=90., help='--wait-new에서 새 물체를 기다리는 시간(초)')
+    parser.add_argument('--wait-new', action='store_true', help='예전 방식: 기준을 찍은 뒤 새 물체를 놓을 때까지 기다린다')
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--supported', action='store_true')
     parser.add_argument('--attempts', type=int, choices=[1], default=1)
@@ -152,17 +168,29 @@ def main(argv=None):
                 baseline_bgr, depth, _stamp = camera.read_synchronized()
                 depths.append(depth.copy())
             baseline = np.median(np.stack(depths), axis=0).astype(np.uint16)
-            np.save(out / 'baseline_depth.npy', baseline)
             if not cv2.imwrite(str(out / 'baseline_rgb.png'), baseline_bgr):
                 raise OSError('기준 영상 저장 실패')
-            emit(phase='unknown_wait')
+            if args.wait_new:
+                wait_s = args.timeout
+                emit(phase='unknown_wait')
+            else:
+                np.save(out / 'desk_depth.npy', baseline)          # 지우기 전 실제 깊이(확인용)
+                baseline, desk = desk_baseline(baseline_bgr, baseline, ROOT, tray_slots=live_tray_slots(baseline_bgr, baseline))
+                (out / 'desk_objects.json').write_text(json.dumps(desk, ensure_ascii=False, indent=2))
+                if not desk:
+                    raise ValueError('unknown not found: 책상(트레이 밖, 로봇에서 12~42cm)에 등록 안 된 물체가 없습니다.')
+                if len(desk) > 1:
+                    raise ValueError(f'책상에 등록 안 된 물체가 {len(desk)}개 있습니다. 집을 물체 하나만 남겨 주세요.')
+                wait_s = 15.                                        # 같은 물체가 연속 3번 같게 보이면(약 2초) 바로 진행
+                emit(phase='unknown_snapshot', count=len(desk))
+            np.save(out / 'baseline_depth.npy', baseline)
             last_frame = []
             def read_observation():
                 observation = median_observation(camera.read_synchronized)
                 last_frame[:] = observation[:2]
                 return observation
             try:
-                bgr, depth, target = wait_for_new_object(read_observation, baseline, args.timeout)
+                bgr, depth, target = wait_for_new_object(read_observation, baseline, wait_s)
             except (Exception, KeyboardInterrupt):
                 if last_frame:
                     cv2.imwrite(str(out / 'failed_frame_rgb.png'), last_frame[0])

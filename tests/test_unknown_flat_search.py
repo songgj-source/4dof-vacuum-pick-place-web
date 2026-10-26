@@ -39,7 +39,7 @@ class FailedFrameTests(unittest.TestCase):
                   patch.object(pick_unknown, 'wait_for_new_object', side_effect=fail),
                   patch.object(pick_unknown, 'emit'),
                   patch.object(pick_unknown.subprocess, 'run') as dispatch):
-                self.assertEqual(pick_unknown.main([]), 1)
+                self.assertEqual(pick_unknown.main(['--wait-new']), 1)
                 dispatch.assert_not_called()
             self.assertEqual(len(list(Path(d).rglob('failed_frame_rgb.png'))), 1)
             self.assertEqual(len(list(Path(d).rglob('failed_frame_depth.npy'))), 1)

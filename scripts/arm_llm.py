@@ -22,10 +22,10 @@ OBJECTS = ['white_box', 'red_cube', 'tape_measure', 'unknown']     # 등록 물�
 
 SYSTEM = f"""당신은 SO-101 4축 진공흡착 로봇팔 '{ROBOT_NAME}'입니다. 이름을 물으면 {ROBOT_NAME}라고 답하세요. 사용자의 한국어 요청을 도구 호출로 바꿉니다.
 물체: white_box(흰 상자, 기본 1번 칸), red_cube(빨간 정육면체·큐브, 기본 2번 칸), tape_measure(줄자, 기본 3번 칸),
-unknown(목록에 없는 새 물체: 시작 뒤 화면 안내에 따라 사람이 물체를 놓는다). 칸은 1·2·3번뿐입니다.
+unknown(목록에 없는 새 물체: 책상에 둔 등록 안 된 물체 하나를 바로 사진으로 찾아 집는다). 칸은 1·2·3번뿐입니다.
 - 물체를 넣으라는 요청은 sort_object를 호출하세요. 칸을 말하지 않으면 slot을 빼세요(기본 칸). unknown은 칸이 꼭 필요하니 없으면 되물으세요.
 - "새 물체", "새로운 물체", "모르는 물체"는 object_name "unknown"입니다.
-  unknown은 시작한 뒤에 사람이 물체를 놓는 방식이라, 지금 작업대에 새 물체가 안 보여도 정상입니다. look_at_table로 확인하지 말고 칸만 있으면 바로 sort_object를 호출하세요.
+  unknown은 시작하면 사진을 찍어 책상의 등록 안 된 물체 하나를 집습니다. 미리 look_at_table로 확인하지 말고 칸만 있으면 바로 sort_object를 호출하세요.
 - "다 넣어줘", "다 정리해줘", "책상 정리해줘", "치워줘", "분류해줘", "전부 넣어", "세 개 모두"는 되묻지 말고 바로 sort_all_objects, "팔 접어", "HOME으로", "홈으로 복귀"는 arm_return_home입니다.
 - 도구를 써야 할 때는 도구 이름을 글로 설명하지 말고 실제로 호출하세요.
 - "뭐 있어?", "뭘 넣을 수 있어?" 같은 질문은 look_at_table로 사진을 찍어 확인하세요. 로봇은 움직이지 않습니다.
@@ -45,7 +45,7 @@ TOOLS = [
           '사용자가 무엇이 있는지 물을 때만 부른다. 넣으라는 명령에는 부르지 말고 바로 sort_object를 쓴다.'),
     _tool('get_arm_status', '로봇팔이 작업 중인지, HOME 자세인지, 진행 단계를 읽는다. 움직이지 않는다.'),
     _tool('sort_object', '물체를 찾아 집어 트레이 칸에 넣고 HOME으로 돌아온다. 칸을 말하지 않으면 기본 칸(흰 상자 1, 정육면체 2, 줄자 3). '
-          'unknown(새 물체)은 칸이 꼭 필요하고, 시작한 뒤에 사람이 물체를 놓으므로 작업대에 아직 없어도 된다.',
+          'unknown(새 물체)은 칸이 꼭 필요하고, 시작하면 책상의 등록 안 된 물체 하나를 바로 찍어 집는다.',
           {'object_name': {'type': 'string', 'enum': OBJECTS, 'description': '넣을 물체(등록 물체는 custom_N)'},
            'slot': {'type': 'integer', 'enum': [1, 2, 3], 'description': '넣을 칸 번호. 사용자가 말했을 때만'}}, ['object_name']),
     _tool('sort_all_objects', '책상 정리하기: 작업대에 있는 물체(흰 상자 → 빨간 정육면체 → 줄자 → 등록 물체 순서)를 각자 기본 칸에 넣는다. 책상에 없는 것은 건너뛰고, 앞 물체가 실패하면 멈춘다.'),
@@ -259,7 +259,7 @@ def proposal_reply(proposal, notes=()):
     elif proposal['action'] == 'pick_all':
         what = f"책상에 있는 물체를 기본 칸에 넣습니다({' → '.join(NAMES[label] for label in ORDER)})."
     elif proposal['object'] == 'unknown':
-        what = f"새 물체를 {proposal['slot']}번 칸에 넣습니다. 시작한 뒤 안내가 나오면 물체를 놓아 주세요."
+        what = f"책상의 등록 안 된 물체를 {proposal['slot']}번 칸에 넣습니다."
     else:
         what = f"{NAMES[proposal['object']]}를 {proposal.get('slot') or DEFAULT_SLOT[proposal['object']]}번 칸에 넣습니다."
     return what + WAIT

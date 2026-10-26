@@ -17,7 +17,7 @@
   POST /robot_arm    {"action": "pick_place"|"return_home"|"status"|"stop", "object": ..., "slot": ...}
                      → LLM 도구(function) 호출 내용을 그대로 넘기는 한 개짜리 주소(docs/ROBOT_API.md의 도구 정의와 같은 모양)
 
-object: white_box(기본 1번 칸) · red_cube(2) · tape_measure(3) · unknown(새 물체, 시작 후 "물체를 놓으세요" 단계에서 놓는다, 기본 3번 칸)
+object: white_box(기본 1번 칸) · red_cube(2) · tape_measure(3) · unknown(책상의 등록 안 된 물체 하나를 바로 찍어 집는다, 칸 필요)
 한 번에 한 작업만 받는다. 실행 중에 다른 명령이 오면 409(busy). 토크가 꺼졌거나 팔 상태를 읽지 못하면 움직이지 않고 거절한다.
 """
 import argparse
@@ -127,7 +127,8 @@ REASON_CODES = (
     ('cancelled', 'cancelled'),
     ('more than one unknown', 'multiple_new_objects'),
     ('unknown not found', 'object_not_found'), ('not found in the current camera view', 'object_not_found'), ('nothing to sort', 'object_not_found'),
-    ('대기 시간 초과', 'object_not_found'),
+    ('대기 시간 초과', 'object_not_found'), ('등록 안 된 물체가 없습니다', 'object_not_found'),
+    ('집을 물체 하나만 남겨', 'multiple_new_objects'),
     ('tray not found', 'tray_not_found'),
     ('the tray moved since the stored frame', 'tray_moved'),
     ('여유가 부족', 'slot_too_small'), ('보다 큽니다', 'slot_too_small'),
@@ -834,7 +835,8 @@ MENU = [
     dict(id=6, label='HOME으로 복귀', path='/api/menu/6', body=None, skill='return_home', params={},
          description='팔을 접힌 HOME 자세로 돌려놓는다.'),
     dict(id=7, label='unknown 자동 집기', path='/api/menu/7', body={'slot': '1 | 2 | 3'}, skill='pick_place', params=None,
-         description='시작 후 새 물체 하나를 작업 영역에 놓으면(진행 단계 unknown_wait, 90초 대기) 자동으로 찾아 고른 칸에 넣는다. slot이 필요하다.'),
+         description='책상(트레이 밖)에 있는 등록 안 된 물체 하나를 바로 사진으로 찾아 고른 칸에 넣는다(진행 단계 unknown_snapshot). '
+                     '하나도 없거나 둘 이상이면 움직이지 않는다. slot이 필요하다.'),
 ]
 # 메뉴 말고 공통으로 쓰는 주소(설명 페이지용)
 COMMON_API = [

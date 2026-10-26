@@ -120,7 +120,7 @@ class WatchTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as d,patch.object(pick_unknown,'ROOT',Path(d)),patch('camera.astra_calibration_camera.AstraCalibrationCamera',Camera),patch.object(pick_unknown,'wait_for_new_object',return_value=(rgb,depth,target)),patch.object(pick_unknown,'emit'):
    def child(cmd,**kw):
     self.assertTrue(Camera.closed);self.assertNotIn('--execute',cmd);self.assertIn('unknown',cmd);self.assertIn('--unknown-baseline',cmd);return SimpleNamespace(returncode=0)
-   with patch.object(pick_unknown,'run_until_clean_exit',side_effect=lambda cmd,cwd:child(cmd,cwd=cwd).returncode):self.assertEqual(pick_unknown.main(['--acknowledge-unverified-suction']),0)
+   with patch.object(pick_unknown,'run_until_clean_exit',side_effect=lambda cmd,cwd:child(cmd,cwd=cwd).returncode):self.assertEqual(pick_unknown.main(['--wait-new','--acknowledge-unverified-suction']),0)
  def test_cli_execute_requires_support_before_camera(self):
   import pick_unknown
   with patch('camera.astra_calibration_camera.AstraCalibrationCamera') as camera,patch('sys.stderr'):
@@ -238,3 +238,95 @@ class FlatPatchNoiseTests(unittest.TestCase):
   self.assertTrue(found[0]['object_geometry']['top_flat'])
 
 if __name__=='__main__':unittest.main()
+
+
+class DeskSnapshotTests(unittest.TestCase):
+    """바로 집기(2026-10-26): 지금 책상의 등록 안 된 물체를 가상 기준으로 '새 물체'로 본다."""
+
+    def scene(self, second=False):
+        rgb = np.full((480, 640, 3), 160, np.uint8); depth = np.full((480, 640), 500, np.uint16)
+        depth[210:260, 240:300] = 465; rgb[210:260, 240:300] = (200, 70, 20)
+        if second:
+            depth[300:340, 240:280] = 470; rgb[300:340, 240:280] = (30, 200, 30)
+        return rgb, depth
+
+    def baseline(self, rgb, depth):
+        from perception.unknown_objects import desk_baseline
+        return desk_baseline(rgb, depth, ROOT, locator=LOC)
+
+    def test_object_already_on_desk_becomes_the_new_object(self):
+        rgb, depth = self.scene()
+        base, desk = self.baseline(rgb, depth)
+        self.assertEqual(len(desk), 1)
+        with patch('perception.unknown_objects.reachable', return_value=True):
+            found = locate_unknowns(rgb, depth, base, ROOT, locator=LOC, model={})
+        self.assertEqual([(t['new_object'], t['pickable']) for t in found], [(True, True)])
+        self.assertAlmostEqual(found[0]['object_geometry']['height_mm'], 35, delta=1)
+
+    def test_registered_objects_are_not_erased(self):
+        rgb, depth = self.scene()
+        rgb[210:260, 240:300] = (20, 20, 210)          # 빨간 정육면체로 분류되는 색
+        depth[210:260, 240:300] = 460
+        self.assertEqual(self.baseline(rgb, depth)[1], [])
+
+    def test_two_unregistered_objects_are_counted(self):
+        self.assertEqual(len(self.baseline(*self.scene(second=True))[1]), 2)
+
+    def test_pick_unknown_snapshot_does_not_wait_for_a_new_object(self):
+        import pick_unknown
+        rgb, depth = self.scene()
+        clock = {'n': 0}
+
+        class FakeCamera:
+            def __init__(self, **kw): pass
+            def read_synchronized(self):
+                clock['n'] += 1
+                us = clock['n'] * 33000          # 초당 약 30장
+                return rgb.copy(), depth.copy(), dict(color_us=us, depth_us=us, color_frame_index=clock['n'], depth_frame_index=clock['n'])
+            def close(self): pass
+
+        printed, commands = [], []
+        with tempfile.TemporaryDirectory() as d, \
+             patch('camera.astra_calibration_camera.AstraCalibrationCamera', FakeCamera), \
+             patch.object(pick_unknown, 'ROOT', Path(d)), \
+             patch.object(pick_unknown, 'live_tray_slots', return_value=None), \
+             patch('perception.object_targets.default_locator', return_value=LOC), \
+             patch('perception.unknown_objects.BoxLocator', return_value=LOC), \
+             patch('perception.unknown_objects.load_planar_model', return_value={}), \
+             patch('perception.unknown_objects.reachable', return_value=True), \
+             patch.object(pick_unknown, 'run_until_clean_exit', side_effect=lambda cmd, root: commands.append(cmd) or 0), \
+             patch.object(pick_unknown, 'emit', side_effect=lambda **kw: printed.append(kw)):
+            self.assertEqual(pick_unknown.main(['--slot', '2']), 0, printed[-1:])
+            out = Path(d) / 'output/unknown_trials'
+            folder = next(out.iterdir())
+            self.assertTrue((folder / 'desk_depth.npy').exists())
+            measured = json.loads((folder / 'measurement.json').read_text())
+        phases = [p.get('phase') for p in printed]
+        self.assertIn('unknown_snapshot', phases)
+        self.assertNotIn('unknown_wait', phases)                    # 새 물체를 놓으라고 기다리지 않는다
+        self.assertTrue(measured['new_object'] and measured['pickable'])
+        self.assertIn('--unknown-baseline', commands[0])
+        self.assertNotIn('--execute', commands[0])                  # 기본은 계획만
+
+    def test_pick_unknown_snapshot_refuses_two_objects(self):
+        import pick_unknown
+        rgb, depth = self.scene(second=True)
+
+        class FakeCamera:
+            n = 0
+            def __init__(self, **kw): pass
+            def read_synchronized(self):
+                FakeCamera.n += 1
+                return rgb.copy(), depth.copy(), dict(color_us=FakeCamera.n, depth_us=FakeCamera.n, color_frame_index=FakeCamera.n, depth_frame_index=FakeCamera.n)
+            def close(self): pass
+
+        printed = []
+        with tempfile.TemporaryDirectory() as d, \
+             patch('camera.astra_calibration_camera.AstraCalibrationCamera', FakeCamera), \
+             patch.object(pick_unknown, 'ROOT', Path(d)), patch.object(pick_unknown, 'live_tray_slots', return_value=None), \
+             patch('perception.object_targets.default_locator', return_value=LOC), \
+             patch.object(pick_unknown, 'run_until_clean_exit') as robot, \
+             patch.object(pick_unknown, 'emit', side_effect=lambda **kw: printed.append(kw)):
+            self.assertEqual(pick_unknown.main(['--slot', '2', '--execute', '--supported']), 1)
+        robot.assert_not_called()
+        self.assertIn('2개 있습니다', printed[-1]['reason'])

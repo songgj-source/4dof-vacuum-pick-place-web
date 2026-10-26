@@ -243,7 +243,7 @@
             <button id="custom" class="primary">넣기</button>
           </div></li>
         <li><button class="item" data-run="home"><i>3</i>HOME으로 복귀<code class="api">POST /api/menu/6</code></button></li>
-        <li><button class="item" data-open="pick7"><i>4</i>unknown 자동 집기<small>시작 후 새 물체 하나 놓기</small><code class="api">POST /api/menu/7</code></button>
+        <li><button class="item" data-open="pick7"><i>4</i>unknown 집기<small>책상의 등록 안 된 물체 하나를 바로 찍어 집기</small><code class="api">POST /api/menu/7</code></button>
           <div class="sub" id="pick7" hidden>
             <select id="uslot" aria-label="놓을 칸"><option value="" selected disabled>놓을 칸 선택</option><option value="1">1번 칸</option><option value="2">2번 칸</option><option value="3">3번 칸</option></select>
             <button id="unknown" class="primary">시작</button>
@@ -319,7 +319,7 @@ function describe(cmd) {
   if (cmd.action === 'return_home') return 'HOME으로 복귀합니다.';
   if (cmd.action === 'pick_all' && cmd.objects) return `${cmd.objects.map((o) => NAMES[o]).join(', ')}를 차례로 넣습니다(책상 정리).`;
   if (cmd.action === 'pick_all') return `책상을 정리합니다(${tidyOrder()} 순서, 책상에 없는 것은 건너뜀).`;
-  if (cmd.object === 'unknown') return `새 물체를 ${cmd.slot}번 칸에 넣습니다. 시작 후 안내가 나오면 물체를 놓아 주세요.`;
+  if (cmd.object === 'unknown') return `책상의 등록 안 된 물체 하나를 ${cmd.slot}번 칸에 넣습니다(집을 물체 하나만 두세요).`;
   const slot = cmd.slot || DEFAULT_SLOT[cmd.object];
   return `${NAMES[cmd.object] || cmd.object}를 ${slot}번 칸에 넣습니다.`;
 }

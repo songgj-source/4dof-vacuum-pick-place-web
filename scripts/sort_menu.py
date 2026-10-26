@@ -87,7 +87,7 @@ ITEMS = [
     ('1', '책상 정리하기 (흰 상자 → 정육면체 → 줄자 → 등록 물체 순서)'),
     ('2', '물체와 칸을 골라서 넣기'),
     ('3', 'HOME으로 복귀'),
-    ('4', 'unknown 자동 집기 (시작 후 새 물체 하나 놓기)'),
+    ('4', 'unknown 집기 (책상의 등록 안 된 물체 하나를 바로 찍어 집기)'),
     ('5', '물체 등록·삭제'),
     ('0', '나가기'),
 ]
@@ -111,7 +111,7 @@ def brief_message(message):
             return f'{subject} 너무 멉니다({distance:g}cm, 최대 {upper:g}cm). 로봇 쪽으로 옮기세요.'
     translations = (
         ('more than one unknown', '새 물체는 한 번에 하나씩 놓으세요.'),
-        ('unknown not found', '새 물체를 찾지 못했습니다. 물체를 놓고 다시 실행하세요.'),
+        ('unknown not found', '등록 안 된 물체를 찾지 못했습니다. 책상(트레이 밖, 팔이 닿는 곳)에 하나를 두고 다시 실행하세요.'),
         ('the tray moved since the stored frame', '트레이 위치 변경: 빈 트레이로 계획을 한 번 실행해 다시 저장하세요.'),
         ('could collide with unregistered', '운반 경로에 등록 안 된 물체가 있어 부딪힐 수 있습니다. 그 물체를 팔·트레이 사이에서 치워 주세요.'),
         ('could collide with', f'운반 경로에 다른 물체가 있어 부딪힐 수 있습니다. {name} 주변을 비워 주세요.'),
@@ -169,6 +169,7 @@ def phase_label(name):
     labels = (
         ('unknown_verify', 'unknown 위치·크기 재확인'),
         ('unknown_wait', '기준 저장 완료: 새 물체 하나를 놓고 손을 빼세요(90초 대기)'),
+        ('unknown_snapshot', '책상의 등록 안 된 물체 확인'),
         ('unknown_detected', 'unknown 감지 완료'),
         # 놓기(place_exec 단계 이름). raise_clear·raise_low는 물체를 든 직후(놓기 전) 단계다. 더 긴 이름을 먼저 둔다.
         ('place_raise_clear', '든 채 바닥에서 올리기'), ('place_raise_low', '든 채 낮게 올리기'), ('place_raise', '운반 높이로 상승'),
@@ -668,7 +669,7 @@ def main():
                 print('칸은 1~3 중 선택하세요.')
                 continue
             execute = True
-            if execute and (not confirm('unknown을 자동으로 집습니다. 물체는 대기 안내 후 놓고 손을 빼세요.') or not ensure_torque()):
+            if execute and (not confirm('책상의 등록 안 된 물체 하나를 바로 찍어서 집습니다. 집을 물체 하나만 두고 손을 빼세요.') or not ensure_torque()):
                 continue
             if not execute and live_view_running():
                 print('카메라 창을 닫은 뒤 다시 실행하세요.')
