@@ -271,15 +271,15 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
         clear(raw)
     record({'phase':'prepared','origin':origin,'goal':goal,'steps':steps,'target':target,'pulses_per_step':pulses_per_step,
             'continuous_segments':continuous_segments})
-    last=dict(origin);start=driver.clock();next_tick=None;streaming=False
+    last=dict(origin);start=driver.clock();next_tick=None;streaming=False;light=False
     # 보상된 hold는 목표를 위치보다 offset만큼 덜 써 둔다: 아직 안 쓴 관절의 목표 읽기 기준은 origin-offset.
     goal_read={n:origin[n]-_hold_offset(driver,n) for n in NAMES}
     stream_capable=all(callable(getattr(driver.bus,n,None)) for n in
                        ("begin_position_stream","sync_goal_positions","end_position_stream"))
     def end_stream():
-        nonlocal streaming
-        if streaming:
-            driver.bus.end_position_stream();streaming=False
+        nonlocal streaming,light
+        if streaming or light:
+            driver.bus.end_position_stream();streaming=False;light=False
     initial_retries=getattr(driver.bus,'read_retry_count',0)
     try:
         if native and steps:
@@ -304,6 +304,9 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
         if indices and speed==TRAVEL_GOAL_SPEED and not native and stream_capable:
             driver.bus.begin_position_stream(origin,speed=speed,acceleration=TRAVEL_GOAL_ACCELERATION)
             streaming=True
+        elif indices and period_s is not None and not native and callable(getattr(driver.bus,'begin_light_reads',None)):
+            # 느린 고정 틱 이동: 틱마다 읽기를 가볍게 해서 틱이 밀리지 않게 한다(쓰기·속도 설정은 그대로)
+            driver.bus.begin_light_reads();light=True
         for index in indices:
             if next_tick is not None:driver.sleep(max(0.,next_tick-driver.clock()))
             tick_started=driver.clock()

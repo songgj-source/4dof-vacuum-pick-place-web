@@ -210,6 +210,19 @@ class ServoTransport:
         except BaseException:
             self.end_position_stream();raise
 
+    def begin_light_reads(self):
+        """느린 이동(하강·들기 등)용 가벼운 읽기. 바뀌지 않는 값(ID·모델·한계·영점)은 지금 전체 읽기로 확인해 기억하고,
+        이동 중에는 관절당 한 번 연속 읽기(_read_motion: 모드·토크·목표·위치·전압·온도·알람)만 한다.
+        서보 속도·가속 설정과 관절별 목표 쓰기(goal)는 그대로다. 끝나면 end_position_stream()으로 되돌린다.
+        2026-10-26 Pi 실측: 전체 읽기(36번 왕복) 15.9ms → 가벼운 읽기 3.1ms. 틱(13.3ms)을 넘겨 39ms마다 끊겨 움직이던 원인."""
+        if self._motion_static is not None:raise RuntimeError('position stream already active')
+        snapshot=self.read()
+        for j in self.profile.joints:
+            row=snapshot['joints'][j.name]
+            if row['mode']!=0 or row['torque']!=1:raise ValueError('position mode and existing torque ON required')
+        self._motion_static={n:{k:row[k] for k in ('id','model','min_limit','max_limit','homing')}
+                             for n,row in snapshot['joints'].items()}
+
     def sync_goal_positions(self,targets):
         if self._motion_static is None:raise RuntimeError('position stream is not initialized')
         self._validate_targets(targets)
