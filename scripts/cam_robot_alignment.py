@@ -68,6 +68,13 @@ def record(label,x,y):
     return row
 
 
+def arm_at_home():
+    """팔이 HOME 근처(서보 읽기, 40펄스 이내)에 있는가. 읽기만 한다. 아니면 사진을 가리므로 촬영하지 않는다."""
+    import sort_menu
+    state=sort_menu.read_arm_state()
+    return bool(state) and set(state)==set(sort_menu.HOME_RAW) and all(abs(state[n][1]-sort_menu.HOME_RAW[n])<=sort_menu.HOME_NEAR_PULSES for n in sort_menu.HOME_RAW)
+
+
 def labels():
     return [json.loads(l)['label'] for l in POINTS.open()] if POINTS.exists() else []
 
@@ -116,16 +123,25 @@ def main():
     p.add_argument('--replace',action='store_true',help='drop an existing point with the same label first')
     p.add_argument('--fit',action='store_true',help='print the camera fit after recording')
     p.add_argument('--fit-only',action='store_true',help='only print the camera fit (no hardware)')
+    p.add_argument('--photo-only',nargs=2,type=float,metavar=('FK_X_MM','FK_Y_MM'),
+                   help='팔을 움직이지 않고 사진만 찍어 기록한다(호버는 끝났고 팔이 이미 HOME에 있을 때: 마지막 HOME 확인만 실패한 경우). 호버 때 출력된 컵 중심 FK x y(mm)를 준다')
     a=p.parse_args()
     if not a.fit_only:
-        if a.label is None or a.x_mm is None or a.y_mm is None:p.error('label x_mm y_mm required (or --fit-only)')
+        if a.label is None:p.error('label required (or --fit-only)')
+        if not a.photo_only and (a.x_mm is None or a.y_mm is None):p.error('label x_mm y_mm required (or --photo-only / --fit-only)')
         if a.label in labels():
             if not a.replace:p.error('label %s already recorded; use --replace or another name'%a.label)
-        x,y,z=hover(a.x_mm,a.y_mm,a.contact_z_mm,a.label)
-        print('호버 완료: 컵 중심 FK x=%.1f y=%.1f z=%.1f mm'%(x*1000,y*1000,z*1000),flush=True)
-        answer=input('컵 바로 아래에 상자를 놓고 Enter (q = 기록 없이 HOME 복귀): ').strip().lower()
-        return_home(a.label);print('HOME 복귀 완료',flush=True)
-        if answer=='q':raise SystemExit('취소: 기록 안 함')
+        if a.photo_only:
+            x,y=a.photo_only[0]/1000.,a.photo_only[1]/1000.
+            if not arm_at_home():raise SystemExit('팔이 HOME에 있지 않거나 읽지 못했습니다(팔이 사진을 가립니다): 촬영 안 함. 먼저 return_home.py로 HOME에 두세요.')
+            if input('팔은 HOME에 있습니다. 상자가 컵이 있던 자리(FK x=%.1f y=%.1f)에 그대로 있으면 Enter / q = 취소: '%(a.photo_only[0],a.photo_only[1])).strip().lower()=='q':
+                raise SystemExit('취소: 기록 안 함')
+        else:
+            x,y,z=hover(a.x_mm,a.y_mm,a.contact_z_mm,a.label)
+            print('호버 완료: 컵 중심 FK x=%.1f y=%.1f z=%.1f mm'%(x*1000,y*1000,z*1000),flush=True)
+            answer=input('컵 바로 아래에 상자를 놓고 Enter (q = 기록 없이 HOME 복귀): ').strip().lower()
+            return_home(a.label);print('HOME 복귀 완료',flush=True)
+            if answer=='q':raise SystemExit('취소: 기록 안 함')
         if a.replace and a.label in labels():
             rows=[l for l in POINTS.open() if json.loads(l)['label']!=a.label];POINTS.write_text(''.join(rows))
         from perception.box_target import BoxNotFound
