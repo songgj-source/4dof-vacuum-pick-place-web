@@ -29,11 +29,16 @@ def run(args):
     return r.returncode,r.stdout+r.stderr
 
 
-def hover(x_mm,y_mm,z_mm):
+def hover(x_mm,y_mm,z_mm,label='x'):
     code,text=run(['scripts/pick_auto.py','--manual-target-mm',x_mm,y_mm,z_mm,'--hover-photo-only','--execute','--supported'])
     data=last_json(text,'hover_photo')
     if not data:
-        print(text[-1500:]);raise SystemExit('호버 실패(exit %d): 기록 안 함'%code)
+        print(text[-1500:])
+        # 움직이던 중 실패하면 팔이 HOME이 아니라 물체 위에 뻗은 채 토크가 켜져 서 있다(2026-10-26 p7: 자세 확인 실패). 그대로 두지 않는다
+        print('호버 실패(exit %d). 팔이 HOME이 아니라 책상 위에 떠 있을 수 있습니다.'%code,flush=True)
+        if input('팔을 받치고 Enter = HOME으로 복귀 / n = 그대로 두기: ').strip().lower()!='n':
+            return_home(label);print('HOME 복귀 완료',flush=True)
+        raise SystemExit('호버 실패: 기록 안 함')
     return data['hover_photo']['candidate_xyz']
 
 
@@ -116,7 +121,7 @@ def main():
         if a.label is None or a.x_mm is None or a.y_mm is None:p.error('label x_mm y_mm required (or --fit-only)')
         if a.label in labels():
             if not a.replace:p.error('label %s already recorded; use --replace or another name'%a.label)
-        x,y,z=hover(a.x_mm,a.y_mm,a.contact_z_mm)
+        x,y,z=hover(a.x_mm,a.y_mm,a.contact_z_mm,a.label)
         print('호버 완료: 컵 중심 FK x=%.1f y=%.1f z=%.1f mm'%(x*1000,y*1000,z*1000),flush=True)
         answer=input('컵 바로 아래에 상자를 놓고 Enter (q = 기록 없이 HOME 복귀): ').strip().lower()
         return_home(a.label);print('HOME 복귀 완료',flush=True)
