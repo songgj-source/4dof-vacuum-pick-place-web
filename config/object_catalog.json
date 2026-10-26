@@ -7,7 +7,8 @@
   "footprint_source": "사용자가 잰 가로×세로(2026-10-15): 흰 상자 5×7cm, 줄자 6.5×5.8cm. 빨간 정육면체 4×4cm. 크기를 모르는 물체는 반경 4cm를 가정한다.",
   "objects": {
     "red_cube":     {"height_mm": 40, "footprint_mm": [40, 40], "top_flat": true,  "suction_verified": true},
-    "white_box":    {"height_mm": 24, "footprint_mm": [50, 70], "top_flat": true,  "suction_verified": false},
+    "white_box":    {"height_mm": 24, "footprint_mm": [50, 70], "top_flat": true,  "suction_verified": false, "extra_press_mm": 5,
+                     "extra_press_basis": "2026-10-26 Pi: 공통 3mm(접촉 17.5mm)에서 컵이 17.8mm에 멈춰 덜 닿음. 성공한 집기는 16.5~16.8mm. 2mm 더 눌러 15.5mm"},
     "tape_measure": {"height_mm": 30, "footprint_mm": [65, 58], "top_flat": false, "suction_verified": false}
   }
 }

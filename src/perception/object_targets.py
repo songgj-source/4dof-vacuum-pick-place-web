@@ -65,7 +65,17 @@ def load_catalog(path):
     press = data.get('extra_press_mm', 0)
     if isinstance(press, bool) or not isinstance(press, (int, float)) or not math.isfinite(press) or not 0 <= press <= 10:
         raise ValueError('extra_press_mm must be a finite number within 0..10')
+    for label, entry in objects.items():
+        own = entry.get('extra_press_mm') if isinstance(entry, dict) else None
+        if own is not None and (isinstance(own, bool) or not isinstance(own, (int, float)) or not math.isfinite(own) or not 0 <= own <= 10):
+            raise ValueError(f'{label}: extra_press_mm must be a finite number within 0..10')
     return data
+
+
+def extra_press_mm(catalog, label):
+    """집을 때 접촉 높이에서 더 누르는 양(mm). 물체 항목에 extra_press_mm가 있으면 그 값, 없으면 카탈로그 공통 값."""
+    entry = catalog['objects'].get(label) or {}
+    return float(entry.get('extra_press_mm', catalog.get('extra_press_mm', 0)))
 
 
 def _project(locator, pixel, plane_z):
@@ -157,7 +167,7 @@ def locate_targets(bgr, depth, root, catalog=None, model=None, locator=None, min
         top_mm = float(entry['height_mm'])
         pixel = np.array(found['top_center_px']) - np.array(DEPTH_MINUS_TOP_CENTER_PX)    # 기록용(projection_pixel)
         xy = top_center_xy(found, top_mm, locator)
-        contact_z = (top_mm + float(catalog['cup_contact_offset_mm']) - float(catalog.get('extra_press_mm', 0))) / 1000.
+        contact_z = (top_mm + float(catalog['cup_contact_offset_mm']) - extra_press_mm(catalog, label)) / 1000.
         radius = float(math.hypot(*xy))
         problems = []
         if not ENVELOPE_M[0] <= radius <= ENVELOPE_M[1]:
