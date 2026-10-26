@@ -151,7 +151,8 @@ def main(argv=None):
                     physical_accuracy_verified=False,usable_for_motion=False)
     profile=MappingProfile.load(ROOT/'config/servo_driver_candidate.json',ROOT)
     review=json.loads((BASE/'multipose_review/review.json').read_text());fit=json.loads((BASE/'multipose_review/fit_full.json').read_text())
-    locator=BoxLocator(BASE/'multipose_review/camera_transform_candidate.json',BASE/'moved_box_target.json')
+    objects_transform=BASE/'multipose_review/camera_transform_objects.json'   # 물체 위치용 Pi 재보정(2026-10-26). 없으면 예전 변환
+    locator=BoxLocator(objects_transform if objects_transform.exists() else BASE/'multipose_review/camera_transform_candidate.json',BASE/'moved_box_target.json')
     home_source=json.loads((BASE/'original_current_hold.json').read_text())
     home={n:home_source['joints'][n]['position'] for n in profile.data['expected_registers']}
     zeros={j.name:j.zero for j in profile.joints};zeros.update(fit['new_zero_pulses'])

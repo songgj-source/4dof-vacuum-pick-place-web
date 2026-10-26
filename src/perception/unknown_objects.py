@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from perception.object_classify import _validate, table_height_mm, DEFAULT_INTRINSICS
-from perception.object_targets import _project, DEPTH_MINUS_TOP_CENTER_PX, ENVELOPE_M
+from perception.object_targets import _project, default_locator, DEPTH_MINUS_TOP_CENTER_PX, ENVELOPE_M
 from perception.box_target import BoxLocator
 from robot.robot_frame import BARE_TABLE_PLANE_Z
 from robot.robot_model import load_planar_model, reachable
@@ -80,8 +80,7 @@ def locate_unknowns(bgr, depth, baseline_depth, root, *, locator=None, model=Non
     raised[:, 440:] = 0
     raised = cv2.morphologyEx(raised, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
     count, labels, stats, _ = cv2.connectedComponentsWithStats(raised)
-    base = root / 'output/ik_resume_20261012'
-    locator = locator or BoxLocator(base / 'multipose_review/camera_transform_candidate.json', base / 'moved_box_target.json')
+    locator = locator or default_locator(root)
     model = load_planar_model(root) if model is None else model
     found = []
     for index in range(1, count):

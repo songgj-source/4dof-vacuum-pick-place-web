@@ -293,7 +293,7 @@ class DeskSnapshotTests(unittest.TestCase):
              patch.object(pick_unknown, 'ROOT', Path(d)), \
              patch.object(pick_unknown, 'live_tray_slots', return_value=None), \
              patch('perception.object_targets.default_locator', return_value=LOC), \
-             patch('perception.unknown_objects.BoxLocator', return_value=LOC), \
+             patch('perception.unknown_objects.default_locator', return_value=LOC), \
              patch('perception.unknown_objects.load_planar_model', return_value={}), \
              patch('perception.unknown_objects.reachable', return_value=True), \
              patch.object(pick_unknown, 'run_until_clean_exit', side_effect=lambda cmd, root: commands.append(cmd) or 0), \

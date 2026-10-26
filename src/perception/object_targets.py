@@ -79,8 +79,12 @@ def _project(locator, pixel, plane_z):
 
 
 def default_locator(root):
+    """물체(집기 목표) 위치 계산용 카메라 변환. 2026-10-26 Pi 재보정 파일(camera_transform_objects.json)이 있으면 그것을 쓴다.
+    트레이 칸 계산(tray_detect._locator)은 칸이 보정 범위 밖(30~36cm)이라 예전 camera_transform_candidate.json을 그대로 쓴다."""
     base = Path(root) / 'output/ik_resume_20261012'
-    return BoxLocator(base / 'multipose_review/camera_transform_candidate.json', base / 'moved_box_target.json')
+    objects = base / 'multipose_review/camera_transform_objects.json'
+    transform = objects if objects.exists() else base / 'multipose_review/camera_transform_candidate.json'
+    return BoxLocator(transform, base / 'moved_box_target.json')
 
 
 def top_center_xy(found, top_mm, locator):
@@ -142,8 +146,7 @@ def locate_targets(bgr, depth, root, catalog=None, model=None, locator=None, min
     base = root / 'output/ik_resume_20261012'
     catalog = catalog or load_catalog(root / 'config/object_catalog.json')
     model = model or load_planar_model(root)
-    locator = locator or BoxLocator(base / 'multipose_review/camera_transform_candidate.json',
-                                    base / 'moved_box_target.json')
+    locator = locator or default_locator(root)
     results = []
     known = object_registry.labels(root)          # 기본 세 물체 + 등록 물체
     for found in classify_objects(bgr, depth):
