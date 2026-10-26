@@ -531,9 +531,16 @@ def main(argv=None):
                         cur=fresh_xyz()
                         if transit_z-cur[2]<.006:break
                         lift=min(.030,transit_z-cur[2])
-                        hover('chain_raise'+str(index),(*cur[:2],cur[2]+lift),lift_m=lift)
+                        try:hover('chain_raise'+str(index),(*cur[:2],cur[2]+lift),lift_m=lift)
+                        except ValueError:
+                            # 먼 칸에서 낮게 물러나 선 자리는 수직으로 더 올라갈 자세가 없을 수 있다(2026-10-26 Pi: r .262 z .097에서
+                            # 'no direct-branch solution'). 움직이기 전에 거부됐으면 경로 거부와 같이 HOME을 거쳐 같은 물체를 다시 하게 한다
+                            if math.dist(fresh_xyz(),cur)<.003:result['chain_refused']=True
+                            raise
                     cur=fresh_xyz()
-                    if cur[2]<transit_z-.008:raise ValueError('could not rise to the transit height above the tray')
+                    if cur[2]<transit_z-.008:
+                        result['chain_refused']=True      # 멈춰 선 채 운반 높이에 못 미침: HOME을 거쳐 다시 한다
+                        raise ValueError('could not rise to the transit height above the tray')
                     path=polar_path(tuple(cur),approach_via,.030)+[(*known[:2],.070)]
                     result['chain_transit']=dict(start_xyz=list(cur),transit_z=transit_z,points=len(path));save()
                     def transit(name,points):
