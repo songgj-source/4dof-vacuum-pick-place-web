@@ -61,12 +61,15 @@ def test_light_reads_refuse_without_torque():
 class FakeBus:
     def __init__(self):
         self.events = []
+        self.speeds = []
 
     def begin_light_reads(self): self.events.append('light')
     def begin_position_stream(self, origin, speed, acceleration): self.events.append(('stream', speed))
     def end_position_stream(self): self.events.append('end')
     def sync_goal_positions(self, raw): self.driver.position = dict(raw)
-    def goal(self, name, raw, speed=40): self.driver.position[name] = raw
+    def goal(self, name, raw, speed=40):
+        self.driver.position[name] = raw
+        self.speeds.append(speed)
 
 
 class FakeDriver:
@@ -96,6 +99,22 @@ def move(speed, period_s):
                            lambda raw: None, origin, goal, (0., 0., 0.), lambda e: None, lambda: False,
                            pulses_per_step=2, speed=speed, period_s=period_s)
     return result, bus.events
+
+
+def move_speeds(speed, period_s):
+    bus = FakeBus()
+    driver = FakeDriver(bus)
+    joints = {n: SimpleNamespace(raw_min=0, raw_max=4095) for n in NAMES}
+    origin = {n: 2000 for n in NAMES}
+    _execute_path(driver, SimpleNamespace(forward=lambda q: (0., 0., 0., -math.pi / 2)), joints, lambda raw: raw,
+                  lambda raw: None, origin, dict(origin, shoulder=2040), (0., 0., 0.), lambda e: None, lambda: False,
+                  pulses_per_step=2, speed=speed, period_s=period_s)
+    return set(bus.speeds)
+
+
+def test_slow_fixed_tick_move_sets_the_servo_speed_to_the_path_rate():
+    assert move_speeds(40, 2 / 150) == {150}           # 2펄스/13.3ms: 레지스터 40(초당 약 56~60펄스 상한)이면 못 따라갔다
+    assert move_speeds(40, None) == {40}               # 고정 틱이 없는 예전 느린 이동은 그대로
 
 
 def test_slow_fixed_tick_move_uses_light_reads_and_ends_them():

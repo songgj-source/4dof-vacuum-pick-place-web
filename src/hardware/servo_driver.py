@@ -3,6 +3,7 @@ import copy
 import threading
 import time
 from hardware.servo_mapping import finite
+from motion import guard_mode
 
 
 def reversal_filtered(raw, last, direction):
@@ -212,7 +213,7 @@ class ServoDriver:
                 status['torque'] = row['torque']
                 status['goal_confirmed'] = row['goal'] == goals[name]
                 settled = (row['torque'] == 1 and status['goal_confirmed']
-                    and abs(row['position']-targets[name]) <= 2
+                    and abs(row['position']-targets[name]) <= guard_mode.pulses(2)
                     and abs(row['position']-previous[name]) <= 1)
                 stable[name] = stable[name]+1 if settled else 0
                 status['position_confirmed'] = stable[name] >= 3
@@ -294,7 +295,7 @@ class ServoDriver:
                 moves = [abs(second['joints'][n]['position']-first['joints'][n]['position']) for n in self.names]
                 goal_changed = any(second['joints'][n]['goal'] != first['joints'][n]['goal'] for n in self.names)
                 if max(moves) <= 1 and not goal_changed: break
-                if goal_changed or max(moves) > 3 or attempt + 1 >= takeover_attempts:
+                if goal_changed or max(moves) > guard_mode.pulses(3) or attempt + 1 >= takeover_attempts:
                     raise ValueError('position/goal changed; existing torque takeover refused')
                 self.sleep(settle_s)
             for joint in self.profile.joints:
@@ -325,7 +326,7 @@ class ServoDriver:
                     for joint in self.profile.joints:
                         n = joint.name
                         row = sample['joints'][n]
-                        if (row['goal'] != goals[n] or abs(row['position']-goals[n]-offsets[n]) > 2
+                        if (row['goal'] != goals[n] or abs(row['position']-goals[n]-offsets[n]) > guard_mode.pulses(2)
                                 or abs(row['position']-previous['joints'][n]['position']) > 1
                                 or not joint.raw_min+16 <= row['position'] <= joint.raw_max-16
                                 or not joint.raw_min+16 <= goals[n] <= joint.raw_max-16):
@@ -367,7 +368,7 @@ class ServoDriver:
                     for name in self.names:
                         row = data['joints'][name]
                         if (row['goal'] != targets[name]-self.hold_offsets.get(name,0)
-                                or abs(row['position']-targets[name])>2):
+                                or abs(row['position']-targets[name])>guard_mode.pulses(2)):
                             raise ValueError(f'hold trial failed: {name} fixed goal changed or tracking error')
                         spans[name].append(row['position'])
                     samples += 1

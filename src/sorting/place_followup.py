@@ -13,6 +13,24 @@ EMPTY_RUN_DONE = 'empty place run complete'
 TIMEOUT_S = 300
 
 
+def home_return_succeeded(code, summary):
+    """Use the same HOME completion contract for API, menu and automatic return."""
+    return (code == 0 and isinstance(summary, dict)
+            and all(summary.get(k) is True for k in ('home_return_complete', 'final_hold_confirmed', 'restoration_verified'))
+            and not any(summary.get(k) for k in ('error', 'final_hold_error', 'recorder_error', 'recorder_close_error')))
+
+
+def home_failure_reason(code, summary):
+    summary = summary if isinstance(summary, dict) else {}
+    for key in ('error', 'final_hold_error', 'recorder_error', 'recorder_close_error'):
+        if summary.get(key):
+            return str(summary[key])
+    for key in ('home_return_complete', 'final_hold_confirmed', 'restoration_verified'):
+        if summary.get(key) is not True:
+            return f'HOME confirmation missing or failed: {key}'
+    return f'return_home exited with {code}'
+
+
 def should_return_home(result, *, enabled):
     if not enabled or not result.get('motion_cycle_complete'):
         return False
@@ -41,13 +59,15 @@ def run_home_return(root, rate, output, *, runner=subprocess.run):
     summary = None
     for line in reversed((done.stdout or '').splitlines()):
         try:
-            summary = json.loads(line)
-            break
+            candidate = json.loads(line)
+            if isinstance(candidate, dict) and 'home_return_complete' in candidate:
+                summary = candidate
+                break
         except ValueError:
             continue
-    ok = (done.returncode == 0 and isinstance(summary, dict) and summary.get('home_return_complete') is True
-          and not summary.get('error') and summary.get('final_hold_confirmed') is True and summary.get('restoration_verified') is True)
-    error = None if ok else ((summary or {}).get('error') or (done.stderr or '').strip().splitlines()[-1:] or f'return_home exited with {done.returncode}')
+    ok = home_return_succeeded(done.returncode, summary)
+    stderr = (done.stderr or '').strip().splitlines()
+    error = None if ok else (stderr[-1] if summary is None and stderr else home_failure_reason(done.returncode, summary))
     return dict(ok=bool(ok), rate_pulses_s=float(rate), returncode=done.returncode, summary=summary,
                 error=error if not isinstance(error, list) else (error[0] if error else f'return_home exited with {done.returncode}'))
 

@@ -411,6 +411,9 @@ class Arm:
         script = Path(str(command[1])).name if len(command) > 1 else str(command[0])
         if code == 130:
             self.log.add('info', script, '정지 신호로 중단됨')
+        elif script == 'run_sort.py' and '--start-above-tray' in command and menu.chain_refused(summary):
+            self.log.add('warn', script, '연속 이동 경로가 없어 HOME 복귀 후 같은 물체를 재시도합니다.',
+                         'pick_auto 종료 코드 4: 연속 이동 경로 거부')
         elif code != 0 or (summary is not None and summary.get('ok') is False):
             raw = (summary or {}).get('error') or (summary or {}).get('reason') or f'종료 코드 {code}'
             tail = '\n'.join((summary or {}).get('_tail') or [])
@@ -533,8 +536,8 @@ class Arm:
                 return dict(ok=False, reason_code='torque_off', reason=f'토크를 켜지 못했습니다({after}). 서보 전원과 팔을 확인하세요.')
             if state == 'off_near_fold' and skill != 'return_home':          # 조금 어긋난 접힌 자세: 먼저 HOME에 맞춘다
                 code, summary, _ = self._run(task_id, HOME_CMD)
-                if not (summary and summary.get('home_return_complete')):
-                    error = (summary or {}).get('error')
+                if not menu.home_return_succeeded(code, summary):
+                    error = menu.home_failure_reason(code, summary)
                     return dict(ok=False, reason=f'토크를 켠 뒤 HOME에 맞추지 못했습니다: {error or f"종료 코드 {code}"}', reason_code=reason_code(error))
             return None
         return dict(ok=False, reason_code='arm_state_unknown' if state == 'unknown' else 'torque_off',
@@ -556,9 +559,9 @@ class Arm:
             return refused
         if skill == 'return_home':
             code, summary, _ = self._run(task_id, HOME_CMD)
-            done = bool(summary and summary.get('home_return_complete'))
-            return dict(ok=done, reason=None if done else str((summary or {}).get('error') or f'종료 코드 {code}'),
-                        reason_code=None if done else reason_code((summary or {}).get('error')))
+            done = menu.home_return_succeeded(code, summary)
+            error = None if done else menu.home_failure_reason(code, summary)
+            return dict(ok=done, reason=error, reason_code=None if done else reason_code(error))
         if skill == 'pick_all':
             return self._pick_all(task_id, params.get('objects'))
         return self._pick(task_id, params['object'], params['slot'])
@@ -570,6 +573,10 @@ class Arm:
                 self.tasks[task_id]['item'] = label
             if stage == 'plan':
                 self._event(task_id, 'phase', ('plan', '계획(사진)'))
+            elif stage == 'recover_home':
+                self._event(task_id, 'phase', ('recover_home', '연속 이동 경로 없음: HOME 복귀 후 재시도'))
+            elif stage == 'retry_pick':
+                self._event(task_id, 'phase', ('retry_pick', 'HOME 복귀 완료: 같은 물체 집기 재시도'))
         outcome = menu.run_all_chained(run=lambda cmd: self._run(task_id, cmd), on_item=on_item, stopped=lambda: self.stop_requested,
                                        labels=objects)
         with self.lock:
@@ -593,7 +600,7 @@ class Arm:
 
     def _pick(self, task_id, label, slot):
         since = time.time()
-        build = (lambda tray: menu.unknown_command(slot, execute=True)) if label == 'unknown' else \
+        build = (lambda tray: menu.unknown_command(slot, execute=True, use_tray_frame=tray)) if label == 'unknown' else \
             (lambda tray: menu.sort_command(label, slot=slot if slot != OBJECTS[label] else None, use_tray_frame=tray))
         code, result, _ = self._run(task_id, build(True))
         if code != 0 and 'the tray moved since the stored frame' in str((result or {}).get('reason', '')):
@@ -604,9 +611,10 @@ class Arm:
         placed = menu.newest_result(since)
         if placed and placed.get('motion_cycle_complete') and not placed.get('error'):
             # 물체는 칸에 넣었는데 자동 HOME 복귀만 실패: 복귀를 다시 시도한다(메뉴와 같다).
-            _, summary, _ = self._run(task_id, HOME_CMD)
-            if summary and summary.get('home_return_complete'):
+            home_code, summary, _ = self._run(task_id, HOME_CMD)
+            if menu.home_return_succeeded(home_code, summary):
                 return dict(ok=True, reason=None, reason_code=None, note='자동 HOME 복귀가 실패해 다시 복귀했습니다.')
+            reason = menu.home_failure_reason(home_code, summary)
         return dict(ok=False, reason=menu.brief_message(reason), reason_code=reason_code(reason))
 
 

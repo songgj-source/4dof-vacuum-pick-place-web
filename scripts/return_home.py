@@ -18,12 +18,13 @@ from hardware.servo_mapping import MappingProfile
 from hardware.servo_transport import ServoTransport
 from hardware.servo_driver import ServoDriver
 from robot.planar_kinematics import PlanarGeometry
-from motion.hover_trial import run_hover_trial
+from motion.hover_trial import run_hover_trial,HOVER_RADIUS_MAX_M,MAX_TILT_RAD
 from motion.home_trial import run_recorded_home_trial
+from motion import guard_mode
 from motion.trial_gains import TemporaryPitchGains
 from motion.home_return_profile import choose_pitch_p,home_arrival
 from motion.home_return_profile import return_profile,near_fold
-from motion.return_corridor import start_in_corridor,interrupted_near_home_start
+from motion.return_corridor import start_in_corridor,interrupted_near_home_start,corridor_diagnostics,tilted_tray_start
 from optional.video_recording.astra_recorder import AstraRecorder
 from robot.robot_frame import SHOULDER_HEIGHT_M
 class AlreadyAtHome(Exception):pass
@@ -75,7 +76,14 @@ with ServoTransport(profile) as bus:
         with gains:
             driver.sleep(.8)   # 사용자 요청(2026-10-15)으로 2초→0.8초. 바로 뒤에서 정지·목표 일치 확인(hold_existing_torque)을 그대로 한다
             driver.hold_existing_torque(supported=True,attempts=4,settle_s=.4,takeover_attempts=4)  # 하중 관절이 3~6펄스 밀려 서면 같은 기준으로 목표를 보정한다(2026-10-19)
-            initial=driver._snapshot(torque=1);contact_xyz=tcp(initial)[:3]
+            initial=driver._snapshot(torque=1);start_pose=tcp(initial);contact_xyz=start_pose[:3];start_pitch=start_pose[3]
+            # Preserve the actual post-takeover start even if start selection refuses.
+            # pre_gain/final snapshots can differ substantially under load.
+            result.update(start_snapshot=initial,start_candidate_xyz=contact_xyz,
+                          start_raw={n:initial['joints'][n]['position'] for n in driver.names},
+                          start_candidate_pitch_rad=start_pitch,
+                          start_corridor=corridor_diagnostics(contact_xyz),
+                          travel_rate_pulse_s=args.travel_rate,home_travel_profile=travel)
             home_source=json.loads((ROOT/'output/ik_resume_20261012/original_current_hold.json').read_text())
             home_raw={n:home_source['joints'][n]['position'] for n in driver.names}
             # 이미 HOME이면 움직이지 않는다. HOME 자세는 접혀 있어서 수직 복귀 구간(높이 3~13.5cm) 밖이라, 예전엔 HOME에서 누르면 오류가 났다(2026-10-19).
@@ -88,9 +96,11 @@ with ServoTransport(profile) as bus:
             current_raw={n:initial['joints'][n]['position'] for n in driver.names}
             folded=near_fold(current_raw,home_raw)
             interrupted=not folded and interrupted_near_home_start(contact_xyz,current_raw,home_raw)
+            tray_start=not (folded or interrupted) and tilted_tray_start(contact_xyz,start_pitch,radius_max_m=HOVER_RADIUS_MAX_M,max_forward_tilt_rad=MAX_TILT_RAD)
+            if tray_start:result['tilted_tray_start']=True
             if folded:result['fold_near_home_start']=True      # 접힌 HOME 근처: 접힌 채 관절 값으로 바로 HOME에 맞춘다(수직 복귀 구간·올리기·중간 지점 생략)
             elif interrupted:result['interrupted_near_home_start']=True  # 접근 중 정지: 직접 HOME 경로의 모든 관절·링크 점을 사전 검사한다
-            elif not args.any_start and not start_in_corridor(contact_xyz):raise ValueError('not at HOME and outside the vertical reset corridor')
+            elif not (tray_start or args.any_start) and not start_in_corridor(contact_xyz):raise ValueError(f'not at HOME and outside the vertical reset corridor: r={math.hypot(*contact_xyz[:2]):.6f} m, z={contact_xyz[2]:.6f} m, pitch={math.degrees(start_pitch):.3f} deg')
             if args.any_start and not (folded or interrupted) and not start_in_corridor(contact_xyz):result['start_outside_corridor']=True
             result.update(start_snapshot=initial,start_candidate_xyz=contact_xyz,travel_rate_pulse_s=args.travel_rate,home_travel_profile=travel)
             if recorder:recorder.snapshot('start')
@@ -107,19 +117,25 @@ with ServoTransport(profile) as bus:
                             time.sleep(.15);driver.hold(attempts=4,settle_s=.4)
                     if not driver.hold_confirmed:raise ValueError('HOME stage hold not confirmed')
                     observed=driver._snapshot(torque=1);xyz=tcp(observed)[:3]
-                    if expected_xyz and math.dist(xyz,expected_xyz)>.005:raise ValueError('HOME raise pose exceeds5mm candidate tolerance')
+                    if expected_xyz and math.dist(xyz,expected_xyz)>guard_mode.length(.005):raise ValueError('HOME raise pose exceeds5mm candidate tolerance')
                     if expected_raw:
                         arrived={n:observed['joints'][n]['position'] for n in driver.names}
                         grade,deviation=home_arrival(arrived,expected_raw)
                         if grade=='far':raise ValueError(f'HOME exceeds the recorded-pose tolerance by {deviation} pulses')
                         if grade=='near':result['home_deviation_pulses']=deviation   # 8 넘게 어긋나도 다음 사이클 시작 허용선(32) 안에서 멈췄으면 성공으로 기록
                     result['phases'][-1].update(observed=observed,candidate_xyz=xyz)
-                driver=home_driver(bus,profile);driver.hold_existing_torque(supported=True,keep_goal=True,load_offset=True,settle_s=.3,takeover_attempts=4)  # 보상한 목표를 현재 위치로 덮어쓰지 않는다
+                # The final HOME stage already confirmed its hold and arrival.
+                # Keep that driver for final hold verification; a fresh takeover
+                # can fail on settling jitter and discard the confirmed state.
+                if name != 'home':
+                    next_driver=home_driver(bus,profile)
+                    next_driver.hold_existing_torque(supported=True,keep_goal=True,load_offset=True,settle_s=.3,takeover_attempts=4)
+                    driver=next_driver
             for index in range(0 if folded or interrupted else 3):
                 current=driver._snapshot(torque=1);xyz=tcp(current)[:3]
                 if xyz[2]>=.080:break
                 target=(*xyz[:2],xyz[2]+.030)
-                stage('raise'+str(index+1),lambda record:run_hover_trial(driver,g,zeros,target,math.hypot(*target[:2]),supported=True,lift_m=.030,record=record,cancelled=stopped),expected_xyz=target)
+                stage('raise'+str(index+1),lambda record:run_hover_trial(driver,g,zeros,target,math.hypot(*target[:2]),supported=True,lift_m=.030,record=record,cancelled=stopped,pitch_rad=start_pitch if tray_start else -math.pi/2),expected_xyz=target)
             # 접히는 도중 P 전환·정지 인계를 하지 않는다. 중간 경유점도
             # 한 번의 가감속 스트림으로 통과하고 HOME에서만 정지를 확인한다.
             result.update(continuous_home_return=True,pitch_p_home=pitch_p)
@@ -143,5 +159,5 @@ with ServoTransport(profile) as bus:
                 try:recorder.close()
                 except BaseException as exc:result['recorder_close_error']=str(exc)
         (OUT/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n')
-        print(json.dumps({k:result.get(k) for k in ('home_return_complete','error','final_hold_confirmed','restoration_verified','home_requested_raw')},ensure_ascii=False),flush=True)
+        print(json.dumps({k:result.get(k) for k in ('home_return_complete','error','final_hold_error','recorder_error','recorder_close_error','final_hold_confirmed','restoration_verified','home_requested_raw')},ensure_ascii=False),flush=True)
 raise SystemExit(0 if all(result.get(k) for k in ('home_return_complete','final_hold_confirmed','restoration_verified')) and not result.get('error') and not result.get('recorder_error') and not result.get('recorder_close_error') else 1)

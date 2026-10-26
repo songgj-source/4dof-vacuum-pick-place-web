@@ -1,6 +1,8 @@
 """Existing guarded HOME travel profile with explicit requested rate."""
 import math
 
+from motion import guard_mode
+
 
 def return_profile(rate=300.):
     if not math.isfinite(rate) or not 50<=rate<=300:
@@ -57,9 +59,9 @@ MID_ACCEPT_PULSES = 56          # 중간 경유점(mid 단계)은 지나가는 �
 def home_arrival(observed, target):
     """(등급, 최대 편차). 등급: exact(8 이내) / near(24 이내, 다음 사이클 시작 허용선 32보다 안쪽) / far(실패)."""
     deviation = max(abs(observed[n] - target[n]) for n in target)
-    if deviation <= HOME_EXACT_PULSES:
+    if deviation <= guard_mode.pulses(HOME_EXACT_PULSES):          # 가드 배율(guard_mode)만큼 넓힌다
         return 'exact', deviation
-    return ('near' if deviation <= HOME_ACCEPT_PULSES else 'far'), deviation
+    return ('near' if deviation <= guard_mode.pulses(HOME_ACCEPT_PULSES) else 'far'), deviation
 
 
 # 접힌 HOME 근처에서 관절이 조금 어긋난 채 멈춘 경우(전원이 끊겼거나 손으로 놓은 자세): 수직 복귀 구간 밖이라 예전엔 "손으로 옮기라"고 했다.
@@ -68,4 +70,4 @@ FOLD_NEAR_PULSES = 200
 
 
 def near_fold(observed, home):
-    return max(abs(observed[n] - home[n]) for n in home) <= FOLD_NEAR_PULSES
+    return max(abs(observed[n] - home[n]) for n in home) <= guard_mode.pulses(FOLD_NEAR_PULSES)

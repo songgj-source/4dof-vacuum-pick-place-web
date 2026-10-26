@@ -18,6 +18,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 from perception import object_registry      # noqa: E402  등록 물체(config/registered_objects.json)
+from motion import guard_mode               # noqa: E402  가드 배율(HOME 판정 펄스)
+from sorting.place_followup import home_return_succeeded, home_failure_reason
 
 PY = sys.executable
 BUILTIN_OBJECTS = (('white_box', '흰 상자', 1), ('red_cube', '빨간 정육면체', 2), ('tape_measure', '줄자', 3))
@@ -173,12 +175,12 @@ def phase_label(name):
         ('unknown_detected', 'unknown 감지 완료'),
         # 놓기(place_exec 단계 이름). raise_clear·raise_low는 물체를 든 직후(놓기 전) 단계다. 더 긴 이름을 먼저 둔다.
         ('place_raise_clear', '든 채 바닥에서 올리기'), ('place_raise_low', '든 채 낮게 올리기'), ('place_raise', '운반 높이로 상승'),
-        ('place_pull_in', '로봇 쪽으로 끌어오기'), ('place_carry', '트레이로 운반'), ('place_lower', '칸으로 내리기'),
-        ('place_retire', '트레이에서 후퇴'), ('place_retreat', '놓은 뒤 후퇴'),
+        ('place_pull_in', '로봇 쪽으로 끌어오기'), ('place_carry', '트레이로 운반'), ('place_align', '놓기 전 위치 정렬'), ('place_lower', '칸으로 내리기'),
+        ('place_exit', '놓은 뒤 한 번에 빠져나오기'), ('place_retire', '트레이에서 후퇴'), ('place_retreat', '놓은 뒤 후퇴'),
         ('place_untilt', '손목 다시 세우기'), ('place_tilt', '손목 각도 조정'),
         # 집기(pick_auto 단계 이름)
         ('reset_raise', '시작 전 올리기'), ('chain_raise', '트레이 위에서 올리기'), ('approach', '물체에 접근'),
-        ('descent', '흡착 위치로 하강'), ('lift', '물체 들어 올리기'),
+        ('descent', '흡착 위치로 하강'), ('lift_to_carry', '들어 올리며 운반 자세 만들기'), ('lift', '물체 들어 올리기'),
         ('rise_', '컵 중심 다시 맞추기'), ('recenter', '컵 중심 다시 맞추기'), ('redescend', '컵 중심 다시 맞추기'),
         ('probe', '시험 이동'), ('home', 'HOME 복귀'), ('return', '복귀'),
     )
@@ -197,11 +199,11 @@ def sort_command(label, slot=None, execute=True, use_tray_frame=True):
     return cmd
 
 
-def unknown_command(slot=3, execute=True):
+def unknown_command(slot=3, execute=True, use_tray_frame=True):
     cmd = [PY, str(ROOT / 'scripts/pick_unknown.py'), '--slot', str(slot), *COMMON]
     if execute:
         cmd += ['--execute', '--supported']
-    if all(p.exists() for p in TRAY_FRAME):
+    if use_tray_frame and all(p.exists() for p in TRAY_FRAME):
         cmd += ['--tray-frame', *(str(p) for p in TRAY_FRAME), '--tray-fallback-live']     # 트레이가 움직였으면 지금 카메라로 다시 찾는다(물체를 다시 놓게 하지 않는다)
     return cmd
 
@@ -262,10 +264,10 @@ def classify_arm(state):
     if torques == {1}:
         return 'ok'
     if torques == {0}:
-        near = all(abs(state[n][1] - HOME_RAW[n]) <= HOME_NEAR_PULSES for n in HOME_RAW)
+        near = all(abs(state[n][1] - HOME_RAW[n]) <= guard_mode.pulses(HOME_NEAR_PULSES) for n in HOME_RAW)
         if near:
             return 'off_at_home'
-        return 'off_near_fold' if all(abs(state[n][1] - HOME_RAW[n]) <= FOLD_NEAR_PULSES for n in HOME_RAW) else 'off_elsewhere'
+        return 'off_near_fold' if all(abs(state[n][1] - HOME_RAW[n]) <= guard_mode.pulses(FOLD_NEAR_PULSES) for n in HOME_RAW) else 'off_elsewhere'
     return 'mixed'
 
 
@@ -297,8 +299,8 @@ def ensure_torque():
             return False
         print('   토크를 켜서 팔을 붙잡았습니다. HOME 자세로 맞춥니다.')
         code, summary, _ = run_streaming([PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32'])
-        done = bool(summary and summary.get('home_return_complete'))
-        print('   → HOME 자세로 맞췄습니다.' if done else f'   → HOME에 맞추지 못했습니다: {brief_message((summary or {}).get("error")) or code} (팔 위치를 확인하세요)')
+        done = home_return_succeeded(code, summary)
+        print('   → HOME 자세로 맞췄습니다.' if done else f'   → HOME에 맞추지 못했습니다: {brief_message(home_failure_reason(code, summary))} (팔 위치를 확인하세요)')
         return done
     if state == 'off_elsewhere':
         print('   서보 토크가 꺼져 있고 팔이 HOME 위치가 아닙니다. 팔을 손으로 받쳐 HOME 자세로 옮긴 뒤 다시 실행하세요.')
@@ -404,8 +406,8 @@ def recover_home_if_placed(since):
         return False
     print('   물체는 칸에 넣었지만 자동 HOME 복귀가 실패했습니다. HOME 복귀를 다시 시도합니다.')
     code, summary, _ = run_streaming([PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32'])
-    done = bool(summary and summary.get('home_return_complete'))
-    print('   → HOME 복귀 완료' if done else f'   → HOME 복귀 실패: {brief_message((summary or {}).get("error")) or code} (팔 위치를 확인하세요)')
+    done = home_return_succeeded(code, summary)
+    print('   → HOME 복귀 완료' if done else f'   → HOME 복귀 실패: {brief_message(home_failure_reason(code, summary))} (팔 위치를 확인하세요)')
     return done
 
 
@@ -491,9 +493,19 @@ def run_all_chained(run=None, on_item=None, stopped=lambda: False, labels=None):
         code, result, _ = run(chained_command(label, path, index, len(planned)))
         if chain_refused(result) and not stopped():
             # 트레이 위에서 바로 갈 수 없었다(움직이기 전에 멈춤): 검증된 return_home.py로 HOME에 간 뒤 같은 물체를 평소처럼 한다
+            if on_item:
+                on_item(label, 'recover_home')
             home_code, home, _ = run(HOME_COMMAND)
-            if home_code == 0 and (home or {}).get('home_return_complete'):
-                code, result, _ = run(chained_command(label, path, index, len(planned), from_home=True))
+            if stopped():
+                items.append(dict(object=label, ok=False, reason='cancelled'))
+                return done(ok=False, failed_label=label, reason='cancelled')
+            if not home_return_succeeded(home_code, home):
+                reason = '연속 집기 경로 복구 중 HOME 복귀 실패: ' + home_failure_reason(home_code, home)
+                items.append(dict(object=label, ok=False, reason=reason))
+                return done(ok=False, failed_label=label, reason=reason)
+            if on_item:
+                on_item(label, 'retry_pick')
+            code, result, _ = run(chained_command(label, path, index, len(planned), from_home=True))
         ok = code == 0 and bool((result or {}).get('ok'))
         items.append(dict(object=label, ok=ok, reason=None if ok else str((result or {}).get('reason') or f'종료 코드 {code}')))
         if not ok:
@@ -682,8 +694,8 @@ def main():
         elif choice == '3':
             if confirm('HOME으로 복귀합니다.') and ensure_torque():
                 code, result, seconds = run_streaming([PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32'])
-                done = bool(result and result.get('home_return_complete'))
-                print('   → 복귀 완료' if done else f'   → 복귀 결과: {brief_message((result or {}).get("error")) or code}')
+                done = home_return_succeeded(code, result)
+                print('   → 복귀 완료' if done else f'   → 복귀 결과: {brief_message(home_failure_reason(code, result))}')
         elif choice == '5':
             register_menu()
         else:

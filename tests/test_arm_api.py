@@ -132,7 +132,7 @@ class ApiTests(ApiBase):
 
     def test_home_return_from_elsewhere_holds_the_arm_where_it_is_then_returns(self):
         self.state = 'off_elsewhere'
-        self.outcome = (0, dict(ok=True, home_return_complete=True), 1.)
+        self.outcome = (0, dict(ok=True, home_return_complete=True, final_hold_confirmed=True, restoration_verified=True), 1.)
         self.release.set()
         _, body = self.call('POST', '/return_home')
         task = self.wait_done(body['task_id'])
@@ -270,7 +270,7 @@ class ApiTests(ApiBase):
 
     def test_pick_all_failure_after_a_chained_place_returns_home(self):
         self.release.set()
-        self.run_with([(0, dict(ok=True), 1.)] * 3 + [(0, dict(ok=True), 1.), (1, dict(ok=False, reason='target not found'), 1.), (0, dict(home_return_complete=True), 1.)])
+        self.run_with([(0, dict(ok=True), 1.)] * 3 + [(0, dict(ok=True), 1.), (1, dict(ok=False, reason='target not found'), 1.), (0, dict(home_return_complete=True, final_hold_confirmed=True, restoration_verified=True), 1.)])
         _, body = self.call('POST', '/pick_all')
         task = self.wait_done(body['task_id'])
         self.assertIn('return_home.py', ' '.join(self.commands[-1]))   # 흰 상자를 놓고 트레이 위에 서 있었을 수 있다: HOME 복귀
@@ -281,7 +281,7 @@ class ApiTests(ApiBase):
     def test_pick_all_refused_chain_start_goes_home_then_retries_and_continues(self):
         self.release.set()
         refused = (1, dict(ok=False, attempts=[dict(attempt=1, exit_code=4)], reason='pick_auto exited with 4; not retrying'), 1.)
-        self.run_with([(0, dict(ok=True), 1.)] * 3 + [(0, dict(ok=True), 1.), refused, (0, dict(home_return_complete=True), 1.),
+        self.run_with([(0, dict(ok=True), 1.)] * 3 + [(0, dict(ok=True), 1.), refused, (0, dict(home_return_complete=True, final_hold_confirmed=True, restoration_verified=True), 1.),
                                                         (0, dict(ok=True), 1.), (0, dict(ok=True), 1.)])
         _, body = self.call('POST', '/pick_all')
         task = self.wait_done(body['task_id'])
@@ -727,7 +727,7 @@ for line in sys.stdin:
 
     def test_task_releases_the_camera_first(self):
         released = []
-        arm = arm_api.Arm(run=lambda *a, **k: (0, dict(home_return_complete=True), 0.), read_state=lambda: 'ok')
+        arm = arm_api.Arm(run=lambda *a, **k: (0, dict(home_return_complete=True, final_hold_confirmed=True, restoration_verified=True), 0.), read_state=lambda: 'ok')
         with patch.object(arm_api.CAMERA, 'release', side_effect=lambda: released.append(1)), \
              patch.object(arm_api.menu, 'live_view_running', return_value=False):
             arm._execute('t1', 'return_home', {})

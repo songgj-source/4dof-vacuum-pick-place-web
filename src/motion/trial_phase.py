@@ -11,7 +11,16 @@ from motion import guard_mode
 
 
 def phase_pose_tolerance(name, *, pick_tilt_deg=0.):
+    """단계 도착 허용 오차(m) × 가드 배율(guard_mode.scale). 단계별 기준 사이의 관계(놓기 4mm·운반 시작 5mm 등)는 그대로 유지된다."""
+    return guard_mode.length(_base_pose_tolerance(name, pick_tilt_deg=pick_tilt_deg))
+
+
+def _base_pose_tolerance(name, *, pick_tilt_deg=0.):
     """Keep the existing tilted-pick exception; low gain never relaxes arrival."""
+    if name.startswith('place_lower'):
+        return .004  # Release requires Z within4mm and XY within5mm.
+    if name == 'lift_to_carry':
+        return .005  # The remaining plan is checked against this carry start.
     if pick_tilt_deg and name.startswith(('approach', 'descent', 'lift20', 'lift_to_clear')):return .008
     if guard_mode.relaxed() and not name.startswith(('approach', 'descent')):return guard_mode.RELAXED_POSE_TOLERANCE_M   # 접근·하강은 5mm 보정이 이 검사에 의존한다
     return .005
@@ -36,11 +45,11 @@ def approach_correction_target(target, actual, commanded=None):
     target = finite_vector(target, 3, 'approach target')
     actual = finite_vector(actual, 3, 'observed approach')
     commanded = target if commanded is None else finite_vector(commanded, 3, 'commanded approach')
-    if math.dist(target, actual) > .020:
+    if math.dist(target, actual) > guard_mode.length(.020):
         raise ValueError('approach error exceeds20mm correction envelope')
     error = [t - a for t, a in zip(target, actual)]
     fix = (commanded[0] + error[0], commanded[1] + error[1], max(target[2], commanded[2] + error[2]))
-    if math.dist(fix, target) > .020:
+    if math.dist(fix, target) > guard_mode.length(.020):
         raise ValueError('approach correction exceeds20mm total envelope')
     return fix
 
@@ -116,7 +125,7 @@ RELEASE_SETTLE_S=.5
 def release_at_slot(driver,geometry,zeros,expected,pump):
     """칸의 놓는 지점에서 해제: 팔이 멈춰 있고 expected(x, y, z)에서 xy 5mm, z 4mm 안일 때만 vent한다."""
     snapshot=stationary_snapshot(driver);actual=candidate_xyz(driver,geometry,zeros,snapshot)
-    if math.hypot(actual[0]-expected[0],actual[1]-expected[1])>.005 or abs(actual[2]-expected[2])>.004:
+    if math.hypot(actual[0]-expected[0],actual[1]-expected[1])>guard_mode.length(.005) or abs(actual[2]-expected[2])>guard_mode.length(.004):
         pump.stop();raise ValueError('release pose is not at the drop point; not venting')
     try:
         pump.vent();driver.sleep(.3)

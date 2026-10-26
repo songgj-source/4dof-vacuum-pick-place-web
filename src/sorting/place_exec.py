@@ -18,6 +18,8 @@ place 중에는 공구를 앞으로 기울여도 된다(사용자 허용, 최대
 import math
 import time
 
+from motion import guard_mode
+from motion.place_exit import ExitPathRefused
 from sorting.carry_path import polar_path
 
 LIFT_MAX_M = .036
@@ -36,6 +38,9 @@ START_TOLERANCE_M = .005
 STEP_XY_TOLERANCE_M = .003
 RELEASE_XY_TOLERANCE_M = .005
 RELEASE_Z_TOLERANCE_M = .004
+PRE_LOWER_XY_TOLERANCE_M = .002
+MAX_PRE_LOWER_ERROR_M = .010
+MAX_PRE_LOWER_ALIGNMENT_MOVES = 2
 DEFAULT_MAX_CARRY_S = 180.
 VERTICAL_LEGS = {'raise_clear': 'up', 'raise_low': 'up', 'raise': 'up', 'retreat': 'up', 'lower': 'down'}
 HORIZONTAL_LEGS = ('pull_in', 'carry', 'retire')
@@ -121,19 +126,72 @@ def _not_outward(cur, target, name):
     r_cur, r_target = math.hypot(cur[0], cur[1]), math.hypot(target[0], target[1])
     if r_cur <= r_target + 1e-9 or r_cur < 1e-9:
         return cur[0], cur[1]
-    if r_cur - r_target > OUTWARD_CLAMP_MAX_M:
+    if r_cur - r_target > guard_mode.length(OUTWARD_CLAMP_MAX_M):
         raise ValueError(f'{name}: arm is {1000 * (r_cur - r_target):.0f} mm outside the planned radius; refusing to change the tool pitch there')
     k = r_target / r_cur
     return cur[0] * k, cur[1] * k
 
 
+EXIT_RISE_STEP_M = .010         # 한 번에 빠져나오기: 칸 안 수직 상승 점 간격
+EXIT_SLOW_BELOW_Z = .070        # 이 높이 아래(칸 안)는 느린 2펄스/틱, 위는 4펄스/틱(예전 단계별 이동과 같은 속도)
+
+
+def build_exit_transition(legs, start, start_pitch, *, include_untilt=True):
+    """놓은 뒤 남은 계획이 retreat[, retire][, untilt] 순서일 때, 멈추지 않고 한 번에 갈 경로 점을 만든다(이동 없음).
+    retreat: 놓은 자리에서 넣을 때의 기울기 그대로 수직 상승(10mm 간격). retire: 계획 경유점(30mm 간격)과 경유점별 손목 각도
+    (place_plan이 도달을 검사한 retire_pitches). untilt: 마지막 자리에서 15도씩 수직으로. 그 밖의 계획이면 None(예전처럼 단계별)."""
+    names = [leg['name'] for leg in legs]
+    if not names or names[0] != 'retreat' or names not in (['retreat'], ['retreat', 'retire'], ['retreat', 'untilt'],
+                                                           ['retreat', 'retire', 'untilt']):
+        return None
+    start = tuple(float(v) for v in start)
+    clear_z = float(legs[0]['target'][2])
+    if not start[2] + .005 < clear_z <= .150:
+        return None
+    pitch = float(start_pitch)
+    points = []
+    count = math.ceil((clear_z - start[2]) / EXIT_RISE_STEP_M - 1e-9)
+    for i in range(1, count + 1):
+        z = clear_z if i == count else start[2] + (clear_z - start[2]) * i / count
+        points.append(dict(xyz=(start[0], start[1], z), pitch_rad=pitch, pulses=2 if z < EXIT_SLOW_BELOW_Z else 4))
+    here = (start[0], start[1], clear_z)
+    for leg in legs[1:]:
+        target = tuple(float(v) for v in leg['target'])
+        if leg['name'] == 'retire':
+            if abs(target[2] - clear_z) > 1e-6:
+                return None
+            route = polar_path(here, target, HORIZONTAL_STEP_M)
+            plan_pitches = [float(v) for v in leg.get('retire_pitches') or []]
+            if len(plan_pitches) > len(route):
+                return None
+            pitches = [pitch] * (len(route) - len(plan_pitches)) + plan_pitches if plan_pitches else [_leg_pitch(leg) or pitch] * len(route)
+            for point, step_pitch in zip(route, pitches):
+                if abs(step_pitch - pitch) > MAX_TILT_STEP_RAD + 1e-3 or not VERTICAL_PITCH - 1e-3 <= step_pitch <= pitch + 1e-3:
+                    return None                                  # 세우기만, 15도 이하씩(예전 retire와 같은 조건)
+                points.append(dict(xyz=tuple(point), pitch_rad=step_pitch, pulses=4))
+                pitch = step_pitch
+            here = target
+        elif leg['name'] == 'untilt':
+            if leg is legs[-1] and not include_untilt:
+                break                                            # 곧바로 HOME 복귀라 세우지 않는다(예전과 같다)
+            goal = _leg_pitch(leg)
+            count = math.ceil(abs(goal - pitch) / MAX_TILT_STEP_RAD - 1e-9)
+            for i in range(1, count + 1):
+                points.append(dict(xyz=here, pitch_rad=goal if i == count else pitch + (goal - pitch) * i / count, pulses=4))
+            pitch = goal
+    return dict(start=start, start_pitch=float(start_pitch), clear_z=clear_z, target=points[-1]['xyz'], end_pitch=pitch,
+                waypoints=points)
+
+
 def run_place(plan, *, hover, fresh_xyz, release, cancelled, empty_run=False, skip_final_untilt=False, max_carry_s=DEFAULT_MAX_CARRY_S,
-              now=time.monotonic, record=lambda event: None):
+              now=time.monotonic, record=lambda event: None, exit_path=None):
+    """exit_path(transition): 있으면 놓은 뒤 retreat→retire→untilt를 멈추지 않는 한 번의 경로로 실행한다(build_exit_transition).
+    준비에서 거부되면(ExitPathRefused, 움직이기 전) 예전처럼 단계별로 간다."""
     if not plan.get('start'):
         raise ValueError('plan has no start pose')
     start = tuple(fresh_xyz())
     build_steps(plan, plan['start'])                     # 이동 전에 계획 전체를 검사한다(잘못되면 여기서 ValueError)
-    if math.dist(start, [float(v) for v in plan['start']]) > START_TOLERANCE_M:
+    if math.dist(start, [float(v) for v in plan['start']]) > guard_mode.length(START_TOLERANCE_M):
         raise ValueError(f'start pose differs from the plan: measured {tuple(round(v, 4) for v in start)} '
                          f'vs planned {tuple(round(float(v), 4) for v in plan["start"])}')
     began = now()
@@ -228,6 +286,25 @@ def run_place(plan, *, hover, fresh_xyz, release, cancelled, empty_run=False, sk
             index = move_horizontal(f'place_{name}_0', leg, points, extra, index)
         else:
             up = VERTICAL_LEGS[name] == 'up'
+            lower_xy = slot_xyz[:2]                        # 칸 안 내리기에 명령할 xy(정렬에서 찾은 보정이 있으면 그만큼 민 값)
+            if name == 'lower':
+                # Align above the tray so carry error cannot accumulate with
+                # descent drift. The original release tolerances stay intact.
+                for attempt in range(MAX_PRE_LOWER_ALIGNMENT_MOVES + 1):
+                    cur = tuple(fresh_xyz())
+                    error = math.hypot(cur[0] - slot_xyz[0], cur[1] - slot_xyz[1])
+                    if error <= guard_mode.length(PRE_LOWER_XY_TOLERANCE_M):
+                        break
+                    if (cur[2] < MIN_HORIZONTAL_Z or error > guard_mode.length(MAX_PRE_LOWER_ERROR_M)
+                            or attempt == MAX_PRE_LOWER_ALIGNMENT_MOVES):
+                        raise ValueError(f'pre-lower alignment refused: XY error {error * 1000:.1f} mm at z={cur[2]:.4f}; not lowering')
+                    # 늘 같은 쪽으로 어긋나 서는 오차(하중·마찰)는 같은 목표를 다시 보내도 줄지 않는다(2026-10-26 Pi: 2번 칸 위에서
+                    # 두 번 다 +4.0mm). 잰 오차만큼 목표를 밀어 보낸다(접근 보정과 같은 방식). 민 양은 정렬 한도 안이다.
+                    lower_xy = (lower_xy[0] + slot_xyz[0] - cur[0], lower_xy[1] + slot_xyz[1] - cur[1])
+                    if math.hypot(lower_xy[0] - slot_xyz[0], lower_xy[1] - slot_xyz[1]) > guard_mode.length(MAX_PRE_LOWER_ERROR_M):
+                        raise ValueError(f'pre-lower alignment refused: correction exceeds the alignment envelope at z={cur[2]:.4f}; not lowering')
+                    move(f'place_align_{attempt}', (*lower_xy, cur[2]),
+                         box_top_m=BOX_TOP_M, fast=False, **extra)
             i = 0
             while True:
                 cur = tuple(fresh_xyz())
@@ -259,7 +336,12 @@ def run_place(plan, *, hover, fresh_xyz, release, cancelled, empty_run=False, sk
                     chunk = remaining / count
                     if abs(chunk) < LIFT_MIN_M:
                         chunk = math.copysign(LIFT_MIN_M, remaining)
-                    point = (cur[0], cur[1], cur[2] + chunk)               # 수직: 측정한 xy 그대로
+                    if name == 'lower':
+                        if math.hypot(cur[0] - slot_xyz[0], cur[1] - slot_xyz[1]) > guard_mode.length(STEP_XY_TOLERANCE_M):
+                            raise ValueError('drop XY drift exceeds the vertical descent envelope; not lowering')
+                        point = (*lower_xy, cur[2] + chunk)        # 정렬 보정량을 유지해 내려가며 다시 밀리지 않게 한다
+                    else:
+                        point = (cur[0], cur[1], cur[2] + chunk)
                     if up:
                         # 올리는 동안 다음 기울이기 단계의 각도를 15도씩 같이 돌린다(별도 제자리 단계 시간을 줄인다).
                         nxt_leg = legs[index] if index < len(legs) else None
@@ -278,14 +360,28 @@ def run_place(plan, *, hover, fresh_xyz, release, cancelled, empty_run=False, sk
                     raise ValueError(f'leg {name} did not converge to z={target[2]:.4f} after {i} steps')
             if name == 'lower':
                 at = tuple(fresh_xyz())
-                if (math.hypot(at[0] - slot_xyz[0], at[1] - slot_xyz[1]) > RELEASE_XY_TOLERANCE_M
-                        or abs(at[2] - slot_xyz[2]) > RELEASE_Z_TOLERANCE_M):
+                if (math.hypot(at[0] - slot_xyz[0], at[1] - slot_xyz[1]) > guard_mode.length(RELEASE_XY_TOLERANCE_M)
+                        or abs(at[2] - slot_xyz[2]) > guard_mode.length(RELEASE_Z_TOLERANCE_M)):
                     raise ValueError(f'release refused: pose {tuple(round(v, 4) for v in at)} is not at the drop point '
                                      f'{tuple(round(v, 4) for v in slot_xyz)}')
                 if not empty_run:
                     checkpoint('release')
                     release(slot_xyz)
                     released = True
+                if exit_path is not None:
+                    transition = build_exit_transition(legs[index:], fresh_xyz(), current_pitch,
+                                                       include_untilt=not skip_final_untilt)
+                    if transition is not None:
+                        checkpoint('place_exit')
+                        try:
+                            exit_path(transition)
+                        except ExitPathRefused as exc:
+                            record(dict(step='place_exit_refused', reason=str(exc)))      # 움직이기 전 거부: 예전처럼 단계별로
+                        else:
+                            done.append('place_exit')
+                            merged.append('+'.join(leg['name'] for leg in legs[index:]))
+                            current_pitch = transition['end_pitch']
+                            index = len(legs)
         planned = target if planned is None or name not in HORIZONTAL_LEGS or True else planned
     return dict(steps=done, merged=merged, released=released, empty_run=bool(empty_run), slot_xyz=slot_xyz, duration_s=now() - began,
                 pressure_verified=False)

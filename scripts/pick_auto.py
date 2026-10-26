@@ -18,12 +18,16 @@ from hardware.servo_driver import ServoDriver
 from robot.planar_kinematics import PlanarGeometry,NAMES
 from motion.hover_trial import run_hover_trial,TRAVEL_PERIOD_S,TRAVEL_PULSES_PER_STEP,TRAVEL_GOAL_SPEED,TRAVEL_GOAL_ACCELERATION,TRAVEL_ACCEL,LIFT_MAX_M
 from motion.home_trial import run_recorded_home_trial
+from motion import guard_mode
 from motion.trial_phase import finish_pose_phase,candidate_xyz,release_after_return,release_at_slot,stationary_snapshot,phase_pose_tolerance,approach_correction_target,approach_feedforward_target,PoseToleranceError
 from sorting.place_exec import run_place,DEFAULT_MAX_CARRY_S
+from sorting.place_plan import OBSTACLE_MARGIN_MM
 from sorting.carry_path import polar_path
 from sorting.place_job import load_place_job,build_plan
 from sorting.place_followup import should_return_home,should_return_home_after_failed_pick,should_return_home_after_release_failure,placed_despite_retreat_error,run_home_return,NOT_HELD_EXIT_CODE,CHAIN_REFUSED_EXIT_CODE
 from motion.hold_check import check_hold,hold_decision
+from motion.pick_to_carry import build_lift_transition, run_pick_to_carry_trial, LiftPathRefused
+from motion.place_exit import run_place_exit_trial
 from robot.robot_model import load_planar_model
 from perception.object_targets import load_catalog
 from motion.trial_gains import TemporaryPitchGains
@@ -50,7 +54,7 @@ def post_pick_rise(hover, fresh_xyz, contact, *, placing):
     """After suction, stream two checked lift segments to 70 mm for a place job."""
     if placing:
         start=tuple(fresh_xyz())
-        if math.hypot(start[0]-contact[0],start[1]-contact[1])>.003:
+        if math.hypot(start[0]-contact[0],start[1]-contact[1])>guard_mode.length(.003):
             raise ValueError('post-pick lift start moved more than 3 mm sideways')
         rise=.070-start[2]
         if .010<=rise<=2*LIFT_MAX_M:
@@ -224,7 +228,7 @@ def main(argv=None):
                            return_home=dict(enabled=not (args.no_return_home or args.skip_home_after_place),rate_pulses_s=args.home_rate,skip_after_place=args.skip_home_after_place),rim_height_mm=place_job['rim_height_mm'],
                            start_assumed_xyz=list(preview_start),plan=preview,
                            note=('empty run: no suction and no release; starts from the 70 mm hover' if args.place_empty_run else
-                                 'assumed start is 70 mm after the continuous post-pick rise when the contact is low; the real plan is recomputed from the measured pose after lifting'),
+                                 '70 mm preview start; eligible pickup rise and carry tilt are planned from the measured contact pose and executed in one stream, otherwise the place plan is recomputed after the vertical rise'),
                            physically_validated=False)
         if place_job['label']=='unknown':
             plan['place']['object_geometry']=place_job['object_geometry']
@@ -360,11 +364,13 @@ def main(argv=None):
                             result['phases'].append(dict(phase=name,receipt=exc.receipt,error=str(exc),duration_s=time.monotonic()-phase_start,elapsed_s=time.monotonic()-cycle_start))
                             record(dict(phase='pose_rejected',receipt=exc.receipt));save()
                             raise
-                    if home_goal and max(abs(receipt['snapshot']['joints'][n]['position']-home_goal[n]) for n in home)>8:
+                    if home_goal and max(abs(receipt['snapshot']['joints'][n]['position']-home_goal[n]) for n in home)>guard_mode.pulses(8):
                         raise ValueError('recorded HOME exceeds8pulse pose tolerance')
                     result['phases'].append(dict(phase=name,receipt=receipt,duration_s=time.monotonic()-phase_start,elapsed_s=time.monotonic()-cycle_start));save()
                     print(json.dumps(dict(phase=name,raw_endpoint_met=receipt['raw_endpoint_met'],candidate_xyz=receipt['candidate_xyz']),ensure_ascii=False),flush=True)
-                    driver=ServoDriver(bus,profile);driver.hold_existing_torque(supported=True)
+                    # 하중으로 3~6펄스 일정하게 처져 선 관절은 목표를 보정해 붙잡는다(흡착 뒤·HOME 복귀와 같은 방식). 2026-10-26 Pi:
+                    # 트레이 위에서 올라간 뒤 손목이 목표보다 4펄스 아래에 고정돼 한 번 확인으로는 'physical hold unconfirmed'로 멈췄다
+                    driver=ServoDriver(bus,profile);driver.hold_existing_torque(supported=True,attempts=4,settle_s=.4,takeover_attempts=4)
                     return receipt
                 def hover(name,target,**kwargs):
                     nonlocal driver
@@ -441,22 +447,29 @@ def main(argv=None):
                                 commanded=fix;continue
                             correction.update(after_error_m=receipt['candidate_error_m'],after_candidate_xyz=list(receipt['candidate_xyz']));save()
                             return receipt
-                def run_place_job(empty):
+                def run_place_job(empty,prepared=None):
                     start=fresh_xyz()
-                    try:plan_now=build_plan(place_job,place_model,place_catalog,start,args.place_max_tilt_deg,args.pick_tilt_deg)
+                    try:plan_now=prepared if prepared is not None else build_plan(place_job,place_model,place_catalog,start,args.place_max_tilt_deg,args.pick_tilt_deg)
                     except ValueError as exc:raise ValueError('place plan refused from the measured pose: '+str(exc))
                     result['place_plan']=plan_now;save()
                     print(json.dumps(dict(place_plan=plan_now),ensure_ascii=False,default=float),flush=True)
                     def release(expected):
                         result['release']=release_at_slot(driver,geometry,zeros,expected,pump)
                         result['pump_commands'].extend([dict(command='vent_place',pressure_verified=False),dict(command='stop_place',pressure_verified=False)])
+                    def exit_path(transition):
+                        # 놓은 뒤 물러나기→빠지기→세우기를 한 번에(사용자 지시 2026-10-26). 칸 안은 place_rate의 절반, 벽 위는 place_rate.
+                        # 준비 단계 거부(ExitPathRefused)는 run_place가 받아 예전처럼 단계별로 간다
+                        rate=max(13.,min(150.,args.place_rate/2.))
+                        return stage('place_exit',transition['target'],lambda record:run_place_exit_trial(
+                            driver,geometry,zeros,transition,supported=True,rate=rate,
+                            min_contact_z=args.min_contact_z_mm/1000.,tracking_limit=32,record=record,cancelled=is_cancelled))
                     report=run_place(plan_now,hover=hover,fresh_xyz=fresh_xyz,release=release,cancelled=is_cancelled,empty_run=empty,skip_final_untilt=not (args.no_return_home or args.skip_home_after_place),
-                                     max_carry_s=args.place_max_s,record=lambda event:result.setdefault('place_steps',[]).append(event))
+                                     max_carry_s=args.place_max_s,record=lambda event:result.setdefault('place_steps',[]).append(event),exit_path=exit_path)
                     result['place']=report;save()
                 initial=driver._snapshot(torque=1);xyz=fresh_xyz()
                 home_delta=max(abs(initial['joints'][n]['position']-home[n]) for n in home)
-                at_home=home_delta<=8
-                if not at_home and home_delta<=48:       # 복귀 허용(40)보다 넓게: 2026-10-19 wrist가 36펄스 모자라 선 채로 거부됐다
+                at_home=home_delta<=guard_mode.pulses(8)
+                if not at_home and home_delta<=guard_mode.pulses(48):       # 복귀 허용(40)보다 넓게: 2026-10-19 wrist가 36펄스 모자라 선 채로 거부됐다
                     # The unpowered arm can settle a few pulses from recorded HOME.
                     # Use it only when every modeled link endpoint still clears the table.
                     joints={j.name:j for j in profile.joints}
@@ -613,7 +626,7 @@ def main(argv=None):
                 for attempt in range(4 if args.center_cup else 1):
                     tag='' if attempt==0 else str(attempt)
                     xyz=fresh_xyz();gap=xyz[2]-known[2]
-                    if not .015<gap<.060:raise ValueError('unexpected descent start/reference gap')
+                    if not .015<gap<guard_mode.length(.060):raise ValueError('unexpected descent start/reference gap')
                     # 접근(P32)에서 팔이 하중으로 목표보다 약 3~4mm 짧게 멈춘다. 하강은 수직이어야 하므로(가로 3mm 이내)
                     # 남은 가로 오차 중 2.8mm까지는 하강하면서 목표 xy 쪽으로 고친다(2026-10-16: "대체로 짧다").
                     dx,dy=known[0]-xyz[0],known[1]-xyz[1];norm=math.hypot(dx,dy);k=min(1.,.0028/norm) if norm>1e-9 else 0.
@@ -621,7 +634,7 @@ def main(argv=None):
                     result.setdefault('descent_xy_correction_mm',[]).append([round(dx*k*1000,2),round(dy*k*1000,2),round(norm*1000,2)])
                     hover('descent'+tag,(*descent_xy,known[2]),measured_gap_m=gap)  # one move, slow only at the end
                     contact=fresh_xyz()
-                    if abs(contact[2]-known[2])>.003:raise ValueError('contact candidate differs from confirmed plane')
+                    if abs(contact[2]-known[2])>guard_mode.length(.003):raise ValueError('contact candidate differs from confirmed plane')
                     result['contact_candidate_xyz']=contact
                     if not args.center_cup:
                         if args.evidence_photos or (place_job is not None and args.hold_check!='off'):capture('before_suction',astra=False)
@@ -641,7 +654,7 @@ def main(argv=None):
                     print(json.dumps(dict(centering=history[-1]),ensure_ascii=False,default=float),flush=True)
                     if max(abs(err[0]),abs(err[1]))<=2.5:break
                     if not recenter_allowed(attempt,direction_changed):
-                        if max(abs(err[0]),abs(err[1]))>5:raise ValueError('cup could not be centred on the box (>5 mm)')
+                        if max(abs(err[0]),abs(err[1]))>5*guard_mode.scale():raise ValueError('cup could not be centred on the box (>5 mm)')
                         break
                     if is_cancelled():raise InterruptedError('cancelled while centring')
                     delta=correction_xy(contact[:2],err,tuple(signs))
@@ -669,7 +682,42 @@ def main(argv=None):
                 # 흡착이 붙으며 컵이 눌려 팔이 목표에서 6~7펄스 밀려 서면 lift20 출발 검사("hold is not settled")가 막는다(2026-10-19 실물).
                 # 움직임이 끝난 뒤 지금 자리를 새 목표로 다시 인계한다(이동 없음, 5mm·가드는 그대로).
                 driver=ServoDriver(bus,profile);driver.hold_existing_torque(supported=True,attempts=4,settle_s=.4,takeover_attempts=4)
-                post_pick_rise(hover,fresh_xyz,contact,placing=place_job is not None and bool(args.held_rate))
+                lift_place_plan=None
+                # Plan from the measured pickup pose before lifting. Only an
+                # unchanged vertical raise/tilt prefix can become one stream.
+                if place_job is not None and args.held_rate and not args.pick_tilt_deg and args.hold_check=='off':
+                    lift_start=fresh_xyz()
+                    if math.hypot(lift_start[0]-contact[0],lift_start[1]-contact[1])>guard_mode.length(.003):
+                        raise ValueError('post-pick lift start moved more than 3 mm sideways')
+                    try:
+                        lift_plan=build_plan(place_job,place_model,place_catalog,(*lift_start[:2],.070),args.place_max_tilt_deg,args.pick_tilt_deg)
+                        entry=place_catalog['objects'].get(place_job['label'])
+                        # Keep the existing held-object clearance before adding
+                        # tilt; distant/unknown geometry uses the legacy path.
+                        if entry is None:
+                            transition=None
+                        else:
+                            obstacle_top=max((o['height_mm'] for o in place_job['obstacles']),default=0.)
+                            tilt_start_z=max(.070,(obstacle_top+entry['height_mm']+place_catalog['cup_contact_offset_mm']+OBSTACLE_MARGIN_MM)/1000.)
+                            transition=build_lift_transition(lift_plan,lift_start,tilt_start_z=tilt_start_z)
+                    except ValueError as exc:
+                        transition=None
+                        result['lift_to_carry_fallback']=str(exc)
+                    if transition is not None:
+                        try:
+                            stage('lift_to_carry',transition['target'],lambda record:run_pick_to_carry_trial(
+                                driver,geometry,zeros,transition,supported=True,rate=args.held_rate,
+                                min_contact_z=args.min_contact_z_mm/1000.,tracking_limit=32,record=record,cancelled=is_cancelled))
+                        except LiftPathRefused as exc:
+                            # This exception is emitted only before execution.
+                            result['lift_to_carry_fallback']=str(exc)
+                        else:
+                            lift_place_plan=transition['remaining_plan']
+                            result['lift_to_carry']=dict(target=transition['target'],pitch_rad=transition['pitch_rad'],
+                                tilt_start_z=transition['tilt_start_z'],waypoints=transition['waypoints'],intermediate_holds=0,source_plan=lift_plan,physically_validated=False)
+                    save()
+                if lift_place_plan is None:
+                    post_pick_rise(hover,fresh_xyz,contact,placing=place_job is not None and bool(args.held_rate))
                 result['time_to_lift_s']=time.monotonic()-cycle_start
                 lifted=fresh_xyz();result['lifted_candidate_xyz']=lifted;result['candidate_lift_m']=lifted[2]-contact[2]
                 if args.evidence_photos:capture('lifted')
@@ -684,7 +732,7 @@ def main(argv=None):
                         result['pick_failed']='object not held after lift; place skipped'
                         raise InterruptedError(result['pick_failed'])
                 if place_job is not None:
-                    run_place_job(False)
+                    run_place_job(False,prepared=lift_place_plan)
                 else:
                     current=fresh_xyz();return_gap=current[2]-contact[2]
                     hover('return',contact,measured_gap_m=return_gap)

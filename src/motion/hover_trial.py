@@ -75,7 +75,7 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
     lift=None if lift_m is None else finite_vector((lift_m,),1,'lift')[0]
     if type(continuous_lift) is not bool:
         raise ValueError('continuous lift flag must be boolean')
-    if lift is not None and (gap is not None or not .005<=lift<=(2*LIFT_MAX_M if continuous_lift else LIFT_MAX_M)):
+    if lift is not None and (gap is not None or not .005<=lift<=guard_mode.length(2*LIFT_MAX_M if continuous_lift else LIFT_MAX_M)):
         raise ValueError('small lift only, without a descent gap')
     if continuous_lift and (lift is None or len(via)!=1 or box_top_m is not None or fast_travel or native
                             or batch_slow_joints or tail is not None or not quick_ticks or pulses_per_step!=2
@@ -98,7 +98,7 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
     minimum_height=max(.070,box_top+.030) if box_top is not None else min_contact_z if gap is not None or lift is not None else .080
     if not minimum_height<=target[2]<=.250 or not .1<=math.hypot(*target[:2])<=HOVER_RADIUS_MAX_M:
         raise ValueError('measured descent target outside safety envelope' if gap is not None else 'high hover only; contact/low target prohibited')
-    if abs(math.hypot(*target[:2])-measured)>.030:
+    if abs(math.hypot(*target[:2])-measured)>guard_mode.length(.030):
         raise ValueError('camera target and independent radial measurement disagree')
     if set(zeros)!=set(NAMES) or tuple(driver.names)!=NAMES:
         raise ValueError('four explicit zeros and original joint order required')
@@ -123,15 +123,15 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
                 raise ValueError('small lift must be vertical and match declared distance')
             if continuous_lift:
                 midpoint=finite_vector(via[0],3,'continuous lift midpoint')
-                if (math.hypot(midpoint[0]-initial_xyz[0],midpoint[1]-initial_xyz[1])>.003
-                        or not .005<=midpoint[2]-initial_xyz[2]<=LIFT_MAX_M
-                        or not .005<=target[2]-midpoint[2]<=LIFT_MAX_M):
+                if (math.hypot(midpoint[0]-initial_xyz[0],midpoint[1]-initial_xyz[1])>guard_mode.length(.003)
+                        or not .005<=midpoint[2]-initial_xyz[2]<=guard_mode.length(LIFT_MAX_M)
+                        or not .005<=target[2]-midpoint[2]<=guard_mode.length(LIFT_MAX_M)):
                     raise ValueError('continuous lift segment must be vertical and 5-36 mm')
         if gap is not None:
             initial_xyz=geometry.forward(angles(origin))[:3]
             drop=initial_xyz[2]-target[2]
-            if (not 0<drop<=min(.055,gap+.002)+1e-9
-                    or math.hypot(initial_xyz[0]-target[0],initial_xyz[1]-target[1])>.003):
+            if (not 0<drop<=min(guard_mode.length(.055),gap+guard_mode.length(.002))+1e-9
+                    or math.hypot(initial_xyz[0]-target[0],initial_xyz[1]-target[1])>guard_mode.length(.003)):
                 raise ValueError('measured descent must be vertical and within gap plus 2mm')
         for n in NAMES:
             if not joints[n].raw_min+16<=origin[n]<=joints[n].raw_max-16:
@@ -261,9 +261,9 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
         # 각 구간 1600펄스, 전체 3200펄스 이내이며 전 경로를 사전·실시간 검사한다.
         if (native or period_s is None or batch_pulses or waypoints is None
                 or len(waypoints)!=2 or waypoints[-1]!=goal or seg_pulses!=[pulses_per_step]*2
-                or steps>3200 or any(not 0<end-begin<=1600 for begin,end in zip([0]+seg_ends,seg_ends))):
+                or steps>guard_mode.pulses(3200) or any(not 0<end-begin<=guard_mode.pulses(1600) for begin,end in zip([0]+seg_ends,seg_ends))):
             raise ValueError('invalid continuous HOME segment envelope')
-    elif steps>1600:raise ValueError('hover change exceeds trial envelope')
+    elif steps>guard_mode.pulses(1600):raise ValueError('hover change exceeds trial envelope')
     slow={n for n in NAMES if batch_pulses and abs(goal[n]-origin[n])*4<steps}
     for raw in path:
         if any(not joints[n].raw_min+16<=raw[n]<=joints[n].raw_max-16 for n in NAMES):
@@ -271,6 +271,11 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
         clear(raw)
     record({'phase':'prepared','origin':origin,'goal':goal,'steps':steps,'target':target,'pulses_per_step':pulses_per_step,
             'continuous_segments':continuous_segments})
+    if period_s is not None and speed==40 and not native:
+        # 고정 틱 느린 이동(하강·들기·칸 안 내리기·트레이 위 올리기): 서보 속도 레지스터 40은 관절을 초당 약 56~60펄스에
+        # 묶어 경로(150펄스/초)를 못 따라가고 관절마다 뒤처짐이 달라 수직 경로가 휘었다(2026-10-26 Pi 실측, 뒤처짐 최대 93펄스).
+        # 레지스터를 경로 속도(틱당 펄스/틱 시간)에 맞춘다. 경로 자체(가속 제한·틱)는 그대로다
+        speed=max(40,int(math.ceil((max(seg_pulses) if seg_pulses else pulses_per_step)/period_s)))
     last=dict(origin);start=driver.clock();next_tick=None;streaming=False;light=False
     # 보상된 hold는 목표를 위치보다 offset만큼 덜 써 둔다: 아직 안 쓴 관절의 목표 읽기 기준은 origin-offset.
     goal_read={n:origin[n]-_hold_offset(driver,n) for n in NAMES}
@@ -284,7 +289,7 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
     try:
         if native and steps:
             _native_motion(driver,joints,clear,path,seg_ends,waypoints,[p/period_s for p in seg_pulses],record,cancelled,
-                           max(tracking_limit,NATIVE_DEVIATION_LIMIT),NATIVE_POLL_S)
+                           guard_mode.pulses(max(tracking_limit,NATIVE_DEVIATION_LIMIT)),NATIVE_POLL_S)
             indices=[]
         elif period_s is not None and steps:
             caps=None
@@ -323,7 +328,7 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
             if any(abs(feedback['joints'][n]['goal']-goal_read[n])>2 for n in NAMES):
                 raise ValueError('unexpected hover goal readback')
             # Match the original trajectory tracking envelope; endpoint remains 2.
-            if any(abs(actual[n]-last[n])>(guard_mode.RELAXED_TRACKING_PULSES if guard_mode.relaxed() else tracking_limit) for n in NAMES):
+            if any(abs(actual[n]-last[n])>(guard_mode.RELAXED_TRACKING_PULSES if guard_mode.relaxed() else guard_mode.pulses(tracking_limit)) for n in NAMES):
                 raise ValueError('hover tracking error')
             clear(actual)
             if index!=indices[-1]:
@@ -349,12 +354,12 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
             actual={n:feedback['joints'][n]['position'] for n in NAMES}
             record({'phase':'endpoint','goal':goal,'actual':actual})
             clear(actual)
-            settled=all(abs(actual[n]-goal[n])<=2 for n in NAMES)
+            settled=all(abs(actual[n]-goal[n])<=guard_mode.pulses(2) for n in NAMES)
             still=previous is not None and all(abs(actual[n]-previous[n])<=1 for n in NAMES)
             stable=stable+1 if settled and still else 0
             # Parked off the 2-pulse contract (stiction): waiting longer will not change it.
             idle=idle+1 if still and not settled else 0
-            if idle>=8:raise ValueError('hover endpoint not reached')
+            if idle>=guard_mode.pulses(8):raise ValueError('hover endpoint not reached')
             if stable>=3:
                 end_stream()
                 driver.hold() # retain position, do not switch torque

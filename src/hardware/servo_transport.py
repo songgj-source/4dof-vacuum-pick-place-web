@@ -190,7 +190,7 @@ class ServoTransport:
             if (row['model']!=777 or self._read_register(j.motor_id,18,1)!=12
                     or self._read_register(j.motor_id,82,1)!=50):
                 raise ValueError('verified STS3215 fine speed units required')
-            if abs(row['goal']-row['position'])>STREAM_START_TOLERANCE or abs(targets[j.name]-row['position'])>STREAM_START_TOLERANCE:
+            if abs(row['goal']-row['position'])>guard_mode.pulses(STREAM_START_TOLERANCE) or abs(targets[j.name]-row['position'])>guard_mode.pulses(STREAM_START_TOLERANCE):
                 # 진단용: 어느 관절이 어떤 값 때문에 거부됐는지(2026-10-19 복귀가 이 검사에서 간헐적으로 멈췄다). 기준은 그대로다.
                 raise ValueError(f"current neutral goals required before streaming: {j.name} goal {row['goal']} position {row['position']} start {targets[j.name]}")
         payload=[]

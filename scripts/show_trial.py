@@ -21,7 +21,8 @@ from sort_menu import bold, dim, green, red, yellow, cyan, width, phase_label   
 
 NAMES = {'white_box': '흰 상자', 'red_cube': '빨간 정육면체', 'tape_measure': '줄자', 'unknown': '새 물체'}
 LEGS = {'raise': '올리기', 'raise_clear': '바닥에서 올리기', 'raise_low': '낮게 올리기', 'pull_in': '끌어당기기', 'tilt': '기울이기',
-        'carry': '운반', 'lower': '내리기', 'retreat': '후퇴', 'retire': '트레이에서 빠지기', 'untilt': '손목 세우기'}
+        'carry': '운반', 'lower': '내리기', 'retreat': '후퇴', 'retire': '트레이에서 빠지기', 'untilt': '손목 세우기',
+        'place_exit': '후퇴·빠지기·세우기 한 번에'}
 # 메뉴 진행 표시(sort_menu.phase_label)는 나눠진 이동을 한 문구로 묶는다. 기록에서는 몇 가지를 더 나눠 보여 준다.
 PHASE_EXTRA = (('approach_b', '물체에 접근(2차)'), ('lift_to_clear', '들어 올리기(70mm까지)'), ('lift20', '들어 올리기(20mm)'))
 
