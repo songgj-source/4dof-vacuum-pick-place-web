@@ -137,7 +137,8 @@ class ApiTests(ApiBase):
         _, body = self.call('POST', '/return_home')
         task = self.wait_done(body['task_id'])
         self.assertEqual((task['state'], self.holds), ('done', 1))               # 현재 자세를 붙잡고
-        self.assertEqual(self.commands, [arm_api.HOME_CMD])                      # 복귀 명령 실행
+        self.assertEqual(self.commands, [arm_api.HOME_ANY_START_CMD])            # 복귀 명령 실행(사용자 요청: 시작 구간 검사만 건너뜀)
+        self.assertEqual(arm_api.HOME_ANY_START_CMD, [*arm_api.HOME_CMD, '--any-start'])
         self.assertEqual(task['phases'][0]['phase'], 'torque_on')
 
     def test_home_return_from_elsewhere_stops_if_the_hold_fails(self):

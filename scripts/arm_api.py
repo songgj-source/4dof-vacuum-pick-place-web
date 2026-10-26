@@ -63,6 +63,9 @@ def refresh_objects():
 
 refresh_objects()
 HOME_CMD = [menu.PY, str(menu.ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32']
+# 사용자가 직접 누른 'HOME 복귀'(웹 버튼·API·음성)는 시작 구간 검사만 건너뛴다(2026-10-26: 손으로 옮긴 팔이 반경 0.4mm 차이로 거부됨).
+# 경로·책상·링크 높이 검사와 추종 가드는 return_home.py에 그대로 남는다. 작업 중 자동 복귀(HOME_CMD)는 예전 기준 그대로.
+HOME_ANY_START_CMD = [*HOME_CMD, '--any-start']
 # 토크가 꺼진 팔이 HOME(또는 접힌 HOME 근처)에 놓여 있으면 작업 전에 토크를 켜서 그 자리에 붙잡는다(메뉴에서 Enter로 하던 일). ARM_AUTO_TORQUE=0이면 예전처럼 거부한다.
 HOLD_CMD = [menu.PY, str(menu.ROOT / 'scripts' / 'servo_driver.py'), 'hold', '--arm', '--supported', '--duration', '1.5']
 AUTO_TORQUE = os.environ.get('ARM_AUTO_TORQUE', '1') != '0'
@@ -558,7 +561,7 @@ class Arm:
         if refused:
             return refused
         if skill == 'return_home':
-            code, summary, _ = self._run(task_id, HOME_CMD)
+            code, summary, _ = self._run(task_id, HOME_ANY_START_CMD)
             done = menu.home_return_succeeded(code, summary)
             error = None if done else menu.home_failure_reason(code, summary)
             return dict(ok=done, reason=error, reason_code=None if done else reason_code(error))
