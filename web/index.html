@@ -72,6 +72,13 @@
   .sub { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 0 4px 64px; }
   .sub[hidden] { display: none; }
   select { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); min-width: 140px; }
+  .sub input { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); min-width: 0; }
+  .sub input#reg-name { flex: 1 1 160px; } .sub input#reg-height { width: 150px; }
+  .sub .hint { flex-basis: 100%; color: var(--sub); font-size: 13px; margin: 0; }
+  .reglist { flex-basis: 100%; list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; }
+  .reglist li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); font-size: 13.5px; }
+  .reglist li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .reglist li.empty { color: var(--faint); border-style: dashed; }
   @media (max-width: 900px) { .sub { padding-left: 0; } .sub select { flex: 1; } }
 
   /* 진행 상태 */
@@ -225,11 +232,8 @@
     <section class="card">
       <h2>메뉴</h2>
       <ol class="menu">
-        <li><button class="item" data-run="white_box"><i>1</i>흰 상자 → 1번 칸<code class="api">POST /api/menu/1</code></button></li>
-        <li><button class="item" data-run="red_cube"><i>2</i>빨간 정육면체 → 2번 칸<code class="api">POST /api/menu/2</code></button></li>
-        <li><button class="item" data-run="tape_measure"><i>3</i>줄자 → 3번 칸<code class="api">POST /api/menu/3</code></button></li>
-        <li><button class="item" data-run="all"><i>4</i>세 물체 모두 넣기<small>흰 상자 → 정육면체 → 줄자 순서</small><code class="api">POST /api/menu/4</code></button></li>
-        <li><button class="item" data-open="pick5"><i>5</i>물체와 칸을 골라서 넣기<code class="api">POST /api/menu/5</code></button>
+        <li><button class="item" data-run="all"><i>1</i>책상 정리하기<small id="tidy-order">흰 상자 → 정육면체 → 줄자 → 등록 물체 순서</small><code class="api">POST /api/menu/4</code></button></li>
+        <li><button class="item" data-open="pick5"><i>2</i>물체와 칸을 골라서 넣기<code class="api">POST /api/menu/5</code></button>
           <div class="sub" id="pick5" hidden>
             <select id="obj" aria-label="물체">
               <option value="" selected disabled>물체 선택</option>
@@ -238,13 +242,22 @@
             <select id="slot" aria-label="칸"><option value="" selected disabled>칸 선택</option><option value="1">1번 칸</option><option value="2">2번 칸</option><option value="3">3번 칸</option></select>
             <button id="custom" class="primary">넣기</button>
           </div></li>
-        <li><button class="item" data-run="home"><i>6</i>HOME으로 복귀<code class="api">POST /api/menu/6</code></button></li>
-        <li><button class="item" data-open="pick7"><i>7</i>unknown 자동 집기<small>시작 후 새 물체 하나 놓기</small><code class="api">POST /api/menu/7</code></button>
+        <li><button class="item" data-run="home"><i>3</i>HOME으로 복귀<code class="api">POST /api/menu/6</code></button></li>
+        <li><button class="item" data-open="pick7"><i>4</i>unknown 자동 집기<small>시작 후 새 물체 하나 놓기</small><code class="api">POST /api/menu/7</code></button>
           <div class="sub" id="pick7" hidden>
             <select id="uslot" aria-label="놓을 칸"><option value="" selected disabled>놓을 칸 선택</option><option value="1">1번 칸</option><option value="2">2번 칸</option><option value="3">3번 칸</option></select>
             <button id="unknown" class="primary">시작</button>
           </div></li>
-        <li><button class="item" data-open="drive8"><i>8</i>장소로 이동<small>팀 주행 지도의 장소, 라벨 자리·방향에 정확히</small><code class="api">POST /robot_arm drive</code></button>
+        <li><button class="item" data-open="reg"><i>5</i>물체 등록·삭제<small>책상에 물체 하나를 두고 사진으로 색·크기·높이 저장</small><code class="api">POST /api/objects</code></button>
+          <div class="sub" id="reg" hidden>
+            <input id="reg-name" maxlength="20" placeholder="물체 이름 (예: 파란 컵)" autocomplete="off" aria-label="물체 이름">
+            <select id="reg-slot" aria-label="넣을 칸"><option value="" selected disabled>넣을 칸</option><option value="1">1번 칸</option><option value="2">2번 칸</option><option value="3">3번 칸</option></select>
+            <input id="reg-height" type="number" min="20" max="45" step="0.5" placeholder="높이 mm (선택)" aria-label="자로 잰 높이 mm">
+            <button id="reg-go" class="primary">등록</button>
+            <p class="hint">책상(트레이 밖)에 등록할 물체 하나만 두고 누르세요. 로봇은 움직이지 않습니다. 높이 20~45mm, 가로·세로 20~85mm. 높이를 비우면 사진으로 잽니다(약 ±3mm).</p>
+            <ul class="reglist" id="reg-list"><li class="empty">불러오는 중…</li></ul>
+          </div></li>
+        <li><button class="item" data-open="drive8"><i>6</i>장소로 이동<small>팀 주행 지도의 장소, 라벨 자리·방향에 정확히</small><code class="api">POST /robot_arm drive</code></button>
           <div class="sub" id="drive8" hidden>
             <select id="place" aria-label="장소"><option value="" selected disabled>장소 불러오는 중…</option></select>
             <button id="drive-go" class="primary">이동</button>
@@ -280,12 +293,13 @@
 const NAMES = { white_box: '흰 상자', red_cube: '빨간 정육면체', tape_measure: '줄자', unknown: '새 물체' };
 const DEFAULT_SLOT = { white_box: 1, red_cube: 2, tape_measure: 3, unknown: 3 };
 const REASONS = {
-  object_not_found: '물체를 찾지 못했습니다.', slot_too_small: '칸에 들어갈 여유가 부족합니다.', unreachable: '팔이 닿지 않는 위치입니다.',
+  object_not_found: '물체를 찾지 못했습니다.', slot_too_small: '칸에 들어갈 여유가 부족합니다.', unreachable: '팔이 닿지 않는 위치입니다.', path_blocked: '운반 경로에 다른 물체가 있어 부딪힐 수 있습니다.',
   tray_not_found: '트레이를 찾지 못했습니다.', tray_moved: '트레이 위치가 바뀌었습니다.', torque_off: '서보 토크가 꺼져 있습니다. 팔을 받치고 토크를 켜 주세요.',
   arm_state_unknown: '서보가 응답하지 않습니다. 서보 전원(어댑터 전원)과 서보 선을 확인하세요.', base_moving: '차가 움직이는 중이라 팔을 움직이지 않았습니다.', arm_not_folded: '팔이 HOME으로 접혀 있지 않아 주행하지 않았습니다. 먼저 HOME으로 복귀하세요.', label_not_found: '지도에 그 장소가 없습니다.', base_unavailable: '주행 서버(map_web)에 연결할 수 없습니다.', wall_failed: '도착했지만 벽에 맞춰 붙지 못했습니다.', drive_failed: '목적지로 가지 못했습니다.', device_absent: '장치 연결을 확인하세요.', cancelled: '정지했습니다.',
   busy: '다른 작업을 실행 중입니다.', camera_busy: '카메라 창이 켜져 있습니다.', object_moved: '물체 위치·크기가 바뀌었습니다.',
   unauthorized: '토큰이 필요합니다. 오른쪽 위 설정에서 입력하세요.',
-  multiple_new_objects: '새 물체는 하나씩 놓아 주세요.', not_held: '물체가 집히지 않았습니다.'
+  multiple_new_objects: '새 물체는 하나씩 놓아 주세요.', not_held: '물체가 집히지 않았습니다.',
+  register_failed: '등록하지 못했습니다.', camera_error: '카메라로 찍지 못했습니다.'
 };
 const $ = (id) => document.getElementById(id);
 let token = ''; try { token = localStorage.getItem('armToken') || ''; } catch (e) {}
@@ -304,7 +318,7 @@ function describe(cmd) {
   if (cmd.action === 'drive') return `${cmd.label}으로 이동합니다(라벨을 만든 자리와 방향에 맞춰 섭니다).`;
   if (cmd.action === 'return_home') return 'HOME으로 복귀합니다.';
   if (cmd.action === 'pick_all' && cmd.objects) return `${cmd.objects.map((o) => NAMES[o]).join(', ')}를 차례로 넣습니다(책상 정리).`;
-  if (cmd.action === 'pick_all') return '세 물체를 모두 넣습니다(흰 상자 → 정육면체 → 줄자, 책상에 없는 것은 건너뜀).';
+  if (cmd.action === 'pick_all') return `책상을 정리합니다(${tidyOrder()} 순서, 책상에 없는 것은 건너뜀).`;
   if (cmd.object === 'unknown') return `새 물체를 ${cmd.slot}번 칸에 넣습니다. 시작 후 안내가 나오면 물체를 놓아 주세요.`;
   const slot = cmd.slot || DEFAULT_SLOT[cmd.object];
   return `${NAMES[cmd.object] || cmd.object}를 ${slot}번 칸에 넣습니다.`;
@@ -338,8 +352,7 @@ async function run(cmd, { askFirst = true } = {}) {
 
 // ---------- 메뉴 ----------
 const RUN = {
-  white_box: { menu: 1, action: 'pick_place', object: 'white_box' }, red_cube: { menu: 2, action: 'pick_place', object: 'red_cube' },
-  tape_measure: { menu: 3, action: 'pick_place', object: 'tape_measure' }, all: { menu: 4, action: 'pick_all' }, home: { menu: 6, action: 'return_home' },
+  all: { menu: 4, action: 'pick_all' }, home: { menu: 6, action: 'return_home' },
 };
 document.querySelectorAll('.item[data-run]').forEach((b) => b.onclick = () => run(RUN[b.dataset.run]));
 document.querySelectorAll('.item[data-open]').forEach((b) => b.onclick = () => {
@@ -350,7 +363,55 @@ $('custom').onclick = () => {
   if (!$('obj').value || !$('slot').value) { say('sys', '물체와 칸을 고르세요.'); return; }
   run({ menu: 5, action: 'pick_place', object: $('obj').value, slot: Number($('slot').value) });
 };
-// 8번: 팀 주행 서버의 장소 라벨을 불러와 고른다(GET /api/base). 팔이 HOME으로 접혀 있어야 서버가 받는다.
+// 결과는 대화창에 남긴다(진행 상태 칸은 작업 중에만 쓰인다).
+// 5번: 물체 등록·삭제. 목록(GET /api/objects)으로 이름표·기본 칸·물체 선택 칸도 함께 맞춘다.
+let OBJECT_ORDER = ['white_box', 'red_cube', 'tape_measure'];
+function tidyOrder() { return OBJECT_ORDER.map((o) => NAMES[o] || o).join(' → '); }
+async function loadObjects() {
+  let res; try { res = await api('GET', '/api/objects'); } catch (e) { return; }
+  if (res.status !== 200) { $('reg-list').innerHTML = '<li class="empty">목록을 불러오지 못했습니다(토큰 확인).</li>'; return; }
+  const rows = res.data.objects || [];
+  for (const key of Object.keys(NAMES)) if (key.startsWith('custom_')) { delete NAMES[key]; delete DEFAULT_SLOT[key]; }
+  for (const o of rows) { NAMES[o.label] = o.name; DEFAULT_SLOT[o.label] = o.slot; }
+  OBJECT_ORDER = rows.map((o) => o.label);
+  $('tidy-order').textContent = tidyOrder() + ' 순서';
+  const sel = $('obj'), keep = sel.value;
+  sel.innerHTML = '<option value="" selected disabled>물체 선택</option>';
+  for (const o of rows) { const opt = document.createElement('option'); opt.value = o.label; opt.textContent = o.name + (o.registered ? ' (등록)' : ''); sel.appendChild(opt); }
+  if (rows.some((o) => o.label === keep)) sel.value = keep;
+  const list = $('reg-list'); list.innerHTML = '';
+  const mine = rows.filter((o) => o.registered);
+  if (!mine.length) list.innerHTML = '<li class="empty">등록한 물체가 없습니다.</li>';
+  for (const o of mine) {
+    const li = document.createElement('li'), text = document.createElement('span'), del = document.createElement('button');
+    text.textContent = o.summary; del.type = 'button'; del.textContent = '삭제';
+    del.onclick = async () => {
+      if (!window.confirm(`'${o.name}' 등록을 지울까요?`)) return;
+      const { status, data } = await api('POST', '/api/objects/delete', { label: o.label });
+      bubble('bot', status === 200 ? data.message : '삭제하지 못했습니다: ' + (data.reason || status));
+      loadObjects();
+    };
+    li.append(text, del); list.appendChild(li);
+  }
+  const full = mine.length >= (res.data.max_registered || 3);
+  $('reg-go').disabled = full;
+  $('reg-go').title = full ? `등록은 최대 ${res.data.max_registered || 3}개입니다. 먼저 하나를 삭제하세요.` : '';
+}
+$('reg-go').onclick = async () => {
+  const name = $('reg-name').value.trim(), slot = Number($('reg-slot').value), height = $('reg-height').value;
+  if (!name || !slot) { bubble('bot', '물체 이름과 넣을 칸을 정하세요.'); return; }
+  const body = { name, slot }; if (height !== '') body.height_mm = Number(height);
+  $('reg-go').disabled = true; bubble('bot', `${name} 등록 중(사진을 찍습니다, 로봇은 움직이지 않습니다)…`);
+  try {
+    const { status, data } = await api('POST', '/api/objects', body);
+    bubble('bot', status === 201 ? data.message + ' 흡착은 확인하지 않았으니 처음 몇 번은 지켜봐 주세요.' : '등록하지 못했습니다: ' + (data.reason || REASONS[data.reason_code] || status));
+    if (status === 201) { $('reg-name').value = ''; $('reg-height').value = ''; }
+  } finally { loadObjects(); }
+};
+document.querySelector('[data-open="reg"]').addEventListener('click', () => { if (!$('reg').hidden) loadObjects(); });
+document.querySelector('[data-open="pick5"]').addEventListener('click', () => { if (!$('pick5').hidden) loadObjects(); });
+loadObjects();
+// 6번: 팀 주행 서버의 장소 라벨을 불러와 고른다(GET /api/base). 팔이 HOME으로 접혀 있어야 서버가 받는다.
 async function loadPlaces() {
   const sel = $('place');
   const { status, data } = await api('GET', '/api/base');
@@ -382,7 +443,7 @@ $('drive-go').onclick = () => {
   if (!$('place').value) { say('sys', '장소를 고르세요.'); return; }
   run({ action: 'drive', label: $('place').value });
 };
-$('unknown').onclick = () => {          // 메뉴 7번과 같이 칸을 꼭 고르게 한다(기본값 없음)
+$('unknown').onclick = () => {          // 메뉴 4번(unknown)과 같이 칸을 꼭 고르게 한다(기본값 없음)
   if (!$('uslot').value) { say('sys', '놓을 칸을 고르세요.'); return; }
   run({ menu: 7, action: 'pick_place', object: 'unknown', slot: Number($('uslot').value) });
 };
@@ -416,8 +477,7 @@ function toRun(p) {          // 제안을 메뉴 번호 실행으로 바꾼다(�
   if (p.action === 'return_home') return RUN.home;
   if (p.action === 'pick_all') return p.objects ? { ...RUN.all, objects: p.objects } : RUN.all;
   if (p.object === 'unknown') return { menu: 7, action: 'pick_place', object: 'unknown', slot: p.slot };
-  if (p.slot == null) return RUN[p.object];
-  return { menu: 5, action: 'pick_place', object: p.object, slot: p.slot };
+  return { menu: 5, action: 'pick_place', object: p.object, slot: p.slot ?? DEFAULT_SLOT[p.object] };
 }
 let pending = null;          // 대답을 기다리는 제안 { cmd, button }
 async function startPending(askFirst) {
@@ -692,7 +752,7 @@ function render(task, s) {
   announce(task);
   if (task.result && task.result.awaiting_choice) showDeskQuestion(task);
   const label = task.skill === 'drive' ? `${task.params.label} 이동${['inspect', 'tidy'].includes(task.params.then) ? ' 후 정리' : ''}`
-              : task.skill === 'return_home' ? 'HOME 복귀' : task.skill === 'pick_all' ? (task.params && task.params.objects ? '책상 정리 (' + task.params.objects.map((o) => NAMES[o]).join(', ') + ')' : '세 물체 모두 넣기')
+              : task.skill === 'return_home' ? 'HOME 복귀' : task.skill === 'pick_all' ? (task.params && task.params.objects ? '책상 정리 (' + task.params.objects.map((o) => NAMES[o]).join(', ') + ')' : '책상 정리하기')
               : `${NAMES[task.params.object] || ''} → ${task.params.slot}번 칸`;
   $('now').textContent = task.state === 'running' ? (task.phase_label || '카메라로 위치를 찾는 중') : label;
   $('meta').textContent = task.state === 'running' ? `${label} · ${Math.round(s.elapsed_s || 0)}초` : `${label} · ${task.seconds}초`;
@@ -705,7 +765,8 @@ function render(task, s) {
   if (task.result) {
     const r = task.result, div = document.createElement('div');
     div.className = 'result ' + (r.ok ? 'ok' : 'bad');
-    div.textContent = r.ok ? '완료' + (r.note ? ' (' + r.note + ')' : '') : '실패: ' + (REASONS[r.reason_code] || '알 수 없는 오류') + (r.reason ? ' (' + r.reason + ')' : '');
+    div.textContent = r.ok ? '완료' + (r.note ? ' (' + r.note + ')' : '') : '실패: ' + (REASONS[r.reason_code] || '알 수 없는 오류') + (r.reason ? ' (' + r.reason + ')' : '')
+      + (r.unregistered_left && r.reason_code !== 'object_not_found' ? ` / 등록 안 된 물체 ${r.unregistered_left}개는 그대로 뒀습니다.` : '');
     box.appendChild(div);
     (r.warnings || []).forEach((w) => { const d = document.createElement('div'); d.className = 'warn'; d.textContent = '주의: ' + w; box.appendChild(d); });
     if (task.id === watched && lastShown !== task.id) { lastShown = task.id; say('sys', ''); }   // 끝나면 '…하는 중' 안내를 지운다(결과는 위 칸)

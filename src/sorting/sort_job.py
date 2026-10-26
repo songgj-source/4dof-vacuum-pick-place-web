@@ -103,7 +103,9 @@ _ORDINAL = {'첫': 1, '한': 1, '두': 2, '세': 3, '셋': 3}
 def parse_command(text):
     """"빨간 상자 3번 칸에 넣어줘" → ('red_cube', 3). 칸이 없으면 None(기본 규칙). 애매하면 ValueError."""
     lowered = text.lower()
-    found = [label for label, words in _OBJECT_WORDS if any(w in lowered for w in words)]
+    from perception import object_registry
+    found = object_registry.mentioned(lowered)         # 등록 물체 이름이 먼저(기본 물체 별칭과 겹치는 이름은 등록할 때 막는다)
+    found += [label for label, words in _OBJECT_WORDS if any(w in lowered for w in words)]
     if len(found) != 1:
         raise ValueError('could not tell which object to move' if not found else f'more than one object in the command: {found}')
     numbers = {int(n) for n in re.findall(r'(\d+)\s*번', lowered)}

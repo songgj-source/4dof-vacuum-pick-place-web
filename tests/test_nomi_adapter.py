@@ -66,7 +66,7 @@ class NomiAdapterTests(ApiBase):
         r = out['r']
         self.assertTrue(r['success'])
         self.assertTrue(r['data']['completion_verified'])
-        self.assertEqual(r['data']['menu'], 3)
+        self.assertEqual(r['data']['menu'], 5)             # 기본 칸도 메뉴 5번에 칸을 붙여 보낸다
         self.assertIn('물체에 접근', r['data']['phases'])
         self.assertIn('--object', self.commands[0])
 
@@ -122,7 +122,8 @@ class NomiAdapterTests(ApiBase):
         with patch.object(arm_api, 'grab_astra', return_value=frame), patch.object(arm_api, 'describe_scene', return_value=scene):
             r = self.skill.look_at_table()
         self.assertTrue(r['success'])
-        self.assertEqual(r['data']['available_menus'], [2, 5, 6])
+        self.assertNotIn('available_menus', r['data'])
+        self.assertNotIn('메뉴', r['message'])
         self.assertNotIn('image_jpeg_base64', r['data'])
         self.assertIn('빨간 정육면체', r['message'])
 
@@ -133,6 +134,54 @@ class NomiAdapterTests(ApiBase):
         self.assertFalse(specs['look_at_table'].requires_completion_evidence)
         self.release.set()
         self.assertTrue(specs['sort_object'].executor({'object_name': 'tape_measure'})['success'])
+
+    def test_stop_right_before_call_is_kept(self):
+        self.skill.stop()
+        r = self.skill.sort_object('흰 상자')
+        self.assertEqual(r['data']['error_code'], 'cancelled')
+        self.assertFalse(r['data']['request_dispatched'])
+        self.assertEqual(self.commands, [])
+
+    def test_lost_task_does_not_wait(self):
+        started = time.monotonic()
+        with patch.object(self.arm, 'task', return_value=None):
+            r = self.skill._run(6, None, 'HOME 복귀', timeout=30)
+        self.assertEqual(r['data']['error_code'], 'task_lost')
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertTrue(self.interrupted.is_set())
+
+    def test_connection_lost_sends_stop(self):
+        self.skill.POLL_ERRORS_MAX = 3
+        real = self.skill._request
+        def flaky(method, path, body=None, timeout=None):
+            if method == 'GET' and path.startswith('/tasks/'):
+                return None, {'reason_code': 'connection_error'}
+            return real(method, path, body, timeout)
+        with patch.object(self.skill, '_request', side_effect=flaky):
+            r = self.skill._run(6, None, 'HOME 복귀', timeout=30)
+        self.assertEqual(r['data']['error_code'], 'connection_lost')
+        self.assertTrue(self.interrupted.is_set())
+
+    def test_tidy_selected_objects_and_summary(self):
+        self.release.set()
+        r = self.skill.sort_all_objects('줄자, 흰 상자')
+        self.assertTrue(r['success'])
+        self.assertIn('책상 정리하기', r['message'])
+        self.assertIn('넣음: 흰 상자, 줄자', r['message'])
+        self.assertTrue(self.skill.sort_all_objects('컵')['data']['needs_clarification'])
+
+    def test_cancelled_reason_is_korean(self):
+        thread, out = self.run_async(self.skill.sort_all_objects)      # 책상 정리하기는 정지 이유를 영어 'cancelled'로 돌려준다
+        time.sleep(.1)
+        self.arm.stop()                                      # 웹에서 누른 정지(Skill의 stop()이 아니다)
+        thread.join(5)
+        self.assertIn('중간에 정지했습니다', out['r']['message'])
+        self.assertNotIn('cancelled', out['r']['message'])
+
+    def test_status_message_words(self):
+        r = self.skill.get_arm_status()
+        self.assertTrue(r['success'])
+        self.assertNotIn('None', r['message'])
 
 
 if __name__ == '__main__':

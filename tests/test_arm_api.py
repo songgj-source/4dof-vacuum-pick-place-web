@@ -322,6 +322,19 @@ class ApiTests(ApiBase):
         self.assertEqual([('--skip-home-after-place' in c, '--start-above-tray' in c) for c in picks], [(True, False), (False, True)])
         self.assertEqual(task['items'][-1], dict(object='red_cube', ok=None, skipped=True, reason_code='object_not_found'))
 
+    def test_pick_all_reports_unregistered_objects_left(self):
+        self.release.set()
+        planned = (0, dict(ok=True, unregistered_left=1), 1.)            # 계획이 등록 안 된 물체 1개를 장애물로 봤다
+        missing = (1, dict(ok=False, attempts=[], reason='planning failed: red_cube not found in the current camera view'), 1.)
+        self.run_with([planned, missing, planned, (0, dict(ok=True), 1.), (0, dict(ok=True), 1.)])
+        _, body = self.call('POST', '/pick_all')
+        task = self.wait_done(body['task_id'])
+        self.assertTrue(task['result']['ok'])
+        self.assertEqual(task['result']['unregistered_left'], 1)
+        self.assertIn('등록 안 된 물체 1개는 그대로 뒀습니다', task['result']['note'])
+        self.assertIn('빨간 정육면체', task['result']['note'])
+        self.assertEqual([self.label_of(c) for c in self.commands[3:]], ['white_box', 'tape_measure'])   # 등록 안 된 물체는 집지 않는다
+
     def test_pick_all_with_nothing_on_the_desk(self):
         self.release.set()
         missing = lambda label: (1, dict(ok=False, attempts=[], reason=f'planning failed: {label} not found in the current camera view'), 1.)

@@ -16,8 +16,34 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'src'))
+from perception import object_registry      # noqa: E402  등록 물체(config/registered_objects.json)
+
 PY = sys.executable
-OBJECTS = {'1': ('white_box', '흰 상자', 1), '2': ('red_cube', '빨간 정육면체', 2), '3': ('tape_measure', '줄자', 3)}
+BUILTIN_OBJECTS = (('white_box', '흰 상자', 1), ('red_cube', '빨간 정육면체', 2), ('tape_measure', '줄자', 3))
+OBJECTS = {}            # 번호 → (label, 이름, 기본 칸). 기본 세 물체 + 등록 물체(refresh_objects가 채운다)
+OBJECTS_DEFAULT = {}    # label → 기본 칸
+
+
+def registered():
+    """등록 물체 목록. 등록 파일이 깨졌으면 알리고 기본 세 물체만 쓴다(메뉴가 멈추지 않게)."""
+    try:
+        return object_registry.load(ROOT)
+    except ValueError as exc:
+        print(f'   등록 물체 파일을 읽지 못해 기본 세 물체만 씁니다: {exc}')
+        return []
+
+
+def refresh_objects():
+    """OBJECTS·OBJECTS_DEFAULT를 지금 등록 상태로 그 자리에서 고친다(arm_api도 같은 dict를 본다)."""
+    rows = list(BUILTIN_OBJECTS) + [(e['label'], e['name'], int(e['slot'])) for e in registered()]
+    OBJECTS.clear()
+    OBJECTS.update({str(number): row for number, row in enumerate(rows, 1)})
+    OBJECTS_DEFAULT.clear()
+    OBJECTS_DEFAULT.update({label: slot for label, _, slot in rows})
+
+
+refresh_objects()
 COMMON = ['--acknowledge-unverified-suction', '--accept-uncertain-tray', '--tray-numbering', 'far_from_base',
           '--attempts', '1', '--approach-tracking-limit', '100',
           '--place-rate', '300', '--place-pulses-per-step', '4', '--home-rate', '300']   # 속도 우선(사용자 2026-10-19): 운반·후퇴 300, 틱당 4펄스(13.4ms), 자동 HOME 복귀 300
@@ -58,13 +84,11 @@ def plain(text):
 TRAY_FRAME = (ROOT / 'output' / 'tray_frames' / 'latest_rgb.png', ROOT / 'output' / 'tray_frames' / 'latest_depth.npy')
 HOME_COMMAND = [PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32']
 ITEMS = [
-    ('1', '흰 상자 → 1번 칸'),
-    ('2', '빨간 정육면체 → 2번 칸'),
-    ('3', '줄자 → 3번 칸'),
-    ('4', '세 물체 모두 넣기 (흰 상자 → 정육면체 → 줄자 순서)'),
-    ('5', '물체와 칸을 골라서 넣기'),
-    ('6', 'HOME으로 복귀'),
-    ('7', 'unknown 자동 집기 (시작 후 새 물체 하나 놓기)'),
+    ('1', '책상 정리하기 (흰 상자 → 정육면체 → 줄자 → 등록 물체 순서)'),
+    ('2', '물체와 칸을 골라서 넣기'),
+    ('3', 'HOME으로 복귀'),
+    ('4', 'unknown 자동 집기 (시작 후 새 물체 하나 놓기)'),
+    ('5', '물체 등록·삭제'),
     ('0', '나가기'),
 ]
 
@@ -74,7 +98,8 @@ def brief_message(message):
     """화면 문구만 번역·요약하고 내부 판정용 원문은 유지한다."""
     text = str(message or '')
     names = {'white_box': ('흰 상자가', '흰 상자'), 'red_cube': ('빨간 정육면체가', '빨간 정육면체'),
-             'tape_measure': ('줄자가', '줄자'), 'unknown': ('unknown이', 'unknown')}
+             'tape_measure': ('줄자가', '줄자'), 'unknown': ('unknown이', 'unknown'),
+             **{label: (f'{name}이(가)', name) for label, name, _ in OBJECTS.values() if label.startswith('custom_')}}
     subject, name = next((pair for label, pair in names.items() if label in text), ('물체가', '물체'))
     # 경계 수치를 원문에서 읽어 실제 적용 중인 제한과 같은 값을 안내한다.
     radius = re.search(r'radius ([0-9.]+) m outside (?:the )?([0-9.]+)-([0-9.]+) m pick envelope', text)
@@ -88,6 +113,8 @@ def brief_message(message):
         ('more than one unknown', '새 물체는 한 번에 하나씩 놓으세요.'),
         ('unknown not found', '새 물체를 찾지 못했습니다. 물체를 놓고 다시 실행하세요.'),
         ('the tray moved since the stored frame', '트레이 위치 변경: 빈 트레이로 계획을 한 번 실행해 다시 저장하세요.'),
+        ('could collide with unregistered', '운반 경로에 등록 안 된 물체가 있어 부딪힐 수 있습니다. 그 물체를 팔·트레이 사이에서 치워 주세요.'),
+        ('could collide with', f'운반 경로에 다른 물체가 있어 부딪힐 수 있습니다. {name} 주변을 비워 주세요.'),
         ('not reachable', '도달 불가: 물체·트레이 위치를 조정하세요.'),
         ('tray not found', '트레이 인식 실패: 트레이 전체가 보이게 하세요.'),
         ('not found in the current camera view', f'{name} 인식 실패: 카메라 화면을 확인하세요.'),
@@ -143,12 +170,16 @@ def phase_label(name):
         ('unknown_verify', 'unknown 위치·크기 재확인'),
         ('unknown_wait', '기준 저장 완료: 새 물체 하나를 놓고 손을 빼세요(90초 대기)'),
         ('unknown_detected', 'unknown 감지 완료'),
-        ('place_raise_clear', '놓은 뒤 상승'), ('place_raise', '운반 높이로 상승'),
-        ('place_carry', '트레이로 운반'), ('place_lower', '칸으로 내리기'),
+        # 놓기(place_exec 단계 이름). raise_clear·raise_low는 물체를 든 직후(놓기 전) 단계다. 더 긴 이름을 먼저 둔다.
+        ('place_raise_clear', '든 채 바닥에서 올리기'), ('place_raise_low', '든 채 낮게 올리기'), ('place_raise', '운반 높이로 상승'),
+        ('place_pull_in', '로봇 쪽으로 끌어오기'), ('place_carry', '트레이로 운반'), ('place_lower', '칸으로 내리기'),
         ('place_retire', '트레이에서 후퇴'), ('place_retreat', '놓은 뒤 후퇴'),
-        ('place_tilt', '손목 각도 조정'), ('approach', '물체에 접근'),
+        ('place_untilt', '손목 다시 세우기'), ('place_tilt', '손목 각도 조정'),
+        # 집기(pick_auto 단계 이름)
+        ('reset_raise', '시작 전 올리기'), ('chain_raise', '트레이 위에서 올리기'), ('approach', '물체에 접근'),
         ('descent', '흡착 위치로 하강'), ('lift', '물체 들어 올리기'),
-        ('home', 'HOME 복귀'), ('return', '복귀'),
+        ('rise_', '컵 중심 다시 맞추기'), ('recenter', '컵 중심 다시 맞추기'), ('redescend', '컵 중심 다시 맞추기'),
+        ('probe', '시험 이동'), ('home', 'HOME 복귀'), ('return', '복귀'),
     )
     return next((label for prefix, label in labels if name.startswith(prefix)), name)
 
@@ -381,7 +412,7 @@ CHAIN_PLAN_DIR = ROOT / 'output' / 'chain_plans'
 
 
 def chain_flags(index, count):
-    """세 물체 연속 정리(메뉴 4): 마지막이 아니면 놓은 뒤 HOME을 건너뛰고(트레이 위에서 공구를 세운 채 선다),
+    """책상 정리하기(메뉴 1): 마지막이 아니면 놓은 뒤 HOME을 건너뛰고(트레이 위에서 공구를 세운 채 선다),
     첫 물체가 아니면 그 자리에서 바로 다음 물체로 간다. 조건이 안 맞으면 pick_auto가 기존 HOME 리셋을 쓴다."""
     flags = []
     if index < count - 1:
@@ -411,24 +442,32 @@ def chain_refused(result):
 
 
 def run_all_chained(run=None, on_item=None, stopped=lambda: False, labels=None):
-    """메뉴 4: 흰 상자 → 정육면체 → 줄자(labels를 주면 그 물체만, 같은 순서). (1) HOME에서 차례로 계획(사진)
+    """메뉴 1(책상 정리하기): 흰 상자 → 정육면체 → 줄자(labels를 주면 그 물체만, 같은 순서). (1) HOME에서 차례로 계획(사진)
     (2) 놓은 뒤 HOME을 거치지 않고 다음 물체. 계획에서 물체가 안 보이면 멈추지 않고 건너뛴다(책상에 있는 것만 정리).
+    등록 안 된 물체는 집지 않고 장애물로만 피한다(계획마다 센 수 중 가장 큰 값을 unregistered_left로 알린다).
     run(cmd) → (code, result, seconds). on_item(label, stage)은 진행 표시용.
-    돌려주는 것: dict(ok, failed_label, reason, items, skipped)."""
+    돌려주는 것: dict(ok, failed_label, reason, items, skipped, unregistered_left)."""
+    left = [0]
+
+    def done(**outcome):
+        return dict(outcome, items=items, skipped=skipped, unregistered_left=left[0])
+
     run = run or run_streaming
     stamp = time.strftime('%Y%m%dT%H%M%S')
-    order = [label for label, _, _ in OBJECTS.values()]
+    refresh_objects()
+    order = [label for label, _, _ in OBJECTS.values()]          # 기본 세 물체 → 등록 물체(등록 순서)
     wanted = [label for label in order if labels is None or label in labels]
     planned, items, skipped = [], [], []
     for label in wanted:
         if stopped():
-            return dict(ok=False, failed_label=label, reason='cancelled', items=items, skipped=skipped)
+            return done(ok=False, failed_label=label, reason='cancelled')
         if on_item:
             on_item(label, 'plan')
         path = CHAIN_PLAN_DIR / f'{stamp}_{label}.json'
         code, result, _ = run(plan_command(label, path))
         if code != 0 and 'the tray moved since the stored frame' in str((result or {}).get('reason', '')) and all(p.exists() for p in TRAY_FRAME):
             code, result, _ = run(plan_command(label, path, use_tray_frame=False))
+        left[0] = max(left[0], int((result or {}).get('unregistered_left') or 0))
         if code != 0 or not (result or {}).get('ok'):
             reason = str((result or {}).get('reason') or f'종료 코드 {code}')
             if 'not found in the current camera view' in reason:
@@ -441,10 +480,10 @@ def run_all_chained(run=None, on_item=None, stopped=lambda: False, labels=None):
     else:
         failed = None
     if not planned and failed is None:
-        return dict(ok=False, failed_label=None, reason='nothing to sort: no registered object found on the desk', items=items, skipped=skipped)
+        return done(ok=False, failed_label=None, reason='nothing to sort: no registered object found on the desk')
     for index, (label, path) in enumerate(planned):
         if stopped():
-            return dict(ok=False, failed_label=label, reason='cancelled', items=items, skipped=skipped)
+            return done(ok=False, failed_label=label, reason='cancelled')
         if on_item:
             on_item(label, 'pick')
         since = time.time()
@@ -459,10 +498,15 @@ def run_all_chained(run=None, on_item=None, stopped=lambda: False, labels=None):
         if not ok:
             if not stopped() and (index > 0 or newest_placed_without_error(since)):
                 run(HOME_COMMAND)        # 앞 물체를 놓고 트레이 위에 서 있었거나, 넣은 뒤 복귀만 실패했을 수 있다: 기존 HOME 복귀(이미 HOME이면 움직이지 않는다)
-            return dict(ok=False, failed_label=label, reason=items[-1]['reason'], items=items, skipped=skipped)
+            return done(ok=False, failed_label=label, reason=items[-1]['reason'])
     if failed:
-        return dict(ok=False, failed_label=failed['label'], reason=failed['reason'], items=items, skipped=skipped)
-    return dict(ok=True, failed_label=None, reason=None, items=items, skipped=skipped)
+        return done(ok=False, failed_label=failed['label'], reason=failed['reason'])
+    return done(ok=True, failed_label=None, reason=None)
+
+
+def unregistered_note(count):
+    """책상 정리하기 뒤 남겨 둔 등록 안 된 물체 안내. 없으면 ''."""
+    return f'등록 안 된 물체 {count}개는 그대로 뒀습니다(4번 unknown 자동 집기로 따로 넣을 수 있습니다).' if count else ''
 
 
 def newest_placed_without_error(since):
@@ -495,14 +539,83 @@ def put_one(label, name, slot):
     return run_one(label, slot=slot if slot != OBJECTS_DEFAULT[label] else None)
 
 
-OBJECTS_DEFAULT = {label: slot for label, _, slot in OBJECTS.values()}
-
 
 def choose_object():
+    refresh_objects()
     for key, (label, name, slot) in OBJECTS.items():
         print(f'   {cyan(key)}  {name}')
     pick = input(bold('물체 번호 ') + cyan('▸ ')).strip()
     return OBJECTS.get(pick)
+
+
+def last_json(text):
+    """출력에서 마지막 JSON 줄(스크립트 결과). 없으면 None."""
+    for line in reversed(text.strip().splitlines()):
+        if line.startswith('{'):
+            try:
+                return json.loads(line)
+            except ValueError:
+                return None
+    return None
+
+
+def register_menu():
+    """메뉴 5: 물체 등록·삭제. 위 카메라로 사진 한 장만 찍는다(로봇은 움직이지 않는다)."""
+    entries = registered()
+    print('\n' + bold('▌ 물체 등록·삭제'))
+    for entry in entries:
+        print('   ' + object_registry.describe(entry))
+    if not entries:
+        print(dim('   등록한 물체가 없습니다.'))
+    left = object_registry.MAX_REGISTERED - len(entries)
+    pick = input(f'   a=새로 등록(남은 자리 {left}개) / d=삭제 / Enter=돌아가기 ' + cyan('▸ ')).strip().lower()
+    if pick in ('a', 'ㅁ'):
+        name = input('   물체 이름: ').strip()
+        try:
+            object_registry.check_name(name, ROOT)
+        except ValueError as exc:
+            print(red('   ' + str(exc)))
+            return
+        slot = input('   넣을 칸(1~3): ').strip()
+        if slot not in ('1', '2', '3'):
+            print('   칸은 1~3 중 선택하세요.')
+            return
+        height = input('   자로 잰 높이 mm(Enter=사진으로 잼, 약 ±3mm): ').strip()
+        try:
+            height = float(height) if height else None
+        except ValueError:
+            print('   높이는 숫자(mm)로 입력하세요.')
+            return
+        if live_view_running():
+            print('카메라 창(live_view.py)이 켜져 있습니다. 닫은 뒤 다시 실행하세요(카메라 충돌).')
+            return
+        input(f'   책상(트레이 밖)에 {name} 하나만 두고 손을 뺀 뒤 Enter를 누르세요. 로봇은 움직이지 않습니다. ')
+        cmd = [PY, str(ROOT / 'scripts' / 'register_object.py'), '--name', name, '--slot', slot]
+        if height is not None:
+            cmd += ['--height-mm', repr(height)]
+    elif pick in ('d', 'ㅇ') and entries:
+        for number, entry in enumerate(entries, 1):
+            print(f'   {cyan(number)}  {entry["name"]}')
+        chosen = input('   지울 번호: ').strip()
+        if not chosen.isdigit() or not 1 <= int(chosen) <= len(entries):
+            print('   목록에 있는 번호를 입력하세요.')
+            return
+        entry = entries[int(chosen) - 1]
+        if input(f"   '{entry['name']}' 등록을 지울까요? [y=지우기 / Enter=취소] ").strip().lower() not in ('y', 'yes', 'ㅛ'):
+            print('   취소했습니다.')
+            return
+        cmd = [PY, str(ROOT / 'scripts' / 'register_object.py'), '--remove', entry['label']]
+    else:
+        return
+    done = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    result = last_json(done.stdout) or {}
+    if result.get('ok'):
+        print('   ' + green(result.get('message', '완료')))
+        if result.get('object'):
+            print(dim('   이제 2번(골라서 넣기)과 1번(책상 정리하기)에서 집습니다. 흡착은 확인하지 않았으니 처음 몇 번은 지켜봐 주세요.'))
+    else:
+        print('   ' + red('실패: ' + (result.get('reason') or (done.stderr.strip().splitlines() or [f'종료 코드 {done.returncode}'])[-1])))
+    refresh_objects()
 
 
 def menu():
@@ -517,11 +630,10 @@ def main():
         if choice == '0':
             print(dim('종료합니다.'))
             return
-        if choice in OBJECTS:
-            label, name, slot = OBJECTS[choice]
-            put_one(label, name, slot)
-        elif choice == '4':
-            if not confirm('세 물체를 차례로 넣습니다(흰 상자 → 정육면체 → 줄자). 팔 주변을 비웠는지 확인하세요.'):
+        if choice == '1':
+            refresh_objects()
+            order = ' → '.join(name for _, name, _ in OBJECTS.values())
+            if not confirm(f'책상을 정리합니다({order} 순서, 책상에 없는 것은 건너뜀). 팔 주변을 비웠는지 확인하세요.'):
                 print('취소했습니다.')
                 continue
             if not ensure_torque():
@@ -539,8 +651,10 @@ def main():
             elif outcome['failed_label'] is None:
                 print('책상에서 등록된 물체를 찾지 못했습니다. 넣을 것이 없습니다.')
             else:
-                print(f"{names[outcome['failed_label']][0]}에서 멈췄습니다: {brief_message(outcome['reason'])}. 나머지는 실행하지 않았습니다. 원인을 확인한 뒤 해당 번호를 다시 고르세요.")
-        elif choice == '5':
+                print(f"{names[outcome['failed_label']][0]}에서 멈췄습니다: {brief_message(outcome['reason'])}. 나머지는 실행하지 않았습니다. 원인을 확인한 뒤 다시 실행하세요.")
+            if unregistered_note(outcome['unregistered_left']):
+                print('   ' + yellow(unregistered_note(outcome['unregistered_left'])))
+        elif choice == '2':
             picked = choose_object()
             slot = input('칸 번호(1~3): ').strip()
             if picked is None or slot not in ('1', '2', '3'):
@@ -548,7 +662,7 @@ def main():
                 continue
             label, name, _ = picked
             put_one(label, name, int(slot))
-        elif choice == '7':
+        elif choice == '4':
             slot = input('unknown을 놓을 칸(1~3): ').strip()
             if slot not in ('1', '2', '3'):
                 print('칸은 1~3 중 선택하세요.')
@@ -564,11 +678,13 @@ def main():
                 report(code, result, seconds)
             else:
                 print('   계획 확인 완료(이동 없음).' if code == 0 else '   실패: ' + brief_message((result or {}).get('reason') or f'종료 코드 {code}'))
-        elif choice == '6':
+        elif choice == '3':
             if confirm('HOME으로 복귀합니다.') and ensure_torque():
                 code, result, seconds = run_streaming([PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32'])
                 done = bool(result and result.get('home_return_complete'))
                 print('   → 복귀 완료' if done else f'   → 복귀 결과: {brief_message((result or {}).get("error")) or code}')
+        elif choice == '5':
+            register_menu()
         else:
             print('목록에 있는 번호를 입력하세요.')
 

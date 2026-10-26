@@ -99,7 +99,8 @@ def main(argv=None):
             return 1
         args.plan_out.parent.mkdir(parents=True, exist_ok=True)
         args.plan_out.write_text(json.dumps(plan, ensure_ascii=False, default=float))
-        print(json.dumps(dict(ok=True, attempts=[], reason=None, plan_file=str(args.plan_out)), ensure_ascii=False))
+        print(json.dumps(dict(ok=True, attempts=[], reason=None, plan_file=str(args.plan_out),
+                              unregistered_left=plan.get('unregistered_left', 0)), ensure_ascii=False))
         return 0
 
     def pick_once(plan):

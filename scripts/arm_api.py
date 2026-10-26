@@ -47,7 +47,21 @@ from hardware import devices
 
 OBJECTS = {'white_box': 1, 'red_cube': 2, 'tape_measure': 3, 'unknown': 3}      # 물체 → 기본 칸
 NAMES = {'white_box': '흰 상자', 'red_cube': '빨간 정육면체', 'tape_measure': '줄자', 'unknown': 'unknown'}
-ALL_ORDER = ('white_box', 'red_cube', 'tape_measure')     # 메뉴 4번: 흰 상자 → 정육면체 → 줄자, 각자 기본 칸
+ALL_ORDER = ['white_box', 'red_cube', 'tape_measure']     # 메뉴 4번: 흰 상자 → 정육면체 → 줄자 → 등록 물체, 각자 기본 칸
+from perception import object_registry     # noqa: E402  등록 물체(config/registered_objects.json)
+
+
+def refresh_objects():
+    """OBJECTS·NAMES·ALL_ORDER(와 메뉴의 표)에서 등록 물체 몫을 지금 등록 상태로 고친다. 요청마다 부른다(파일이 바뀔 때만 다시 읽는다).
+    등록 파일이 깨졌으면 기본 세 물체만 쓴다."""
+    try:
+        object_registry.sync_tables(NAMES, OBJECTS, ALL_ORDER, menu.ROOT)
+    except ValueError:
+        object_registry.sync_tables(NAMES, OBJECTS, ALL_ORDER, Path('/nonexistent'))
+    menu.refresh_objects()
+
+
+refresh_objects()
 HOME_CMD = [menu.PY, str(menu.ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32']
 # 토크가 꺼진 팔이 HOME(또는 접힌 HOME 근처)에 놓여 있으면 작업 전에 토크를 켜서 그 자리에 붙잡는다(메뉴에서 Enter로 하던 일). ARM_AUTO_TORQUE=0이면 예전처럼 거부한다.
 HOLD_CMD = [menu.PY, str(menu.ROOT / 'scripts' / 'servo_driver.py'), 'hold', '--arm', '--supported', '--duration', '1.5']
@@ -117,6 +131,7 @@ REASON_CODES = (
     ('tray not found', 'tray_not_found'),
     ('the tray moved since the stored frame', 'tray_moved'),
     ('여유가 부족', 'slot_too_small'), ('보다 큽니다', 'slot_too_small'),
+    ('could collide with', 'path_blocked'),
     ('not reachable', 'unreachable'), ('pick envelope', 'unreachable'), ('carry height', 'unreachable'),
     ('위치·크기가 바뀌었', 'object_moved'),
     ('not held', 'not_held'),
@@ -264,6 +279,61 @@ class Arm:
         finally:
             with self.lock:
                 self.capturing = False
+
+    def objects(self):
+        """넣을 수 있는 물체 목록(기본 세 물체 + 등록 물체)."""
+        refresh_objects()
+        rows = [dict(label=label, name=NAMES[label], slot=OBJECTS[label], registered=False) for label in object_registry.BUILTIN]
+        for entry in object_registry.load(menu.ROOT):
+            rows.append(dict(label=entry['label'], name=entry['name'], slot=entry['slot'], registered=True,
+                             height_mm=entry['height_mm'], height_source=entry.get('height_source'), footprint_mm=entry['footprint_mm'],
+                             top_flat=entry['top_flat'], registered_at=entry.get('registered_at'), summary=object_registry.describe(entry)))
+        return dict(ok=True, objects=rows, max_registered=object_registry.MAX_REGISTERED)
+
+    def register_object(self, params, grab=None):
+        """물체 등록: 위 카메라로 한 장 찍어 책상(트레이 밖)의 물체 하나를 등록한다. 로봇은 움직이지 않는다. (HTTP 상태, 응답)"""
+        name, slot, height = params.get('name'), params.get('slot'), params.get('height_mm')
+        if isinstance(slot, bool) or slot not in (1, 2, 3):
+            return 400, dict(ok=False, reason_code='bad_request', reason='slot은 1, 2, 3 중 하나여야 합니다.')
+        if height is not None and (isinstance(height, bool) or not isinstance(height, (int, float))):
+            return 400, dict(ok=False, reason_code='bad_request', reason='height_mm는 숫자(mm)여야 합니다.')
+        try:
+            object_registry.check_name(name, menu.ROOT)          # 사진을 찍기 전에 이름부터
+        except ValueError as exc:
+            return 400, dict(ok=False, reason_code='bad_request', reason=str(exc))
+        with self.lock:
+            if self.current or self.capturing:
+                return 409, dict(ok=False, reason_code='busy', reason='로봇 작업 중에는 등록할 수 없습니다(카메라를 같이 못 씀).')
+            self.capturing = True
+        try:
+            if menu.live_view_running():
+                return 409, dict(ok=False, reason_code='camera_busy', reason='카메라 창(live_view.py)이 켜져 있습니다.')
+            bgr, depth = (grab or grab_astra)()
+            entry = object_registry.register(bgr, depth, name, slot, height, menu.ROOT, tray_slots(bgr, depth))
+        except ValueError as exc:
+            return 422, dict(ok=False, reason_code='register_failed', reason=str(exc))
+        except Exception as exc:
+            self.log.add('error', '카메라', f'{type(exc).__name__}: {str(exc)[:300]}', traceback.format_exc())
+            return 500, dict(ok=False, reason_code='camera_error', reason=f'{type(exc).__name__}: {str(exc)[:200]}')
+        finally:
+            with self.lock:
+                self.capturing = False
+        refresh_objects()
+        self.log.add('ok', '등록', '물체 등록: ' + object_registry.describe(entry))
+        return 201, dict(ok=True, object=entry, message='등록했습니다: ' + object_registry.describe(entry))
+
+    def remove_object(self, params):
+        """등록 물체 삭제(이름 또는 label). 작업 중에는 거절한다(책상 정리 순서가 도중에 바뀌지 않게)."""
+        with self.lock:
+            if self.current:
+                return 409, dict(ok=False, reason_code='busy', reason='로봇 작업 중에는 삭제할 수 없습니다.')
+        try:
+            gone = object_registry.remove(str(params.get('label') or params.get('name') or ''), menu.ROOT)
+        except ValueError as exc:
+            return 400, dict(ok=False, reason_code='bad_request', reason=str(exc))
+        refresh_objects()
+        self.log.add('info', '등록', f"물체 등록 삭제: {gone['name']}")
+        return 200, dict(ok=True, removed=gone, message=f"'{gone['name']}' 등록을 지웠습니다.")
 
     def _remember_scene(self, bgr, scene):
         import base64
@@ -505,15 +575,20 @@ class Arm:
             self.tasks[task_id]['items'] = [dict(object=i['object'], ok=i['ok'], reason_code=None if i['ok'] else reason_code(i['reason']))
                                             for i in outcome['items']] + [dict(object=label, ok=None, skipped=True, reason_code='object_not_found')
                                                                           for label in outcome['skipped']]
-        note = ('책상에 없어 건너뜀: ' + ', '.join(NAMES[label] for label in outcome['skipped'])) if outcome['skipped'] else None
+        left = outcome.get('unregistered_left', 0)
+        extra = dict(unregistered_left=left)          # 등록 안 된 물체(집지 않고 피해 간 것) 수
+        note = ' '.join(part for part in (
+            ('책상에 없어 건너뜀: ' + ', '.join(NAMES[label] for label in outcome['skipped'])) if outcome['skipped'] else '',
+            menu.unregistered_note(left)) if part) or None
         if outcome['ok']:
-            return dict(ok=True, reason=None, reason_code=None, note=note)
+            return dict(ok=True, reason=None, reason_code=None, note=note, **extra)
         if outcome['failed_label'] is None:
-            return dict(ok=False, reason='책상에서 등록된 물체를 찾지 못했습니다. 넣을 것이 없습니다.', reason_code='object_not_found')
+            return dict(ok=False, reason='책상에서 등록된 물체를 찾지 못했습니다. 넣을 것이 없습니다.' + (f' {menu.unregistered_note(left)}' if left else ''),
+                        reason_code='object_not_found', **extra)
         if outcome['reason'] == 'cancelled':
-            return dict(ok=False, reason='cancelled', reason_code='cancelled')
+            return dict(ok=False, reason='cancelled', reason_code='cancelled', **extra)
         return dict(ok=False, reason=f"{NAMES[outcome['failed_label']]}에서 멈췄습니다: {menu.brief_message(outcome['reason'])}",
-                    reason_code=reason_code(outcome['reason']))
+                    reason_code=reason_code(outcome['reason']), **extra)
 
     def _pick(self, task_id, label, slot):
         since = time.time()
@@ -732,7 +807,7 @@ def describe_scene(bgr, depth):
     available = [m['id'] for m in MENU[:3] if m['params']['object'] in labels]
     if {'white_box', 'red_cube', 'tape_measure'} <= labels:
         available.append(4)
-    if labels & {'white_box', 'red_cube', 'tape_measure'}:
+    if labels & set(ALL_ORDER):                   # 기본 세 물체 + 등록 물체
         available.append(5)
     available.append(6)
     if any(o['label'] == 'unknown' for o in objects):
@@ -750,10 +825,11 @@ MENU = [
          description='빨간 정육면체를 찾아 집은 뒤 2번 칸에 넣고 HOME으로 돌아온다.'),
     dict(id=3, label='줄자 → 3번 칸', path='/api/menu/3', body=None, skill='pick_place', params=dict(object='tape_measure', slot=3),
          description='줄자를 찾아 집은 뒤 3번 칸에 넣고 HOME으로 돌아온다.'),
-    dict(id=4, label='세 물체 모두 넣기', path='/api/menu/4', body={'objects': '(선택) [white_box, red_cube, tape_measure] 중 일부'}, skill='pick_all', params={},
-         description='흰 상자 → 빨간 정육면체 → 줄자 순서로 각자 기본 칸에 넣는다(책상 정리). HOME에서 미리 계획하고, 놓은 뒤 HOME을 거치지 않고 다음 물체로 간다. '
-                     '책상에 없는 물체는 건너뛴다. objects를 주면 그 물체만. 앞 물체가 실패하면 나머지는 실행하지 않는다.'),
-    dict(id=5, label='물체와 칸을 골라서 넣기', path='/api/menu/5', body={'object': 'white_box | red_cube | tape_measure', 'slot': '1 | 2 | 3'},
+    dict(id=4, label='책상 정리하기', path='/api/menu/4', body={'objects': '(선택) [white_box, red_cube, tape_measure] 중 일부'}, skill='pick_all', params={},
+         description='흰 상자 → 빨간 정육면체 → 줄자 → 등록 물체 순서로 각자 기본 칸에 넣는다(책상 정리). HOME에서 미리 계획하고, 놓은 뒤 HOME을 거치지 않고 다음 물체로 간다. '
+                     '책상에 없는 물체는 건너뛴다. objects를 주면 그 물체만(등록 물체는 custom_N). 등록 안 된 물체는 집지 않고 운반 경로에서 피하며, '
+                     '결과 unregistered_left로 몇 개를 그대로 뒀는지 알린다. 앞 물체가 실패하면 나머지는 실행하지 않는다.'),
+    dict(id=5, label='물체와 칸을 골라서 넣기', path='/api/menu/5', body={'object': 'white_box | red_cube | tape_measure | custom_N(등록 물체)', 'slot': '1 | 2 | 3'},
          skill='pick_place', params=None, description='고른 물체를 고른 칸에 넣는다. object와 slot이 둘 다 필요하다.'),
     dict(id=6, label='HOME으로 복귀', path='/api/menu/6', body=None, skill='return_home', params={},
          description='팔을 접힌 HOME 자세로 돌려놓는다.'),
@@ -766,6 +842,11 @@ COMMON_API = [
     dict(method='POST', path='/api/image', body=None,
          description='get image: 위 카메라로 지금 장면을 한 장 찍는다(약 4초, 로봇은 안 움직임). 응답: image_jpeg_base64(사진), objects(보이는 물체·위치·집기 가능), available_menus(쓸 수 있어 보이는 메뉴 번호). 로봇 작업 중이면 409.'),
     dict(method='GET', path='/api/image/latest.jpg', body=None, description='마지막으로 찍은 사진(JPEG).'),
+    dict(method='GET', path='/api/objects', body=None, description='넣을 수 있는 물체 목록: 기본 세 물체 + 등록 물체(label custom_N, 이름, 기본 칸, 높이·크기).'),
+    dict(method='POST', path='/api/objects', body={'name': '물체 이름(20자 이하)', 'slot': '1 | 2 | 3', 'height_mm': '(선택) 자로 잰 높이 20~45'},
+         description='물체 등록: 책상(트레이 밖)에 그 물체 하나만 두고 부른다. 위 카메라로 한 장 찍어 색·크기·높이를 저장한다(로봇은 안 움직임). '
+                     '등록하면 바로 메뉴 4·5번 대상이 된다(흡착은 확인하지 않음). 물체가 하나가 아니거나 기본 물체와 헷갈리면 422.'),
+    dict(method='POST', path='/api/objects/delete', body={'label': 'custom_N 또는 이름'}, description='등록 물체 삭제. 기본 세 물체는 지울 수 없다. 작업 중이면 409.'),
     dict(method='POST', path='/api/situation', body=None,
          description='상황 파악: 사진을 찍고 책상 상황(reply·speech), 지금 쓸 수 있는 기능(actions, 예시 문장 포함), 기본 제안(proposal: 정리할 물체가 있으면 책상 정리)을 돌려준다. 로봇은 움직이지 않는다. 웹 화면은 열 때와 작업이 끝날 때마다 부른다.'),
     dict(method='POST', path='/api/stt', body='녹음 파일(webm·ogg·wav, 2MB 이하, Content-Type: audio/webm 등)',
@@ -790,8 +871,8 @@ def menu_start(arm, number, params):
     if item is None:
         return 404, dict(ok=False, reason_code='not_found', reason='메뉴는 1~7번입니다.')
     if item['id'] == 5:
-        if params.get('object') not in ('white_box', 'red_cube', 'tape_measure') or params.get('slot') not in (1, 2, 3):
-            return 400, dict(ok=False, reason_code='bad_request', reason='object(white_box, red_cube, tape_measure)와 slot(1~3)이 필요합니다.')
+        if params.get('object') not in ALL_ORDER or isinstance(params.get('slot'), bool) or params.get('slot') not in (1, 2, 3):
+            return 400, dict(ok=False, reason_code='bad_request', reason=f"object({', '.join(ALL_ORDER)})와 slot(1~3)이 필요합니다.")
         chosen = dict(object=params['object'], slot=params['slot'])
     elif item['id'] == 7:
         if isinstance(params.get('slot'), bool) or params.get('slot') not in (1, 2, 3):
@@ -837,7 +918,7 @@ pre {{ background:var(--s); border:1px solid var(--line); border-radius:12px; pa
 curl -X POST -H "Authorization: Bearer 토큰" -H "Content-Type: application/json" -d '{{"object":"red_cube","slot":3}}' {h.escape(base)}/api/menu/5
 curl -H "Authorization: Bearer 토큰" {h.escape(base)}/status</pre>
 <h2>실패 코드 (result.reason_code)</h2>
-<p><code>object_not_found</code> 물체를 찾지 못함 · <code>slot_too_small</code> 칸 여유 부족 · <code>unreachable</code> 팔이 닿지 않음 · <code>tray_not_found</code> 트레이 인식 실패 ·
+<p><code>object_not_found</code> 물체를 찾지 못함 · <code>slot_too_small</code> 칸 여유 부족 · <code>unreachable</code> 팔이 닿지 않음 · <code>path_blocked</code> 운반 경로에 다른 물체 · <code>tray_not_found</code> 트레이 인식 실패 ·
 <code>tray_moved</code> 트레이 위치 변경 · <code>torque_off</code> 서보 토크 꺼짐 · <code>device_absent</code> 장치 연결 확인 · <code>cancelled</code> 정지함 · <code>busy</code> 다른 작업 중 · <code>failed</code> 그 밖의 실패</p>
 <p><a href="/">← 조작 화면으로</a></p>
 </main></body></html>'''
@@ -889,6 +970,7 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
             return data
 
         def do_GET(self):
+            refresh_objects()
             if self.path in ('/', '/index.html'):
                 # 화면 자체는 토큰 없이 연다(화면이 API를 부를 때 토큰을 붙인다).
                 data = WEB.read_bytes()
@@ -913,6 +995,8 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
                 return self._send(401, dict(ok=False, reason_code='unauthorized'))
             if self.path == '/status':
                 return self._send(200, arm.status())
+            if self.path == '/api/objects':
+                return self._send(200, arm.objects())
             if self.path == '/api/base':
                 try:
                     return self._send(200, base_drive.base_state())
@@ -944,6 +1028,7 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
             self._send(404, dict(ok=False, reason_code='not_found'))
 
         def do_POST(self):
+            refresh_objects()
             if not self._authorized():
                 return self._send(401, dict(ok=False, reason_code='unauthorized'))
             if self.path == '/api/stt':                  # 본문이 JSON이 아니라 녹음 파일이다
@@ -994,6 +1079,10 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
             if self.path == '/api/image':
                 status, body = arm.capture()
                 return self._send(status, body)
+            if self.path == '/api/objects':                # 물체 등록(사진 한 장, 로봇은 안 움직인다)
+                return self._send(*arm.register_object(params))
+            if self.path == '/api/objects/delete':
+                return self._send(*arm.remove_object(params))
             if self.path == '/api/situation':          # 사진 → 상황 설명·쓸 수 있는 기능·기본 제안(책상 정리). 로봇은 안 움직인다
                 import arm_llm
                 return self._send(200, dict(ok=True, **arm_llm.situation(arm)))

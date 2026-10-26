@@ -3,6 +3,8 @@
 하드웨어 접근 없음. 책상 평면을 깊이로 적합해 평면 위로 솟은 덩어리를 찾고,
 덩어리의 색 비율로 빨간 정육면체/줄자/흰 상자를 구분한다. 색이 어느 쪽에도 충분히
 맞지 않으면 추측하지 않고 'unknown'으로 둔다.
+등록 물체(object_registry, custom_N)는 덩어리 특징(색·면적·윗면 높이)이 등록 값과 맞으면 그 이름이 우선한다
+(등록할 때 기본 물체와 헷갈리지 않는지 검사한다). 덩어리마다 특징을 signature로 함께 돌려준다.
 
 범위: 한 조명·책상 조건에서 맞춘 후보 분류다. 집기 목표나 물리 검증된 값이 아니다.
 알려진 한계: '흰색'은 채도가 낮고 밝은 덩어리이므로 밝은 무채색 물체와 구분하지 못한다.
@@ -13,6 +15,8 @@ import hashlib
 
 import cv2
 import numpy as np
+
+from perception import object_registry
 
 DISPLAY_NAME = {'red_cube': 'red cube', 'tape_measure': 'tape measure', 'white_box': 'white box', 'unknown': 'unknown'}
 MIN_HEIGHT_MM = 8.
@@ -40,7 +44,7 @@ DEFAULT_INTRINSICS = dict(fx=502.67051745358543, fy=523.437961343891, cx=325.985
 
 
 def display_name(label):
-    return DISPLAY_NAME[label]
+    return DISPLAY_NAME.get(label) or object_registry.names().get(label, label)
 
 
 def _validate(bgr, depth):
@@ -151,6 +155,8 @@ def classify_objects(bgr, depth, intrinsics=None):
     raised = cv2.morphologyEx(raised, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
     count, labels, stats, centers = cv2.connectedComponentsWithStats(raised)
     masks, chromatic = _color_masks(bgr)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    registered = object_registry.load()
     found = []
     for i in range(1, count):
         x, y, w, h, area = (int(s) for s in stats[i])
@@ -159,15 +165,20 @@ def classify_objects(bgr, depth, intrinsics=None):
         blob = labels == i
         label, fractions, count, shares = _name(blob, masks, chromatic, area)
         blob_median = float(np.median(height[blob & (depth > 0)]))
+        top_mm = float(np.percentile(height[blob & (depth > 0)], 90))
+        sig = object_registry.signature(hsv, chromatic, blob & (depth > 0), top_mm, blob_median, area)
+        mine = object_registry.match(sig, registered) if registered else None
+        if mine:
+            label = mine
         if max(w, h) > MAX_OBJECT_PX or blob_median < MIN_NAMED_HEIGHT_MM:
             label = 'unknown'
         # 윗면: 덩어리에서 가장 높은 쪽(상위 10% 높이에서 5mm 이내) 픽셀의 중심. 깊이 좌표 기준이다.
         blob_height = np.where(blob & (depth > 0), height, -np.inf)
-        top = blob & (blob_height >= np.percentile(height[blob & (depth > 0)], 90) - 5.)
+        top = blob & (blob_height >= top_mm - 5.)
         ys, xs = np.nonzero(top)
         found.append(dict(label=label, name=display_name(label), bbox_px=[x, y, w, h], center_px=[float(c) for c in centers[i]],
                           top_center_px=[float(xs.mean()), float(ys.mean())],
-                          area_px=area, height_mm=float(np.median(height[blob])),
-                          color_fractions=fractions, chromatic_pixels=count, chromatic_shares=shares,
+                          area_px=area, height_mm=float(np.median(height[blob])), top_height_mm=top_mm,
+                          color_fractions=fractions, chromatic_pixels=count, chromatic_shares=shares, signature=sig,
                           usable_for_motion=False, physical_validated=False))
     return found

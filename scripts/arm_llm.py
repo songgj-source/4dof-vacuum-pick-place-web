@@ -18,7 +18,7 @@ import urllib.request
 MODEL = os.environ.get('ARM_LLM_MODEL', 'qwen3.5:9b')
 ROBOT_NAME = os.environ.get('ARM_ROBOT_NAME', '자비스')
 MAX_TURNS = 3        # 상태·사진을 본 뒤 답하는 정도까지만 반복한다
-OBJECTS = ('white_box', 'red_cube', 'tape_measure', 'unknown')
+OBJECTS = ['white_box', 'red_cube', 'tape_measure', 'unknown']     # 등록 물체(custom_N)는 _refresh가 unknown 앞에 넣는다
 
 SYSTEM = f"""당신은 SO-101 4축 진공흡착 로봇팔 '{ROBOT_NAME}'입니다. 이름을 물으면 {ROBOT_NAME}라고 답하세요. 사용자의 한국어 요청을 도구 호출로 바꿉니다.
 물체: white_box(흰 상자, 기본 1번 칸), red_cube(빨간 정육면체·큐브, 기본 2번 칸), tape_measure(줄자, 기본 3번 칸),
@@ -46,9 +46,9 @@ TOOLS = [
     _tool('get_arm_status', '로봇팔이 작업 중인지, HOME 자세인지, 진행 단계를 읽는다. 움직이지 않는다.'),
     _tool('sort_object', '물체를 찾아 집어 트레이 칸에 넣고 HOME으로 돌아온다. 칸을 말하지 않으면 기본 칸(흰 상자 1, 정육면체 2, 줄자 3). '
           'unknown(새 물체)은 칸이 꼭 필요하고, 시작한 뒤에 사람이 물체를 놓으므로 작업대에 아직 없어도 된다.',
-          {'object_name': {'type': 'string', 'enum': list(OBJECTS), 'description': '넣을 물체'},
+          {'object_name': {'type': 'string', 'enum': OBJECTS, 'description': '넣을 물체(등록 물체는 custom_N)'},
            'slot': {'type': 'integer', 'enum': [1, 2, 3], 'description': '넣을 칸 번호. 사용자가 말했을 때만'}}, ['object_name']),
-    _tool('sort_all_objects', '흰 상자 → 빨간 정육면체 → 줄자 순서로 세 물체를 모두 기본 칸에 넣는다. 앞 물체가 실패하면 멈춘다.'),
+    _tool('sort_all_objects', '책상 정리하기: 작업대에 있는 물체(흰 상자 → 빨간 정육면체 → 줄자 → 등록 물체 순서)를 각자 기본 칸에 넣는다. 책상에 없는 것은 건너뛰고, 앞 물체가 실패하면 멈춘다.'),
     _tool('arm_return_home', '팔을 접힌 HOME 자세로 돌려놓는다.'),
     _tool('move_to_place', '로봇 차를 지도에 저장된 장소(라벨)를 만든 그 자리·방향으로 정확히 이동시킨다. 팔은 HOME으로 접혀 있어야 한다. '
           '장소 이름은 사용자가 말한 그대로(예: 책상, 휴지통). "책상 가서 정리해"처럼 도착 후 정리까지 시키면 then_tidy를 true로.',
@@ -142,7 +142,29 @@ def normalize(proposal):
     return proposal
 
 
-ORDER = ('white_box', 'red_cube', 'tape_measure')
+ORDER = ['white_box', 'red_cube', 'tape_measure']      # 책상 정리 순서: 기본 세 물체 → 등록 물체
+
+
+def _refresh():
+    """이름표·기본 칸·정리 순서·도구 목록(enum)에 등록 물체를 지금 상태로 반영한다(같은 표를 그 자리에서 고친다)."""
+    from perception import object_registry
+    try:
+        object_registry.sync_tables(NAMES, DEFAULT_SLOT, ORDER)
+    except ValueError:                                  # 등록 파일이 깨졌으면 기본 세 물체만
+        object_registry.sync_tables(NAMES, DEFAULT_SLOT, ORDER, Path('/nonexistent'))
+    OBJECTS[:] = ORDER + ['unknown']
+
+
+def system_prompt():
+    """SYSTEM + 지금 등록된 물체 안내."""
+    _refresh()
+    extra = [label for label in ORDER if label.startswith('custom_')]
+    if not extra:
+        return SYSTEM
+    listed = ', '.join(f'{label}({NAMES[label]}, 기본 {DEFAULT_SLOT[label]}번 칸)' for label in extra)
+    return SYSTEM + f'\n- 사용자가 등록한 물체: {listed}. 이름으로 부르면 그 object_name을 쓰세요. 책상 정리(sort_all_objects)에도 들어갑니다.'
+
+
 WAIT = ' 바로 시작합니다.'      # 2026-10-21 사용자: 실행 여부를 묻지 말고 바로 실행(웹 화면이 제안을 받자마자 실행한다)
 
 
@@ -164,6 +186,7 @@ def situation(arm, scene=None, ask_only=False):
     """대화 시작(그리고 작업이 끝날 때마다): 먼저 사진을 찍어 책상 상황을 알리고, 지금 쓸 수 있는 기능을 예시 문장과 함께 보여 준다.
     정리할 물체가 있으면 기본 행동인 책상 정리를 제안으로 준비한다('실행'이면 시작). 로봇은 움직이지 않는다.
     돌려주는 것: dict(reply, speech(소리로 읽을 짧은 문장), actions(기능 목록), proposal, scene)."""
+    _refresh()
     status, scene = (200, scene) if scene is not None else arm.capture()
     always = ["HOME 복귀: '홈으로 돌아가'", "멈춤: '멈춰'", "다시 보기: '작업대에 뭐 있어?'"]
     if status != 200:
@@ -197,11 +220,12 @@ def situation(arm, scene=None, ask_only=False):
 def tidy(arm):
     """책상 정리(기본 행동): 먼저 위 카메라로 찍어 책상에 있는 등록 물체 중 팔이 닿는 것만 넣는 제안을 만든다.
     돌려주는 것: (제안 또는 None, 답 문장, 찍은 장면 또는 None). 로봇은 움직이지 않는다."""
+    _refresh()
     status, scene = arm.capture()
     if status != 200:
-        # 카메라를 못 쓰면(작업 중 등) 세 물체를 차례로 계획해 보고 책상에 없는 것은 건너뛴다
+        # 카메라를 못 쓰면(작업 중 등) 물체를 차례로 계획해 보고 책상에 없는 것은 건너뛴다
         why = scene.get('reason') or scene.get('reason_code') or status
-        return {'action': 'pick_all'}, f'사진을 찍지 못했습니다({why}). 세 물체를 차례로 확인해 책상에 있는 것만 넣습니다.' + WAIT, None
+        return {'action': 'pick_all'}, f'사진을 찍지 못했습니다({why}). 물체를 차례로 확인해 책상에 있는 것만 넣습니다.' + WAIT, None
     present, far, unknown = read_desk(scene)
     notes = []
     if far:
@@ -233,7 +257,7 @@ def proposal_reply(proposal, notes=()):
                 f"({', '.join(f'{NAMES[label]} {DEFAULT_SLOT[label]}번 칸' for label in found)}).")
         what = ' '.join([what, *notes])
     elif proposal['action'] == 'pick_all':
-        what = '세 물체를 모두 기본 칸에 넣습니다(흰 상자 → 빨간 정육면체 → 줄자).'
+        what = f"책상에 있는 물체를 기본 칸에 넣습니다({' → '.join(NAMES[label] for label in ORDER)})."
     elif proposal['object'] == 'unknown':
         what = f"새 물체를 {proposal['slot']}번 칸에 넣습니다. 시작한 뒤 안내가 나오면 물체를 놓아 주세요."
     else:
@@ -264,8 +288,9 @@ def validate(name, args):
     if name == 'move_to_place' and 'then_tidy' in args and not isinstance(args['then_tidy'], bool):
         return 'then_tidy는 true/false입니다.'
     if name == 'sort_object':
+        _refresh()
         if args.get('object_name') not in OBJECTS:
-            return 'object_name은 white_box, red_cube, tape_measure, unknown 중 하나입니다.'
+            return f"object_name은 {', '.join(OBJECTS)} 중 하나입니다."
         if 'slot' in args and (isinstance(args['slot'], bool) or args['slot'] not in (1, 2, 3)):
             return '칸은 1, 2, 3 중 하나입니다.'
         if args['object_name'] == 'unknown' and 'slot' not in args:
@@ -386,6 +411,7 @@ def chat(history, text, arm, client=None):
     """history: [{'role': 'user'|'assistant', 'content': 문자열}] (웹 화면이 보관), text: 이번 말.
     돌려주는 것: {'reply': 문장, 'proposal': 실행 대기 명령 또는 None, 'executed': 바로 실행한 명령 결과 목록, 'scene': 찍은 장면 또는 None}."""
     text = strip_call(text)
+    _refresh()
     if _DESK_REQUEST.match(text):
         if _NOT.search(text):
             return dict(reply='주행과 팔 작업을 실행하지 않았습니다. 원하시면 “책상 정리해줘”라고 말씀해 주세요.',
@@ -424,7 +450,7 @@ def chat(history, text, arm, client=None):
             return dict(reply=found['reply'], proposal=found['proposal'], executed=executed, scene=found['scene'], source='rule')
         if _STATUS.search(text):
             return dict(reply=status_reply(arm), proposal=None, executed=[], scene=None, source='rule')
-    messages = [{'role': 'system', 'content': SYSTEM}]
+    messages = [{'role': 'system', 'content': system_prompt()}]
     messages += [{'role': m['role'], 'content': str(m['content'])} for m in history[-20:]
                  if m.get('role') in ('user', 'assistant') and m.get('content')]
     messages.append({'role': 'user', 'content': text})

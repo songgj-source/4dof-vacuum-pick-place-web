@@ -22,7 +22,6 @@ sys.path.insert(0, str(ROOT / 'src'))
 from perception.object_targets import load_catalog, locate_targets
 from sorting.sort_job import build_job, parse_command
 from tray.tray_detect import detect_tray
-from tray.tray_sorting import SLOT_FOR_LABEL
 
 
 def live_frames():
@@ -42,7 +41,8 @@ def live_frames():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--command', help='예: "빨간 상자 3번 칸에 넣어줘"')
-    parser.add_argument('--object', choices=sorted([*SLOT_FOR_LABEL, 'unknown']))
+    from perception import object_registry
+    parser.add_argument('--object', choices=sorted([*object_registry.labels(), 'unknown']))     # 기본 세 물체 + 등록 물체(custom_N)
     parser.add_argument('--slot', type=int, help='칸 지정(없으면 기본 규칙)')
     parser.add_argument('--empty-run', action='store_true', help='물체 없이 같은 경로만 시험(흡착·해제 없음)')
     parser.add_argument('--acknowledge-unverified-suction', action='store_true')
@@ -145,10 +145,15 @@ def main(argv=None):
             from perception.unknown_objects import locate_unknowns
             targets = locate_unknowns(bgr, depth, np.load(args.unknown_baseline, allow_pickle=False), ROOT)
         else:
-            targets = locate_targets(bgr, depth, ROOT)
-            if tray.get('found'):                       # 이미 칸에 들어 있는 물체는 다시 꺼내지 않는다(없는 것으로 보고 건너뛰게)
+            from perception.object_targets import locate_unregistered
+            # 등록 안 된 물체도 장애물로 넣어 운반 경로가 피하게 한다(집지는 않는다). 2026-10-26 전에는 등록 물체끼리만 피했다.
+            targets = locate_targets(bgr, depth, ROOT) + locate_unregistered(bgr, depth, ROOT)
+            if tray.get('found'):                       # 이미 칸에 들어 있는 물체는 다시 꺼내지 않는다(없는 것으로 보고 건너뛰게). 칸막이가 등록 안 된 물체로 잡히는 것도 여기서 빠진다
                 from tray.occupancy import outside_tray
                 targets = outside_tray(targets, tray['slots'])
+            from sorting.place_job import MAX_OBSTACLES
+            if len(targets) - 1 > MAX_OBSTACLES:          # 집는 도중(pick_auto의 place job 검사)이 아니라 움직이기 전에 거절한다
+                raise ValueError(f'책상 위 물체가 너무 많습니다({len(targets)}개, 피해 갈 물체는 최대 {MAX_OBSTACLES}개). 팔 주변 물체를 몇 개 치워 주세요.')
         result = build_job(targets, tray,
                            load_catalog(ROOT / 'config/object_catalog.json'), label, commanded,
                            acknowledge_unverified_suction=args.acknowledge_unverified_suction,
@@ -214,6 +219,7 @@ def main(argv=None):
                           empty_run=args.empty_run, place_json=str(place_json), manual_target_mm=result['manual_target_mm'], camera_target_mm=result['camera_target_mm'],
                           pick_radial_offset_mm=result['pick_radial_offset_mm'], pick_tilt_radial_correction_mm=result.get('pick_tilt_radial_correction_mm', 0.), pick_tangential_correction_mm=result.get('pick_tangential_correction_mm', 0.), pick_tilt_deg=result.get('pick_tilt_deg') or 0.,
                           warnings=result['warnings'], tray_method=result['tray_method'],
+                          unregistered_left=sum(1 for t in targets if t.get('obstacle_only')),       # 책상에 그대로 두는 등록 안 된 물체 수(장애물로만 봤다)
                           tray_slots={str(k): dict(x_mm=round(v['x_mm']), y_mm=round(v['y_mm']), radius_m=round(v['radius_m'], 3)) for k, v in tray.get('slots', {}).items()}, tray_numbering=result['tray_numbering'], tray_source=tray_source, tray_frame_offset_px=tray_offset,
                           pick_auto_command=command, pick_auto_command_text=shlex.join(command),
                           executed=False, motor_writes=False, pump_writes=False, physical_accuracy_verified=False),

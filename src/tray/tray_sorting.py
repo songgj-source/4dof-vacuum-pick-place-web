@@ -12,13 +12,20 @@ from types import MappingProxyType
 # 기본 규칙(명령으로 칸을 지정하면 그 명령이 우선한다). 규칙표 자체는 읽기 전용이다.
 SLOT_FOR_LABEL = MappingProxyType({'white_box': 1, 'red_cube': 2, 'tape_measure': 3})
 SLOT_IDS = ('1', '2', '3')
+
+
+def _rules():
+    """기본 규칙 + 등록 물체(등록할 때 정한 칸)."""
+    from perception import object_registry
+    return dict(SLOT_FOR_LABEL, **object_registry.slots())
 FIELDS = ('x_mm', 'y_mm', 'drop_z_mm')
 
 
 def slot_for(label):
-    if label not in SLOT_FOR_LABEL:
+    rules = _rules()
+    if label not in rules:
         raise ValueError(f'no tray slot for label {label!r}')
-    return SLOT_FOR_LABEL[label]
+    return rules[label]
 
 
 def choose_slot(label, commanded=None):
@@ -26,10 +33,11 @@ def choose_slot(label, commanded=None):
 
     이름을 모르는 물체는 높이를 몰라 벽 위로 옮길 수 있는지·놓는 높이를 계산할 수 없어 거부한다.
     """
-    if label not in SLOT_FOR_LABEL and label != 'unknown':
-        raise ValueError(f'unknown object {label!r}: only white_box, red_cube and tape_measure can be placed')
+    rules = _rules()
+    if label not in rules and label != 'unknown':
+        raise ValueError(f'unknown object {label!r}: only white_box, red_cube, tape_measure and registered objects can be placed')
     if commanded is None:
-        return 3 if label == 'unknown' else SLOT_FOR_LABEL[label]
+        return 3 if label == 'unknown' else rules[label]
     if isinstance(commanded, bool) or not isinstance(commanded, int) or commanded not in (1, 2, 3):
         raise ValueError(f'slot must be 1, 2 or 3, got {commanded!r}')
     return commanded
@@ -38,15 +46,16 @@ def choose_slot(label, commanded=None):
 def plan_sorting(objects):
     """분류 결과 목록 → 칸 배정. 이름을 모르는 물체는 건너뛰고 이유를 남긴다."""
     assignments, skipped, seen = [], [], set()
+    rules = _rules()
     for o in objects:
         label = o.get('label')
-        if label not in SLOT_FOR_LABEL:
+        if label not in rules:
             skipped.append(dict(label=label, reason=f'label {label!r} has no tray slot'))
             continue
         if label in seen:
             raise ValueError(f'two objects share label {label!r}; refusing to guess which to move first')
         seen.add(label)
-        assignments.append(dict(label=label, slot=SLOT_FOR_LABEL[label], center_px=o.get('center_px'),
+        assignments.append(dict(label=label, slot=rules[label], center_px=o.get('center_px'),
                                 height_mm=o.get('height_mm')))
     return dict(assignments=assignments, skipped=skipped)
 

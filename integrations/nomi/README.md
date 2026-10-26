@@ -21,15 +21,19 @@ LLM은 관절값을 보내지 않습니다. 물체 이름과 칸 번호만 넘�
 
 | 도구 | 하는 일 | REST | timeout |
 |---|---|---|---|
-| `look_at_table` | 위 카메라로 찍어 보이는 물체·쓸 수 있는 메뉴 반환(움직이지 않음) | `POST /api/image` | 45초 |
-| `get_arm_status` | 작업 중인지, HOME인지 | `GET /status` | 12초 |
-| `sort_object(object_name, slot?)` | 물체를 집어 칸에 넣고 HOME 복귀 | `/api/menu/1~3`, 칸 지정 시 `5`, unknown은 `7` | 320초 |
-| `sort_all_objects` | 세 물체 모두 기본 칸에 | `/api/menu/4` | 620초 |
+| `look_at_table` | 위 카메라로 찍어 작업대 물체·트레이에 이미 있는 물체 반환(움직이지 않음) | `POST /api/image` | 45초 |
+| `get_arm_status` | 작업 중인지(지금 단계), HOME인지 | `GET /status` | 12초 |
+| `sort_object(object_name, slot?)` | 물체를 집어 칸에 넣고 HOME 복귀 | `/api/menu/5`(칸을 안 말하면 기본 칸), unknown은 `7` | 320초 |
+| `sort_all_objects(objects?)` | 책상 정리하기: 책상에 있는 물체(기본 세 개 + 등록 물체, 또는 고른 물체)를 기본 칸에 | `/api/menu/4` | 1220초 |
 | `arm_return_home` | HOME 복귀 | `/api/menu/6` | 100초 |
 
-- `object_name`은 `white_box`, `red_cube`, `tape_measure`, `unknown` 중 하나입니다(enum). Skill 쪽은 "흰 상자", "줄자" 같은 한국어 이름도 받습니다.
+- `object_name`은 `white_box`, `red_cube`, `tape_measure`, `unknown` 또는 사용자가 등록한 물체 이름(예: "파란 컵")입니다. 등록 물체가 늘 수 있어 enum으로 막지 않습니다. Skill이 `GET /api/objects`(10초 캐시)로 이름을 확인하고, 모르는 이름이면 되묻게 돌려줍니다. "흰 상자", "줄자" 같은 한국어 이름도 받습니다.
+- 물체 등록은 웹(5번)·터미널 메뉴(5번)·`POST /api/objects`에서 합니다. NOMI 도구로는 두지 않았습니다(물체를 책상에 하나만 두는 준비가 필요해서).
 - `look_at_table`은 사진 base64를 빼고 돌려줍니다(9B 모델 문맥 절약). 사진이 필요하면 `data.image_url`을 여세요.
-- 정지: `ArmRestSkill.stop()`은 대기를 끊고 `POST /stop`을 보냅니다.
+- `look_at_table`은 메뉴 번호(available_menus)를 돌려주지 않습니다. API 번호는 웹·터미널 메뉴 번호(1~4)와 달라 LLM이 헷갈리기 때문입니다.
+- 정지: `ArmRestSkill.stop()`은 대기를 끊고 `POST /stop`을 보냅니다. 정지 뒤 3초 안에 들어온 움직이는 명령은 보내지 않습니다(호출 직전에 누른 비상정지가 지워지지 않게).
+- 결과 조회가 404(서버 재시작)면 바로, 연결 실패가 약 10초 이어지면 정지를 보낸 뒤 실패로 돌려줍니다.
+- 책상 정리하기 결과 메시지에는 물체별 결과(넣음 / 실패 / 건너뜀)가 붙습니다.
 
 ## NOMI에 넣는 방법 (tool_registry.py)
 
@@ -60,6 +64,7 @@ arm_return_home
 예: "빨간 큐브 넣어줘" → sort_object {"object_name": "red_cube"}
     "줄자 1번 칸에 넣어" → sort_object {"object_name": "tape_measure", "slot": 1}
     "다 정리해줘" → sort_all_objects {}
+    "흰 상자랑 줄자 치워줘" → sort_all_objects {"objects": "white_box,tape_measure"}
     "책상에 뭐 있어?" → look_at_table {}
 ```
 

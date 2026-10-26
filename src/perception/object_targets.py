@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from perception import object_registry
 from perception.box_target import BoxLocator, TABLE_PLANE_Z
 from perception.object_classify import classify_objects
 from robot.robot_model import load_planar_model, reachable
@@ -23,8 +24,16 @@ REFERENCE_TOP_MM = 40.        # TABLE_PLANE_Z가 맞춰진 빨간 정육면체 �
 ENVELOPE_M = (.16, .30)
 PICK_TILTS_DEG = (0., 5., 10., 15., 20.)
 PICK_REACH_MARGIN_M = .008
-LABELS = ('red_cube', 'white_box', 'tape_measure')
+LABELS = ('red_cube', 'white_box', 'tape_measure')     # 기본 물체(카탈로그에 꼭 있어야 한다). 등록 물체는 object_registry.labels()
 MIN_CONTACT_Z_M = .010        # 사용자 지시(2026-10-15)로 30mm 하한을 없앴다. 컵이 책상에 닿는 것만 막는 최소선(pick_auto --min-contact-z-mm)
+
+
+# 등록 안 된 물체를 장애물로 볼 범위(arm_api.describe_scene과 같은 기준): 이 밖의 덩어리는 트레이·설비·로봇 자신·케이블로 보고 뺀다
+UNREGISTERED_MAX_PX = 150
+UNREGISTERED_MAX_HEIGHT_MM = 100.
+UNREGISTERED_RADIUS_M = (.12, .42)
+UNREGISTERED_HEIGHT_MARGIN_MM = 3.     # 깊이로 잰 높이 오차(약 ±3mm)만큼 윗면을 높게 잡는다
+UNREGISTERED_MIN_RADIUS_MM = 20.
 
 
 def footprint_radius_mm(entry, default=40.):
@@ -46,6 +55,8 @@ def load_catalog(path):
     if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not math.isfinite(offset):
         raise ValueError('cup_contact_offset_mm must be a finite number')
     objects = data.get('objects') or {}
+    objects.update(object_registry.catalog_entries(Path(path).resolve().parents[1]))     # 등록 물체(config/registered_objects.json)
+    data['objects'] = objects
     for label in LABELS:
         entry = objects.get(label)
         height = entry.get('height_mm') if isinstance(entry, dict) else None
@@ -79,6 +90,53 @@ def top_center_xy(found, top_mm, locator):
     return _project(locator, pixel, plane_z) + locator.offset_xy
 
 
+def blob_geometry(item, locator, top_mm=None):
+    """classify_objects 덩어리 하나 → 로봇 기준 윗면 중심 xy(m), 윗면 높이(mm), 사진 사각형으로 잰 가로·세로(mm),
+    중심에서 사각형 모서리까지 반경(mm, 방향을 몰라도 안전한 쪽). 투영할 수 없으면 None."""
+    top_mm = float(item.get('top_height_mm', item['height_mm'])) if top_mm is None else float(top_mm)
+    try:
+        xy = top_center_xy(item, top_mm, locator)
+        plane_z = TABLE_PLANE_Z - (REFERENCE_TOP_MM - top_mm) / 1000.
+        x, y, w, h = item['bbox_px']
+        corners = [_project(locator, np.array(c) - np.array(DEPTH_MINUS_TOP_CENTER_PX), plane_z) + locator.offset_xy
+                   for c in ((x, y), (x + w, y), (x, y + h), (x + w, y + h))]
+    except ValueError:
+        return None
+    footprint = [float(np.linalg.norm(corners[1] - corners[0])) * 1000., float(np.linalg.norm(corners[2] - corners[0])) * 1000.]
+    radius = max(math.hypot(*(c - xy)) for c in corners) * 1000.
+    return dict(xy=[float(xy[0]), float(xy[1])], top_mm=top_mm, footprint_mm=footprint, radius_mm=radius)
+
+
+def desk_blobs(found, locator, top_margin_mm=0.):
+    """책상 위 물체로 볼 덩어리(이름과 상관없이): 트레이·설비 같은 큰 덩어리, 로봇팔 자신(높은 것),
+    로봇 밑동 근처·작업 범위 밖(케이블 등)은 뺀다(arm_api.describe_scene과 같은 기준). (덩어리, blob_geometry) 목록."""
+    out = []
+    for item in found:
+        if max(item['bbox_px'][2:]) > UNREGISTERED_MAX_PX:
+            continue
+        top_mm = float(item.get('top_height_mm', item['height_mm'])) + top_margin_mm
+        if top_mm > UNREGISTERED_MAX_HEIGHT_MM:
+            continue        # 로봇팔 자신
+        geometry = blob_geometry(item, locator, top_mm)
+        if geometry is None or not UNREGISTERED_RADIUS_M[0] <= math.hypot(*geometry['xy']) <= UNREGISTERED_RADIUS_M[1]:
+            continue        # 로봇 밑동 근처·작업 범위 밖
+        out.append((item, geometry))
+    return out
+
+
+def locate_unregistered(bgr, depth, root, locator=None, found=None):
+    """책상 위 '등록 안 된 물체'를 장애물로(집지 않는다). 운반 경로 충돌 검사(place_plan)가 이 물체도 피하게 한다.
+    윗면 높이는 덩어리 상위 10% 높이 + 오차, 반경은 덩어리 사각형 모서리까지(방향을 몰라도 안전한 쪽).
+    돌려주는 것: [{label='unregistered', target_xy, object_geometry{height_mm, footprint_radius_mm}, pickable=False}]"""
+    locator = locator or default_locator(root)
+    found = found if found is not None else classify_objects(bgr, depth)
+    return [dict(label='unregistered', name='등록 안 된 물체', target_xy=geometry['xy'],
+                 object_geometry=dict(height_mm=round(geometry['top_mm'], 1),
+                                      footprint_radius_mm=round(max(UNREGISTERED_MIN_RADIUS_MM, geometry['radius_mm']), 1)),
+                 pickable=False, obstacle_only=True, problems=['not a registered object'])
+            for item, geometry in desk_blobs([i for i in found if i['label'] == 'unknown'], locator, UNREGISTERED_HEIGHT_MARGIN_MM)]
+
+
 def locate_targets(bgr, depth, root, catalog=None, model=None, locator=None, min_contact_z=MIN_CONTACT_Z_M):
     root = Path(root)
     base = root / 'output/ik_resume_20261012'
@@ -87,9 +145,10 @@ def locate_targets(bgr, depth, root, catalog=None, model=None, locator=None, min
     locator = locator or BoxLocator(base / 'multipose_review/camera_transform_candidate.json',
                                     base / 'moved_box_target.json')
     results = []
+    known = object_registry.labels(root)          # 기본 세 물체 + 등록 물체
     for found in classify_objects(bgr, depth):
         label = found['label']
-        if label not in LABELS:
+        if label not in known:
             continue
         entry = catalog['objects'][label]
         top_mm = float(entry['height_mm'])
