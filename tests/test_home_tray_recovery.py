@@ -78,3 +78,34 @@ def test_script_initial_lift_preserves_tilt_only_for_tray_route(tray_start):
     assert len(calls) == 2
     assert all(c['lift_m'] == .030 for c in calls)
     assert all(c['pitch_rad'] == (-.85 if tray_start else -math.pi/2) for c in calls)
+
+
+def test_home_waits_for_a_settling_hold_instead_of_refusing():
+    # 2026-10-26 Pi: 앞 단계 직후 목표와 위치가 몇 펄스 어긋나 'HOME current hold not settled'로 멈췄다. 1초 안에 서면 이어서 간다
+    profile = json.loads((ROOT / 'config/servo_driver_candidate.json').read_text())
+    joints = [SimpleNamespace(**j) for j in profile['joints']]
+    zeros = {j.name: j.zero for j in joints}
+    zeros.update(json.loads((ROOT / 'output/ik_resume_20261012/multipose_review/fit_full.json').read_text())['new_zero_pulses'])
+    lengths = json.loads((ROOT / 'output/ik_resume_20261012/multipose_review/review.json').read_text())['eight_pose_geometry_m']
+    geometry = PlanarGeometry(.027, .160, tuple(lengths))
+    home = {n: j['position'] for n, j in json.loads((ROOT / 'output/ik_resume_20261012/original_current_hold.json').read_text())['joints'].items()}
+    raw = dict(home, shoulder=home['shoulder'] + 100)                        # HOME 근처, 컵 104mm
+    angles = lambda values: tuple(-(values[n] - zeros[n]) * 2 * math.pi / 4096 for n in NAMES)
+    assert geometry.forward(angles(raw))[2] >= .080
+    reads = []
+
+    def run(unsettled_reads):
+        reads.clear()
+        def snapshot(**kw):
+            reads.append(1)
+            off = 4 if len(reads) <= unsettled_reads else 0                   # 처음 몇 번은 4펄스 어긋남
+            return {'joints': {n: dict(position=v + (off if n == 'shoulder' else 0), goal=v) for n, v in raw.items()}}
+        driver = SimpleNamespace(names=NAMES, profile=SimpleNamespace(joints=joints), state='hold_only', hold_confirmed=True,
+                                 lock=threading.RLock(), _snapshot=snapshot, clock=lambda: 0., sleep=lambda s: None,
+                                 bus=SimpleNamespace(), _fault=lambda exc: None)
+        return run_recorded_home_trial(driver, geometry, zeros, home, supported=True, continuous=True,
+                                       record=lambda e: None, cancelled=lambda: True, **return_profile(300.))
+    with pytest.raises(InterruptedError, match='hover cancelled'):          # 3번 흔들린 뒤 섰다: 검사를 지나 경로 검사까지 간다
+        run(3)
+    with pytest.raises(ValueError, match='HOME current hold not settled'):  # 1초 내내 흔들리면 예전처럼 멈춘다
+        run(99)

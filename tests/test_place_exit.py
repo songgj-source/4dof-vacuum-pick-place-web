@@ -93,3 +93,47 @@ def test_run_place_uses_one_exit_move_and_falls_back_when_refused():
     def refuse(t): raise ExitPathRefused('no solution')
     report, moves = place(refuse)
     assert any(m.startswith('place_retreat') for m in moves) and 'place_exit' not in report['steps']  # 예전처럼 단계별
+
+
+def test_measured_sag_inside_the_slot_is_allowed_up_to_6_mm():
+    # 2026-10-27 Pi: 1번 칸 60도에서 빠져나오기 시작할 때 어깨가 늦게 따라와 컵이 2.3mm 처졌고 2mm 검사에 걸렸다.
+    # 놓은 물체는 칸 바닥 20mm 위에서 떨어져 컵 아래가 비어 있으므로 6mm까지는 받고, 그보다 깊으면 멈춘다
+    driver, geometry, zeros, fk = arm()
+    t = build_exit_transition(LEGS, fk[:3], TILT)
+    captured = {}
+    with patch.object(place_exit, '_execute_path', side_effect=lambda *a, **k: captured.update(args=a) or {'reached': True}):
+        run_place_exit_trial(driver, geometry, zeros, t, supported=True, rate=150.)
+    clear = captured['args'][4]
+    joints = {j.name: j for j in driver.profile.joints}
+    pulse = 2 * math.pi / 4096
+    limits = {n: tuple(sorted(joints[n].direction * (r - zeros[n]) * pulse for r in (joints[n].raw_min + 16, joints[n].raw_max - 16))) for n in NAMES}
+
+    def raw_at(dz):
+        q = min(geometry.solve((fk[0], fk[1], fk[2] - dz), fk[3], limits),
+                key=lambda q: sum((a - b) ** 2 for a, b in zip(q, (joints[n].direction * (RELEASE_RAW[n] - zeros[n]) * pulse for n in NAMES))))
+        return {n: round(zeros[n] + q[i] / (joints[n].direction * pulse)) for i, n in enumerate(NAMES)}
+    clear(raw_at(.004))                                   # 4mm 처짐: 계속 간다(예전 2mm 검사는 여기서 멈췄다)
+    with pytest.raises(ValueError, match='dipped below the release point'):
+        clear(raw_at(.009))
+
+
+def test_lagging_cup_may_leave_the_slot_column_a_little_below_the_carry_height():
+    # 2026-10-27 Pi: 60도 1번 칸에서 실제 컵이 운반 높이보다 8mm 아래일 때 명령이 옆으로 빠지기 시작해 4.7mm에서 멈췄다
+    driver, geometry, zeros, fk = arm()
+    t = build_exit_transition(LEGS, fk[:3], TILT)
+    captured = {}
+    with patch.object(place_exit, '_execute_path', side_effect=lambda *a, **k: captured.update(args=a, kwargs=k) or {'reached': True}):
+        run_place_exit_trial(driver, geometry, zeros, t, supported=True, rate=150.)
+    assert 'lead_s' not in captured['kwargs']                        # 놓은 뒤 빈 컵은 앞당기지 않는다
+    clear = captured['args'][4]
+    joints = {j.name: j for j in driver.profile.joints}
+    pulse = 2 * math.pi / 4096
+    limits = {n: tuple(sorted(joints[n].direction * (r - zeros[n]) * pulse for r in (joints[n].raw_min + 16, joints[n].raw_max - 16))) for n in NAMES}
+    inward = (-fk[0] / math.hypot(*fk[:2]), -fk[1] / math.hypot(*fk[:2]))
+
+    def raw_at(z, side):
+        q = geometry.solve((fk[0] + inward[0] * side, fk[1] + inward[1] * side, z), fk[3], limits)[0]
+        return {n: round(zeros[n] + q[i] / (joints[n].direction * pulse)) for i, n in enumerate(NAMES)}
+    clear(raw_at(t['clear_z'] - .008, .006))                          # 운반 높이 8mm 아래에서 6mm 옆: 계속 간다
+    with pytest.raises(ValueError, match='rise straight out of the slot'):
+        clear(raw_at(t['clear_z'] - .030, .006))                      # 칸 벽 가까이(30mm 아래)에서 옆으로는 멈춘다

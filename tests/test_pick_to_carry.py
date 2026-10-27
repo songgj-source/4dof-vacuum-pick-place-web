@@ -184,3 +184,37 @@ def test_saved_pickup_pose_passes_real_geometry_full_path_preflight_without_io()
     assert execute.call_count == 1
     assert events[-1]['points'] == 5
     assert events[-1]['intermediate_holds'] == 0
+
+
+def test_side_drift_is_tight_near_the_desk_and_looser_once_lifted():
+    # 2026-10-27 Pi: 정육면체를 41mm 들고 기울이는 중 늦게 따라온 관절 때문에 컵이 4.6mm 옆으로 가 멈췄다(3mm 한도)
+    from robot.robot_model import load_planar_model
+    from hardware.servo_mapping import MappingProfile
+    model = load_planar_model(ROOT)
+    profile = MappingProfile.load(ROOT / 'config/servo_driver_candidate.json', ROOT)
+    joints = {j.name: j for j in profile.joints}
+    raw = dict(zip(NAMES, [2131, 3749, 1598, 2828]))
+    pulse = 2 * math.pi / 4096
+    q0 = [joints[n].direction * (raw[n] - model['zeros'][n]) * pulse for n in NAMES]
+    geometry = model['geometry']
+    start = geometry.forward(q0)[:3]
+    legs = [{**leg, 'target': (*start[:2], leg['target'][2])} if leg['name'] not in ('carry', 'lower') else dict(leg) for leg in PLAN['legs']]
+    transition = build_lift_transition({**PLAN, 'start': (*start[:2], .070), 'legs': legs}, start, tilt_start_z=.0705)
+    driver = SimpleNamespace(state='hold_only', hold_confirmed=True, names=NAMES, lock=contextlib.nullcontext(), profile=profile,
+                             _snapshot=lambda **kw: dict(joints={n: dict(position=v, goal=v) for n, v in raw.items()}))
+    captured = {}
+    with patch('motion.pick_to_carry._execute_path', side_effect=lambda *a, **k: captured.update(args=a) or {}):
+        run_pick_to_carry_trial(driver, geometry, model['zeros'], transition, supported=True, min_contact_z=.010)
+    clear = captured['args'][4]
+    limits = {n: tuple(sorted(joints[n].direction * (r - model['zeros'][n]) * pulse for r in (joints[n].raw_min + 16, joints[n].raw_max - 16))) for n in NAMES}
+    radial = (start[0] / math.hypot(*start[:2]), start[1] / math.hypot(*start[:2]))
+
+    def raw_at(dz, side):
+        q = min(geometry.solve((start[0] + radial[0] * side, start[1] + radial[1] * side, start[2] + dz), -math.pi / 2, limits),
+                key=lambda q: sum((a - b) ** 2 for a, b in zip(q, q0)))
+        return {n: round(model['zeros'][n] + q[i] / (joints[n].direction * pulse)) for i, n in enumerate(NAMES)}
+    with pytest.raises(ValueError, match='must stay above the pickup point'):
+        clear(raw_at(.010, .005))                         # 아직 책상 가까이(10mm): 5mm 옆은 멈춘다
+    clear(raw_at(.040, .005))                             # 40mm 든 뒤: 5mm 옆은 계속 간다
+    with pytest.raises(ValueError, match='must stay above the pickup point'):
+        clear(raw_at(.040, .010))                         # 그래도 10mm는 멈춘다(가드 배율 1)

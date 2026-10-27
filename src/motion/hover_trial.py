@@ -24,6 +24,7 @@ def _hold_offset(driver,name):
 SLOW_JOINT_BATCH_PULSES=6
 # Clear-space travel (no contact/lift): faster servo speed register and a fixed command rate.
 TRAVEL_GOAL_SPEED=600
+HELD_LEAD_S=.25   # 물체를 든 들기·놓은 뒤 빠져나오기의 앞당김(2026-10-27 Pi: 서보 지연 약 0.3초, 조금 덜 앞당긴다)
 TRAVEL_GOAL_ACCELERATION=20
 TRAVEL_PULSES_PER_STEP=4
 MAX_TILT_RAD=math.radians(60.)   # place only: the tool may tilt forward from straight down by at most this much (slots beyond 0.30 m need about 43 degrees; user instruction 2026-10-15; 50->60 2026-10-21: 1번 칸 36.7cm)
@@ -158,7 +159,7 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
         return _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,cancelled,pulses_per_step,batch,
                              TRAVEL_GOAL_SPEED if travel else 40,period,tracking_limit,
                              goals if via else None,[via_pulses]*len(via)+[pulses_per_step] if via else None,tail,
-                             native and travel_ok,continuous_segments=continuous_lift)
+                             native and travel_ok,continuous_segments=continuous_lift,catch_up=travel)
 
 
 def ramped_indices(steps,pulses_per_step,period_s,accel,smooth_s=SMOOTH_WINDOW_S,caps=None):
@@ -244,7 +245,8 @@ def _native_motion(driver,joints,clear,path,seg_ends,goals,seg_rates,record,canc
 
 
 def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,cancelled,pulses_per_step=1,batch_pulses=0,
-                  speed=40,period_s=None,tracking_limit=16,waypoints=None,seg_pulses=None,tail=None,native=False,continuous_segments=False):
+                  speed=40,period_s=None,tracking_limit=16,waypoints=None,seg_pulses=None,tail=None,native=False,continuous_segments=False,
+                  catch_up=False,lead_s=0.):
     """Caller holds driver.lock and has admitted the explicit experiment."""
     NAMES=tuple(driver.names)
     if native and period_s is None:raise ValueError('native move needs the travel profile')
@@ -312,10 +314,14 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
         elif indices and period_s is not None and not native and callable(getattr(driver.bus,'begin_light_reads',None)):
             # 느린 고정 틱 이동: 틱마다 읽기를 가볍게 해서 틱이 밀리지 않게 한다(쓰기·속도 설정은 그대로)
             driver.bus.begin_light_reads();light=True
-        for index in indices:
+        # 앞당겨 명령하기(lead_s): 서보는 목표를 약 0.3초 늦게 따라가고(속도에 비례) 늦는 정도가 관절마다 달라 컵이 경로에서 벗어난다
+        # (2026-10-27 Pi: 정육면체를 든 들기에서 어깨 36·손목 50펄스 → 옆 4.6mm). 그만큼 앞 틱의 경로 점을 보내 실제 위치가 경로 위에 있게 한다.
+        # 검사(clear·추종 오차)는 그대로 실제 위치로 한다. 경로의 모든 점은 이미 검사했다
+        lead=max(0,int(round(lead_s/period_s))) if lead_s and period_s else 0
+        for tick,index in enumerate(indices):
             if next_tick is not None:driver.sleep(max(0.,next_tick-driver.clock()))
             tick_started=driver.clock()
-            raw=path[index]
+            raw=path[indices[min(tick+lead,len(indices)-1)]]
             if cancelled():raise InterruptedError('hover cancelled')
             if driver.clock()-start>180:raise TimeoutError('hover duration exceeded')
             feedback=driver._snapshot(torque=1,fault_on_error=not streaming)
@@ -346,7 +352,10 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
             else:
                 finished=driver.clock()
                 deadline=tick_started+period_s
-                next_tick=deadline if finished<=deadline else finished+period_s
+                # 접근·운반(catch_up)은 통신이 틱을 넘기면 바로 다음 틱을 보낸다. 예전처럼 한 틱을 더 쉬면 Pi에서 서보 읽기·쓰기(약 13~14ms)가
+                # 틱보다 길 때 틱이 약 27ms로 늘어 설정 속도의 절반이 됐다(2026-10-27 사용자: 300→400). HOME 복귀(home_trial)와 느린 이동은
+                # 그대로 쉰다: HOME 300은 어깨 추종이 17~29로 32 가드에 가까워 더 빨라지면 멈출 수 있다
+                next_tick=deadline if finished<=deadline else finished if streaming and catch_up else finished+period_s
         stable=0;previous=None;idle=0
         for _ in range(40):
             if cancelled():raise InterruptedError('hover cancelled')

@@ -48,7 +48,7 @@ def refresh_objects():
 refresh_objects()
 COMMON = ['--acknowledge-unverified-suction', '--accept-uncertain-tray', '--tray-numbering', 'far_from_base',
           '--attempts', '1', '--approach-tracking-limit', '100',
-          '--place-rate', '300', '--place-pulses-per-step', '4', '--home-rate', '300']   # 속도 우선(사용자 2026-10-19): 운반·후퇴 300, 틱당 4펄스(13.4ms), 자동 HOME 복귀 300
+          '--place-rate', '400', '--place-pulses-per-step', '4', '--home-rate', '300']   # 속도 우선(사용자 2026-10-19): 운반·후퇴 300, 틱당 4펄스(13.4ms), 자동 HOME 복귀 300. 2026-10-27 운반 400(틱 10ms, 실제는 통신 13~14ms)
 COLOR = sys.stdout.isatty() and not os.environ.get('NO_COLOR')
 
 

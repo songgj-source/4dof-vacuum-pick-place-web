@@ -45,6 +45,9 @@ CHAIN_START_Z=(.070,.135)      # 놓기가 끝나는 운반 높이(70~130mm). �
 CHAIN_START_R=(.14,.32)        # HOME 복귀 시작 구간과 같은 반경(먼 칸은 놓은 뒤 이 안으로 물러나 선다)
 CHAIN_PITCH_TOL=math.radians(5.)   # 공구가 수직(놓은 뒤 세우기 완료)이어야 한다
 CHAIN_TRANSIT_Z=.120           # 트레이에서 물체로 갈 때의 최소 높이: 접근 경유점(120mm)과 같다. 물체는 40mm 이하, 트레이 벽은 운반 높이로 이미 넘는다
+# 그 자리에서 수직으로 더 못 올라가는 먼 자리(2026-10-27 Pi: r .263 z .100, 수직 자세로 닿는 한계 밖)라도 이 높이 이상이면 물체 쪽(안쪽)으로
+# 가며 올라가는 경로로 바로 간다. 책상 물체는 40mm 이하, 경로는 120mm 접근 경유점까지 올라가기만 한다. 경로 검사(링크·책상 높이)는 그대로다
+CHAIN_LOW_TRANSIT_Z=.090
 from hardware import devices
 PUMP=devices.get('pump_port')      # ARM_PUMP_PORT / config/devices.json / 기본값
 WRIST_CAMERA=Path(devices.get('wrist_camera'))
@@ -87,7 +90,7 @@ def main(argv=None):
     parser.add_argument('--no-contact-rgb-log',action='store_true',help='disable passive before-suction RGB observation; verdicts never block motion')
     parser.add_argument('--contact-rgb-reference',type=Path,default=BASE/'pickup_twoaxis_p64_trial/before_suction_wrist.png',help='historical contact-view reference for observational RGB comparison')
     rate=parser.add_mutually_exclusive_group()
-    rate.add_argument('--travel-rate',type=float,help='candidate clear-space path rate, 50-300 pulses/s (default300); contact/lift unchanged')
+    rate.add_argument('--travel-rate',type=float,help='candidate clear-space path rate, 50-400 pulses/s (default 400, 2026-10-27; was 300); contact/lift unchanged')
     rate.add_argument('--approach-speed',type=float,help='legacy multiplier relative to50 pulses/s, 1-6; use --travel-rate instead')
     parser.add_argument('--pitch-p',type=int,choices=[32,48,64],default=64,help='temporary shoulder/elbow P gain for contact/lift (default64)')
     parser.add_argument('--travel-p',type=int,choices=[32,48,64],default=32,help='temporary P gain for HOME/approach (default 32). At 48 the approach shook in about 3 of 4 runs at one target (shoulder rms 5, base 3, measured 2026-10-16); at 32 it never shook (0.6-1.1) but the elbow stops a few mm short, so a failed 5 mm arrival check at P<48 is corrected once with a slow move by the measured error (up to 20 mm). The follow error reaches about 36: use --approach-tracking-limit 100. contact/lift use --pitch-p')
@@ -96,7 +99,7 @@ def main(argv=None):
     parser.add_argument('--damping',type=int,choices=[32,48,64,96],help='temporary shoulder/elbow D gain (default: servo baseline 32)')
     parser.add_argument('--batch-base',action='store_true',help='send barely-moving joints in 6-pulse bursts (off by default: motion stays continuous)')
     parser.add_argument('--native-moves',action='store_true',help='HOME/approach legs: send each goal once and let the servo run its own speed/acceleration profile (no per-tick goal steps)')
-    parser.add_argument('--pick-tilt-deg',type=float,default=0.,help='tilt the tool forward by this many degrees (0-20) for the approach, descent and lift of the pick. Needed for far objects that a vertical cup cannot reach (user instruction 2026-10-15). Default 0 = vertical as before')
+    parser.add_argument('--pick-tilt-deg',type=float,default=0.,help='tilt the tool forward by this many degrees (0-10, 2026-10-27: 15 lost suction) for the approach, descent and lift of the pick. Needed for far objects that a vertical cup cannot reach (user instruction 2026-10-15). Default 0 = vertical as before')
     parser.add_argument('--approach-tracking-limit',type=int,default=32,help='approach/approach_b only: follow-error guard in pulses (default 32). User instruction 2026-10-15: the 300 pulses/s approach leaves the shoulder at 33-34 and the 32 guard stopped most runs; raise it (e.g. 100) to let the approach finish. Place carry and HOME keep their own guard')
     parser.add_argument('--record-astra',action='store_true',help='record the top-view Astra video for the whole run (shake analysis)')
     parser.add_argument('--output',type=Path)
@@ -104,7 +107,7 @@ def main(argv=None):
     parser.add_argument('--place-json',type=Path,help='after lifting, carry the object to the tray slot in the job file and release it there (vacuum stays on in this process); needs --manual-target-mm; slot number is the commanded one, else the default rule red_cube=1 white_box=2 tape_measure=3')
     parser.add_argument('--place-empty-run',action='store_true',help='with --place-json: test run of the same carry path from the 70 mm hover over the target with NO suction and NO release (no object)')
     parser.add_argument('--place-max-tilt-deg',type=float,default=60.,help='place only: the tool may tilt forward from straight down by up to this many degrees (0 = stay vertical; max 60); only the smallest tilt that works is used (slots beyond 0.30 m need about 43) to lift the held object clear of the tray rim without dragging it low')
-    parser.add_argument('--place-rate',type=float,default=150.,help='place only: clear-space carry speed in pulses/s, 50-300 (default 150 with 2 pulses/tick = the 13.3 ms tick that keeps the arm steady; at 300 the wrist follow error reached 33 and tripped the 32-pulse guard on the carry). Applies to horizontal carry moves and vertical rises above 70 mm; lifting off the table, lowering into the slot and tool tilt changes stay slow')
+    parser.add_argument('--place-rate',type=float,default=150.,help='place only: clear-space carry speed in pulses/s, 50-400 (default 150 with 2 pulses/tick = the 13.3 ms tick that keeps the arm steady; at 300 the wrist follow error reached 33 and tripped the 32-pulse guard on the carry). Applies to horizontal carry moves and vertical rises above 70 mm; lifting off the table, lowering into the slot and tool tilt changes stay slow')
     parser.add_argument('--no-return-home',action='store_true',help='place only: do not return to HOME automatically after a completed place')
     parser.add_argument('--skip-home-after-place',action='store_true',help='place only: after a completed place stay above the tray with the tool vertical (the next object follows with --start-above-tray); failed picks/releases still return HOME')
     parser.add_argument('--start-above-tray',action='store_true',help='start from where the previous --skip-home-after-place cycle ended (above the tray, tool vertical) and go straight to the object without HOME; other start poses use the existing HOME reset')
@@ -123,12 +126,12 @@ def main(argv=None):
         parser.error('hover-center conflicts with manual probe')
     if args.hover_center and args.center_cup:
         parser.error('hover-center cannot use contact centering')
-    travel_rate=args.travel_rate if args.travel_rate is not None else 50*args.approach_speed if args.approach_speed is not None else 300.
-    if not math.isfinite(travel_rate) or not 50<=travel_rate<=300:parser.error('travel rate must be finite and within50-300 pulses/s')
+    travel_rate=args.travel_rate if args.travel_rate is not None else 50*args.approach_speed if args.approach_speed is not None else 400.
+    if not math.isfinite(travel_rate) or not 50<=travel_rate<=400:parser.error('travel rate must be finite and within50-400 pulses/s')
     approach_pulses=TRAVEL_PULSES_PER_STEP
     approach_period=approach_pulses/travel_rate
     approach_limit=32 if args.fast_space else 16
-    if not math.isfinite(args.pick_tilt_deg) or not 0.<=args.pick_tilt_deg<=20.:parser.error('--pick-tilt-deg must be 0-20')
+    if not math.isfinite(args.pick_tilt_deg) or not 0.<=args.pick_tilt_deg<=10.:parser.error('--pick-tilt-deg must be 0-10')   # 2026-10-27 사용자: 15도면 흡착이 안 된다
     if not math.isfinite(args.descent_rate) or not 13.<=args.descent_rate<=150.:parser.error('--descent-rate must be 13-150 pulses/s')
     if not all(math.isfinite(v) and 0.<=v<=6. for v in args.approach_feedforward_mm):parser.error('--approach-feedforward-mm must be 0-6 mm each')
     if not math.isfinite(args.held_rate) or not (args.held_rate==0 or 40.<=args.held_rate<=150.):parser.error('--held-rate must be 0 or 40-150 pulses/s')
@@ -201,7 +204,7 @@ def main(argv=None):
         for flag,value in (('--contact-photo-only',args.contact_photo_only),('--hover-photo-only',args.hover_photo_only),('--center-cup',args.center_cup),('--depth-measurement',args.depth_measurement),('--hover-center',args.hover_center)):
             if value:parser.error(f'place conflicts with {flag}')
         if not math.isfinite(args.place_max_s) or not 1.<=args.place_max_s<=1800.:parser.error('--place-max-s must be 1-1800 seconds')
-        if not math.isfinite(args.place_rate) or not 50.<=args.place_rate<=300.:parser.error('--place-rate must be 50-300 pulses/s')
+        if not math.isfinite(args.place_rate) or not 50.<=args.place_rate<=400.:parser.error('--place-rate must be 50-400 pulses/s')
         if not math.isfinite(args.home_rate) or not 50.<=args.home_rate<=300.:parser.error('--home-rate must be 50-300 pulses/s')
         if not math.isfinite(args.place_max_tilt_deg) or not 0.<=args.place_max_tilt_deg<=60.:parser.error('--place-max-tilt-deg must be 0-60 degrees')
         try:
@@ -551,7 +554,7 @@ def main(argv=None):
                 set_integral(1)  # extended poses cannot hold at I=0; I=0 was only for the HOME return
                 approach_via=(known[0]*inner/radius,known[1]*inner/radius,.120)
                 if chain_start:
-                    transit_z=max(CHAIN_TRANSIT_Z,fresh_xyz()[2])
+                    transit_z=max(CHAIN_TRANSIT_Z,fresh_xyz()[2]);low_start=False
                     for index in range(4):
                         cur=fresh_xyz()
                         if transit_z-cur[2]<.006:break
@@ -559,15 +562,18 @@ def main(argv=None):
                         try:hover('chain_raise'+str(index),(*cur[:2],cur[2]+lift),lift_m=lift)
                         except ValueError:
                             # 먼 칸에서 낮게 물러나 선 자리는 수직으로 더 올라갈 자세가 없을 수 있다(2026-10-26 Pi: r .262 z .097에서
-                            # 'no direct-branch solution'). 움직이기 전에 거부됐으면 경로 거부와 같이 HOME을 거쳐 같은 물체를 다시 하게 한다
-                            if math.dist(fresh_xyz(),cur)<.003:result['chain_refused']=True
+                            # 'no direct-branch solution'). 움직이기 전에 거부됐고 충분히 높으면 안쪽으로 가며 올라가는 경로로 바로 간다.
+                            # 낮으면 경로 거부와 같이 HOME을 거쳐 같은 물체를 다시 하게 한다
+                            if math.dist(fresh_xyz(),cur)<.003:
+                                if cur[2]>=CHAIN_LOW_TRANSIT_Z:low_start=True;break
+                                result['chain_refused']=True
                             raise
                     cur=fresh_xyz()
-                    if cur[2]<transit_z-.008:
+                    if cur[2]<transit_z-.008 and not (low_start and cur[2]>=CHAIN_LOW_TRANSIT_Z):
                         result['chain_refused']=True      # 멈춰 선 채 운반 높이에 못 미침: HOME을 거쳐 다시 한다
                         raise ValueError('could not rise to the transit height above the tray')
                     path=polar_path(tuple(cur),approach_via,.030)+[(*known[:2],.070)]
-                    result['chain_transit']=dict(start_xyz=list(cur),transit_z=transit_z,points=len(path));save()
+                    result['chain_transit']=dict(start_xyz=list(cur),transit_z=transit_z,points=len(path),rise_on_the_way=low_start);save()
                     def transit(name,points):
                         # 한 번 이동 한도(1600펄스)를 넘으면 움직이기 전에 거부된다: 경로를 반으로 나눠 이어 간다(place의 move_path와 같다)
                         try:hover(name,points[-1],box_top_m=.040,via=points[:-1],via_pulses=approach_pulses)

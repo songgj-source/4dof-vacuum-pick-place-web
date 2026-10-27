@@ -22,7 +22,7 @@ from tray.tray_sorting import slot_for
 DEPTH_MINUS_TOP_CENTER_PX = (17., 5.5)
 REFERENCE_TOP_MM = 40.        # TABLE_PLANE_Z가 맞춰진 빨간 정육면체 윗면 높이
 ENVELOPE_M = (.16, .30)
-PICK_TILTS_DEG = (0., 5., 10., 15., 20.)
+PICK_TILTS_DEG = (0., 5., 10.)   # 집을 때 컵 기울기 후보. 2026-10-27 사용자: 15도로 기울이니 흡착이 안 된다 → 최대 10도(예전 20도)
 PICK_REACH_MARGIN_M = .008
 LABELS = ('red_cube', 'white_box', 'tape_measure')     # 기본 물체(카탈로그에 꼭 있어야 한다). 등록 물체는 object_registry.labels()
 MIN_CONTACT_Z_M = .010        # 사용자 지시(2026-10-15)로 30mm 하한을 없앴다. 컵이 책상에 닿는 것만 막는 최소선(pick_auto --min-contact-z-mm)

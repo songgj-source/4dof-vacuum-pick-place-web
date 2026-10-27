@@ -8,6 +8,9 @@ import math
 from hardware.servo_transport import require_device_available,open_exclusive_serial
 
 
+OPEN_WAIT_S=3.
+
+
 class SerialVacuum:
     def __init__(self,device):
         self.device=Path(device);self.serial=None;self.suction_requested=False
@@ -19,7 +22,15 @@ class SerialVacuum:
                 or (not named and ('CP2102' not in self.device.name or '_0001-' not in self.device.name))):
             raise ValueError(f'expected stable by-id/by-path pump device required: {self.device} (ARM_PUMP_PORT로 지정 가능)')
         if self.serial is not None:raise RuntimeError('pump already open')
-        require_device_available(self.device.resolve())
+        # 라이다 노드(port:=auto)는 라이다가 안 보이면 약 12초마다 ttyUSB 포트를 1초씩 열어 본다. 펌프 ESP32도 ttyUSB라
+        # 그 순간 팔이 열면 'already owned'로 작업이 멈췄다(2026-10-27 Pi). 남이 잠깐 잡은 것이면 최대 3초 기다려 다시 연다
+        deadline=time.monotonic()+OPEN_WAIT_S
+        while True:
+            try:
+                require_device_available(self.device.resolve());break
+            except OSError as exc:
+                if 'already owned' not in str(exc) or time.monotonic()>=deadline:raise
+                time.sleep(.25)
         import serial
         self.serial=open_exclusive_serial(serial,self.device,115200)
         try:

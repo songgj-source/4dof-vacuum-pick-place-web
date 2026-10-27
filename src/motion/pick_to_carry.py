@@ -3,10 +3,13 @@ import math
 
 from robot.planar_kinematics import NAMES, finite_vector
 from motion import guard_mode
-from motion.hover_trial import _execute_path, _hold_offset, HOVER_RADIUS_MAX_M, MAX_TILT_RAD, LIFT_MAX_M
+from motion.hover_trial import _execute_path, _hold_offset, HOVER_RADIUS_MAX_M, MAX_TILT_RAD, LIFT_MAX_M, HELD_LEAD_S
 
 VERTICAL = -math.pi / 2
 CLEAR_Z = .070
+# 집은 자리 바로 위에 있어야 하는 옆 오차. 물체가 책상에서 이만큼 뜨기 전에는 3mm(옆 물체·책상에 끌리지 않게), 뜬 뒤에는 8mm(가드 배율 적용).
+# 2026-10-27 Pi: 정육면체를 들고 55도로 기울이며 올라가는 중(41mm 위) 어깨가 32펄스, 손목이 50펄스 늦게 따라와 컵이 4.6mm 옆으로 가 멈췄다
+LIFT_XY_TIGHT_M, LIFT_XY_FREE_M, LIFT_FREE_ABOVE_M = .003, .008, .020
 
 
 class LiftPathRefused(ValueError):
@@ -83,7 +86,8 @@ def run_pick_to_carry_trial(driver, geometry, zeros, transition, *, supported=Fa
             if min(p[2] for p in links) < min_contact_z or max(p[2] for p in links) > .450:
                 raise ValueError('pick-to-carry link/table clearance')
             # 실제 컵이 집은 자리 바로 위에 있는지(가드 배율 적용). 2026-10-26 Pi: 물체를 든 어깨가 25펄스 뒤처져 3.2mm 벗어나 멈췄다
-            if math.hypot(xyz_pitch[0] - start[0], xyz_pitch[1] - start[1]) > guard_mode.length(.003):
+            allowed = LIFT_XY_FREE_M if xyz_pitch[2] - start[2] >= LIFT_FREE_ABOVE_M else LIFT_XY_TIGHT_M
+            if math.hypot(xyz_pitch[0] - start[0], xyz_pitch[1] - start[1]) > guard_mode.length(allowed):
                 raise ValueError('pick-to-carry must stay above the pickup point')
             if xyz_pitch[2] < start[2] - .002:
                 raise ValueError('pick-to-carry dipped below contact')
@@ -127,4 +131,4 @@ def run_pick_to_carry_trial(driver, geometry, zeros, transition, *, supported=Fa
         servo_speed = max(40, int(math.ceil(rate)))
         return _execute_path(driver, geometry, joints, angles, clear, origin, goals[-1], target, record, cancelled,
                              pulses_per_step=2, speed=servo_speed, period_s=2 / rate, tracking_limit=tracking_limit,
-                             waypoints=goals, seg_pulses=[2] * len(goals))
+                             waypoints=goals, seg_pulses=[2] * len(goals), lead_s=HELD_LEAD_S)

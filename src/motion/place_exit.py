@@ -16,6 +16,15 @@ from motion.hover_trial import _execute_path, _hold_offset, HOVER_RADIUS_MAX_M, 
 VERTICAL = -math.pi / 2
 MAX_PITCH_STEP_RAD = math.radians(15)      # 점 사이 손목 각도 변화(예전 제자리 세우기와 같은 15도)
 SLOT_COLUMN_M = .015                       # 놓은 자리에서 이만큼 안쪽이고 벽 높이 아래면 '칸 안'으로 본다
+# 놓은 높이 아래로 처져도 되는 양(실측 위치 기준). 2026-10-27 Pi: 1번 칸 60도(컵 35.7cm, 팔을 거의 다 뻗음)에서 위로 빠지기 시작하면
+# 어깨가 7펄스·손목이 4펄스 늦게 따라와 계획은 +1.4mm 올라가는데 컵은 2.3mm 처져 2mm 검사에 두 번 걸렸다(그 뒤 HOME 경유).
+# 물체는 놓는 높이를 칸 바닥 20mm 위로 잡아(sort_job.DROP_RAISE_MM) 놓은 뒤 떨어지므로 컵 아래 약 20mm가 비어 있다. 칸 안 수직·기울기 검사는 그대로다
+RELEASE_DIP_M = .006
+# 칸 위(clear_z)는 물체를 든 운반 높이라 놓은 뒤의 빈 컵이 피해야 할 트레이 벽(약 48mm)·칸 안 물체(최대 약 50mm)보다 50mm 넘게 높다.
+# 실제 컵은 명령보다 늦게 올라와(2026-10-27 Pi: 60도에서 13~20mm, 15도 끝에서 8mm 처짐) 운반 높이 바로 아래에서 옆으로 움직이거나
+# 처지면 2mm·5mm 기준에 걸려 멈췄다. 칸 기둥(수직·기울기 유지) 검사는 운반 높이보다 15mm 아래까지, 빠지는 중 높이는 20mm 아래까지 본다
+COLUMN_TOP_BELOW_M = .015
+EXIT_DROP_BELOW_M = .020
 
 
 class ExitPathRefused(ValueError):
@@ -61,9 +70,9 @@ def run_place_exit_trial(driver, geometry, zeros, transition, *, supported=False
             xyz_pitch = geometry.forward(q)
             if min(p[2] for p in links) < min_contact_z or max(p[2] for p in links) > .450:
                 raise ValueError('place exit link/table clearance')
-            if xyz_pitch[2] < start[2] - .002:
+            if xyz_pitch[2] < start[2] - RELEASE_DIP_M:
                 raise ValueError('place exit dipped below the release point')
-            if xyz_pitch[2] < clear_z - .002:
+            if xyz_pitch[2] < clear_z - COLUMN_TOP_BELOW_M:
                 away = math.hypot(xyz_pitch[0] - start[0], xyz_pitch[1] - start[1])
                 if away <= SLOT_COLUMN_M:
                     # 칸 벽 아래(놓은 자리 기둥 안): 바로 위로, 넣을 때의 기울기 그대로 올라가야 벽에 닿지 않는다
@@ -71,7 +80,7 @@ def run_place_exit_trial(driver, geometry, zeros, transition, *, supported=False
                         raise ValueError('place exit must rise straight out of the slot')
                     if abs(xyz_pitch[3] - start_pitch) > math.radians(3) * guard_mode.scale():
                         raise ValueError('place exit tool pitch changed inside the slot')
-                elif xyz_pitch[2] < clear_z - guard_mode.length(.005):
+                elif xyz_pitch[2] < clear_z - guard_mode.length(EXIT_DROP_BELOW_M):
                     raise ValueError('place exit dropped below the tray clearance height')     # 빠지는 중에는 벽 높이 위
             return links[-1]
 
@@ -109,4 +118,4 @@ def run_place_exit_trial(driver, geometry, zeros, transition, *, supported=False
         # 칸 안(2펄스/틱 = rate)과 벽 위(4펄스/틱 = 2×rate)를 한 경로로. 서보 속도 레지스터는 _execute_path가 경로 속도에 맞춘다
         return _execute_path(driver, geometry, joints, angles, clear, origin, goals[-1], target, record, cancelled,
                              pulses_per_step=2, period_s=2 / rate, tracking_limit=tracking_limit,
-                             waypoints=goals, seg_pulses=seg_pulses)
+                             waypoints=goals, seg_pulses=seg_pulses)      # 놓은 뒤 빈 컵: 앞당기기 없음(넣은 뒤 끝에서 넘쳐 흔들렸다)

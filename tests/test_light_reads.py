@@ -131,3 +131,92 @@ def test_travel_move_still_streams():
 def test_old_untimed_slow_move_is_unchanged():
     _, events = move(40, None)                           # 고정 틱이 아닌 예전 느린 이동은 그대로(가벼운 읽기 안 씀)
     assert 'light' not in events
+
+
+class SlowBusDriver(FakeDriver):
+    """서보 읽기 한 번에 15ms(Pi 실측 13~14ms보다 조금 길게)."""
+
+    def _snapshot(self, torque=1, fault_on_error=True):
+        self.t += .015
+        return {'joints': {n: {'position': self.position[n], 'goal': self.position[n]} for n in NAMES}}
+
+
+def test_fast_move_does_not_wait_an_extra_tick_when_the_bus_is_slower_than_the_tick():
+    # 2026-10-27: 400펄스/초(4펄스 10ms 틱)인데 통신이 틱보다 길면 예전에는 한 틱을 더 쉬어 틱이 약 25ms가 됐다
+    bus = FakeBus()
+    bus.sync_goal_positions = lambda raw: driver.position.update(raw)
+    driver = SlowBusDriver(bus)
+    joints = {n: SimpleNamespace(raw_min=0, raw_max=4095) for n in NAMES}
+    origin = {n: 2000 for n in NAMES}
+    times = []
+    _execute_path(driver, SimpleNamespace(forward=lambda q: (0., 0., 0., -math.pi / 2)), joints, lambda raw: raw,
+                  lambda raw: None, origin, dict(origin, shoulder=2400), (0., 0., 0.),
+                  lambda e: times.append(driver.t) if e.get('phase') == 'moving' else None, lambda: False,
+                  pulses_per_step=4, speed=TRAVEL_GOAL_SPEED, period_s=4 / 400, catch_up=True)
+    ticks = [b - a for a, b in zip(times, times[1:])]
+    assert len(ticks) > 20 and max(ticks) < .016          # 통신 시간(15ms)만큼만, 예전 방식이면 25ms
+
+
+def test_home_return_style_streaming_keeps_the_old_extra_wait():
+    # HOME 복귀(home_trial)는 catch_up을 넘기지 않는다: 더 빨라지면 어깨 추종 가드(32)에 걸릴 수 있어 예전 틱 그대로
+    bus = FakeBus()
+    bus.sync_goal_positions = lambda raw: driver.position.update(raw)
+    driver = SlowBusDriver(bus)
+    joints = {n: SimpleNamespace(raw_min=0, raw_max=4095) for n in NAMES}
+    origin = {n: 2000 for n in NAMES}
+    times = []
+    _execute_path(driver, SimpleNamespace(forward=lambda q: (0., 0., 0., -math.pi / 2)), joints, lambda raw: raw,
+                  lambda raw: None, origin, dict(origin, shoulder=2400), (0., 0., 0.),
+                  lambda e: times.append(driver.t) if e.get('phase') == 'moving' else None, lambda: False,
+                  pulses_per_step=4, speed=TRAVEL_GOAL_SPEED, period_s=4 / 300)
+    ticks = sorted(b - a for a, b in zip(times, times[1:]))
+    assert ticks[len(ticks) // 2] > .025
+
+
+class LaggingServoDriver(FakeDriver):
+    """서보가 목표를 시간상수 0.3초로 늦게 따라간다(2026-10-27 Pi 들기에서 잰 지연과 비슷)."""
+    TAU = .3
+
+    def __init__(self, bus):
+        super().__init__(bus)
+        self.goals, self.updated = dict(self.position), 0.
+        self.actual = {n: float(v) for n, v in self.position.items()}
+
+    def _snapshot(self, torque=1, fault_on_error=True):
+        self.t += .003
+        dt, self.updated = self.t - self.updated, self.t
+        k = 1 - math.exp(-dt / self.TAU)
+        for n in NAMES:
+            self.actual[n] += (self.goals[n] - self.actual[n]) * k
+        return {'joints': {n: {'position': round(self.actual[n]), 'goal': self.goals[n]} for n in NAMES}}
+
+
+def follow_error(lead_s):
+    bus = FakeBus()
+    driver = LaggingServoDriver(bus)
+    def goal(name, raw, speed=40):
+        driver.goals[name] = raw
+    bus.goal = goal
+    joints = {n: SimpleNamespace(raw_min=0, raw_max=4095) for n in NAMES}
+    origin = {n: 2000 for n in NAMES}
+    errors = []
+    def record(e):
+        if e.get('phase') == 'moving':
+            errors.append(abs(e['actual']['shoulder'] - (2000 + e['index'])))      # 이번 틱에 있어야 할 경로 점과의 차이
+    from motion import guard_mode
+    with patch_relaxed(guard_mode):
+        _execute_path(driver, SimpleNamespace(forward=lambda q: (0., 0., 0., -math.pi / 2)), joints, lambda raw: raw,
+                      lambda raw: None, origin, dict(origin, shoulder=2400), (0., 0., 0.), record, lambda: False,
+                      pulses_per_step=2, speed=150, period_s=2 / 150, tracking_limit=4095, lead_s=lead_s)
+    return max(errors)
+
+
+def patch_relaxed(guard_mode):
+    from unittest.mock import patch
+    return patch.object(guard_mode, 'relaxed', return_value=False)
+
+
+def test_leading_the_goal_keeps_a_lagging_servo_on_the_path():
+    without, with_lead = follow_error(0.), follow_error(.25)
+    assert without > 30                                    # 0.3초 늦는 서보는 150펄스/초에서 40펄스 넘게 뒤처진다
+    assert with_lead < without * .4                        # 0.25초 앞당기면 경로 점과의 차이가 크게 준다

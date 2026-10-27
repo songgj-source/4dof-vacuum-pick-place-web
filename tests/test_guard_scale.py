@@ -59,7 +59,8 @@ def test_collision_and_limit_constants_are_not_scaled(monkeypatch):
 
 def test_pick_to_carry_stay_above_check_follows_the_scale():
     src = (ROOT / 'src/motion/pick_to_carry.py').read_text()
-    assert 'math.hypot(xyz_pitch[0] - start[0], xyz_pitch[1] - start[1]) > guard_mode.length(.003)' in src   # 실제 위치 검사
+    assert 'math.hypot(xyz_pitch[0] - start[0], xyz_pitch[1] - start[1]) > guard_mode.length(allowed)' in src   # 실제 위치 검사(3mm, 뜬 뒤 8mm)
+    assert 'LIFT_XY_TIGHT_M, LIFT_XY_FREE_M, LIFT_FREE_ABOVE_M = .003, .008, .020' in src
     assert "for leg in prefix):" in src and "> .003 for leg in prefix" in src                                   # 계획 경로 검사는 그대로
 
 

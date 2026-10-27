@@ -37,3 +37,11 @@ def test_white_box_presses_deeper_than_the_common_press():
     assert extra_press_mm(catalog, 'white_box') == 5
     assert extra_press_mm(catalog, 'red_cube') == extra_press_mm(catalog, 'tape_measure') == 3
     assert 24 + catalog['cup_contact_offset_mm'] - extra_press_mm(catalog, 'white_box') == 15.5
+
+
+def test_pick_tilt_never_exceeds_10_degrees():
+    # 2026-10-27 사용자: 흰 상자를 15도로 기울여 집으니 흡착이 안 됐다 → 집을 때 최대 10도
+    from perception.object_targets import PICK_TILTS_DEG
+    assert max(PICK_TILTS_DEG) == 10.
+    src = (ROOT / 'scripts/pick_auto.py').read_text()
+    assert "not 0.<=args.pick_tilt_deg<=10." in src
