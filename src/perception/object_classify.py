@@ -176,8 +176,11 @@ def classify_objects(bgr, depth, intrinsics=None):
         blob_height = np.where(blob & (depth > 0), height, -np.inf)
         top = blob & (blob_height >= top_mm - 5.)
         ys, xs = np.nonzero(top)
+        # 윗면 픽셀의 최소 넓이 회전 사각형(깊이 좌표, 둘레 순서). 칸에 놓을 때 물체 방향을 따지는 데 쓴다(slot_wall)
+        corners = cv2.boxPoints(cv2.minAreaRect(np.c_[xs, ys].astype(np.float32))) if len(xs) >= 5 else None
         found.append(dict(label=label, name=display_name(label), bbox_px=[x, y, w, h], center_px=[float(c) for c in centers[i]],
                           top_center_px=[float(xs.mean()), float(ys.mean())],
+                          top_corners_px=None if corners is None else [[float(a), float(b)] for a, b in corners],
                           area_px=area, height_mm=float(np.median(height[blob])), top_height_mm=top_mm,
                           color_fractions=fractions, chromatic_pixels=count, chromatic_shares=shares, signature=sig,
                           usable_for_motion=False, physical_validated=False))

@@ -1,6 +1,6 @@
 """명령(물체 이름, 선택적으로 칸 번호) → 집기 목표와 place 작업 파일 내용. 하드웨어 접근 없음.
 
-칸은 명령으로 지정하면 그 칸, 없으면 기본 규칙(흰 상자 1, 빨간 정육면체 2, 줄자 3). 놓는 높이는 칸 바닥과 실제로
+칸은 명령으로 지정하면 그 칸, 없으면 기본 규칙(빨간 정육면체 1, 흰 상자 2, 줄자 3). 놓는 높이는 칸 바닥과 실제로
 옮길 물체의 높이로 계산한다. 위치는 후보 계산이며 물리 검증되지 않았다.
 """
 import math
@@ -79,6 +79,9 @@ def build_job(targets, tray, catalog, label, commanded_slot=None, *, acknowledge
         slot_x, slot_y = slot_x * (slot_radius + shift) / slot_radius, slot_y * (slot_radius + shift) / slot_radius
     job = dict(label=label, slot=dict(x_mm=slot_x, y_mm=slot_y, drop_z_mm=drop),
                rim_height_mm=float(tray['rim_height_mm']), obstacles=obstacles)
+    if label != 'unknown':
+        # 팔이 크게 뻗어야 하는 칸이면 place_plan이 이 거리 안에서 로봇 쪽 벽 가까이 놓는다(2026-10-27 사용자 요청)
+        job['slot']['inward_max_mm'], job['slot']['inward_basis'] = _inward_limit(tray, slot, target, entry)
     if label == 'unknown':
         job['object_geometry'] = target['object_geometry']
     if commanded_slot is not None:
@@ -87,6 +90,20 @@ def build_job(targets, tray, catalog, label, commanded_slot=None, *, acknowledge
                 manual_target_mm=manual, camera_target_mm=camera, pick_tilt_deg=target.get('pick_tilt_deg') or 0., pick_radial_offset_mm=float(pick_radial_offset_mm), pick_tangential_correction_mm=round(tangential, 2), pick_tilt_radial_correction_mm=round(tilt_radial, 2),
                 warnings=warnings, tray_method=tray.get('method'), tray_numbering=tray.get('numbering'),
                 physical_accuracy_verified=False, usable_for_motion=False)
+
+
+def _inward_limit(tray, slot, target, entry):
+    """칸 안에서 로봇 쪽으로 당겨도 벽에 닿지 않는 거리(mm)와 근거('measured_axis' 방향 측정 / 'diagonal_circle' / 'no_axis')."""
+    from sorting.slot_wall import inward_limit_mm
+    from tray.tray_capacity import SLOT_INNER_MM, slot_axis_xy
+    axis = slot_axis_xy(tray['slots']) if len(tray.get('slots') or {}) >= 2 else None
+    if axis is None:
+        return 0., 'no_axis'
+    measured = target.get('footprint_axis')
+    pick_mm = [target['target_xy'][0] * 1000., target['target_xy'][1] * 1000.]
+    limit = inward_limit_mm((slot['x_mm'], slot['y_mm']), axis, slot.get('inner_mm', SLOT_INNER_MM), pick_mm,
+                            footprint=measured, radius_mm=footprint_radius_mm(entry))
+    return round(limit, 1), 'measured_axis' if measured else 'diagonal_circle'
 
 
 import re

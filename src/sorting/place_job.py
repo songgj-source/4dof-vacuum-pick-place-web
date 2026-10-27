@@ -1,7 +1,7 @@
 """place 작업 파일(칸 위치·벽 높이·주변 물체)을 읽고 계획을 만든다. 하드웨어 접근 없음.
 
 작업 파일은 서비스/계획 스크립트가 카메라로 구해 쓰고, pick_auto.py가 읽는다. 칸 번호는 파일에 있어도
-물체 이름의 고정 규칙(흰 상자 1, 빨간 정육면체 2, 줄자 3)과 같을 때만 받아들인다.
+물체 이름의 고정 규칙(빨간 정육면체 1, 흰 상자 2, 줄자 3)과 같을 때만 받아들인다.
 """
 import json
 import math
@@ -18,6 +18,14 @@ def _finite(value, label):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError(f'place job: {label} must be a finite number')
     return float(value)
+
+
+def _inward(slot):
+    """로봇 쪽 벽으로 당길 수 있는 거리(mm). 옛 작업 파일(값 없음)은 0 = 칸 중심."""
+    value = _finite(slot.get('inward_max_mm', 0.), 'slot inward_max_mm')
+    if not 0. <= value <= 40.:
+        raise ValueError('place job: slot inward_max_mm must be within 0..40 mm')
+    return value
 
 
 def load_place_job(path):
@@ -55,7 +63,8 @@ def load_place_job(path):
     result = dict(label=label, slot_number=slot_number,
                 slot_source='command' if data.get('slot_number') is not None else 'default_rule',
                 slot=dict(x=_finite(slot['x_mm'], 'slot x') / 1000., y=_finite(slot['y_mm'], 'slot y') / 1000.,
-                          drop_z=_finite(slot['drop_z_mm'], 'slot drop z') / 1000.),
+                          drop_z=_finite(slot['drop_z_mm'], 'slot drop z') / 1000.,
+                          inward_max=_inward(slot) / 1000.),
                 rim_height_mm=rim, obstacles=obstacles)
     if geometry is not None:
         result.update(object_geometry=geometry, unknown_observation=data.get('unknown_observation'),

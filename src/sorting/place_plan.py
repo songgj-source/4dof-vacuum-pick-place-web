@@ -23,7 +23,7 @@ VERTICAL = -math.pi / 2          # 공구가 수직 아래를 향한 pitch
 DEFAULT_MAX_TILT_DEG = 60.       # 2026-10-21 사용자: 1번 칸 36.7cm가 50°로 닿지 않아 60°로(이전 50, 그 전 45). place 때 공구를 앞으로 기울여도 되는 한도(사용자 허용). 0이면 수직만. 필요한 가장 작은 기울기만 쓴다
 TILT_STEP_DEG = 5.
 MAX_TILT_DEG = 60.
-SLOT_RADIUS_MAX_M = .38          # 기울이기를 허용하면 칸 반경은 이 한도까지 도달 가능성을 따져 본다(수직만이면 ENVELOPE_M[1])
+SLOT_RADIUS_MAX_M = .41          # 기울이기를 허용하면 칸 반경은 이 한도까지 도달 가능성을 따져 본다(수직만이면 ENVELOPE_M[1]). 2026-10-27 .38→.41: 트레이 40cm, 1번 칸 정육면체를 로봇 쪽 벽에 붙이면 계산상 41cm까지
 CARRY_MARGIN_M = .010           # 운반 높이는 벽을 넘는 최소 높이(floor)보다 이만큼만 높게 시작한다(더 높으면 내리고 올리는 시간만 늘어난다)
 TILT_MIN_Z = .070                # 기울이는 자리의 최소 높이(이동 코드의 낮은 호버 한계)
 
@@ -182,6 +182,10 @@ def plan_place(model, slot, start_xyz, *, carry_z=CARRY_Z, min_carry_z=None, hel
     checked = [o.get('label', 'object') for o in obstacles]
     slot_xy, start_xy = (sx, sy), start[:2]
     target_radius = radius
+    inward = float(slot.get('inward_max', 0.) or 0.)
+    if not math.isfinite(inward) or not 0. <= inward <= .040:
+        raise ValueError('slot inward shift must be within 0..40 mm')
+    wall_shift_mm = 0.
 
     def result(legs, z, pull_mm, tilt_deg=0.):
         if any(math.hypot(*item[1][:2]) > HOVER_RADIUS_MAX_M for item in legs):
@@ -196,23 +200,38 @@ def plan_place(model, slot, start_xyz, *, carry_z=CARRY_Z, min_carry_z=None, hel
             out.append(leg)
         return dict(legs=out, start=start, release_after='lower', carry_z=round(z, 4), tilt_deg=float(tilt_deg),
                     slot_radius_m=radius, target_radius_m=target_radius, object_outward_mm=round((target_radius - radius) * 1000., 1),
-                    pull_in_mm=round(pull_mm, 1), obstacles_checked=checked,
+                    pull_in_mm=round(pull_mm, 1), near_wall_shift_mm=round(wall_shift_mm, 1), obstacles_checked=checked,
                     assumed_footprint_radius_mm=FOOTPRINT_RADIUS_M * 1000, held_radius_mm=float(held_radius_mm), executed=False, usable_for_motion=False)
 
     # 1) 곧바로 올라가는 계획: 벽을 넘는 가장 낮은 이동 높이부터(낮을수록 내리고 올리는 시간이 짧다)
-    blocked = None
-    for z in (_carry_heights(floor, carry_z, rim_z=min_carry_z or 0.) if start_tilt_deg == 0 else ()):
-        legs = [('raise', (*start_xy, z)), ('carry', (sx, sy, z)), ('lower', (sx, sy, drop)), ('retreat', (sx, sy, z))]
-        if radius <= HOVER_RADIUS_MAX_M and all(reachable(model, point) for _, point in legs) and _segment_reachable(model, start_xy, slot_xy, z):
-            try:
-                if held is not None:
-                    _check_clearance('carry', start_xy, slot_xy, z, held, contact_offset_mm, obstacles, held_radius)
-            except ValueError as exc:
-                blocked = blocked or exc          # 더 높은 이동 높이는 다른 물체 위를 넘을 수 있다
-                continue
-            return result(legs, z, 0.)
-    if blocked is not None:
-        raise blocked
+    def vertical():
+        blocked = None
+        for z in (_carry_heights(floor, carry_z, rim_z=min_carry_z or 0.) if start_tilt_deg == 0 else ()):
+            legs = [('raise', (*start_xy, z)), ('carry', (sx, sy, z)), ('lower', (sx, sy, drop)), ('retreat', (sx, sy, z))]
+            if radius <= HOVER_RADIUS_MAX_M and all(reachable(model, point) for _, point in legs) and _segment_reachable(model, start_xy, slot_xy, z):
+                try:
+                    if held is not None:
+                        _check_clearance('carry', start_xy, slot_xy, z, held, contact_offset_mm, obstacles, held_radius)
+                except ValueError as exc:
+                    blocked = blocked or exc          # 더 높은 이동 높이는 다른 물체 위를 넘을 수 있다
+                    continue
+                return result(legs, z, 0.)
+        if blocked is not None:
+            raise blocked
+        return None
+
+    planned = vertical()
+    if planned is not None:
+        return planned
+    # 팔이 크게 뻗어야 하는 칸(칸 중심에 수직으로 닿지 않는다): 칸 중심 대신 로봇 쪽 벽 가까이 놓는다(2026-10-27 사용자 요청).
+    # 당기는 거리는 sort_job이 물체 방향·칸 크기로 벽에 닿지 않게 계산한 inward_max다. 그 뒤 수직·기울이기·끌어당기기를 같은 목표로 다시 찾는다.
+    if inward > 0 and (radius > ENVELOPE_M[1] or not all(reachable(model, (sx, sy, z)) for z in (drop, floor))):
+        scale = (radius - inward) / radius
+        sx, sy = sx * scale, sy * scale
+        slot_xy, radius, target_radius, wall_shift_mm = (sx, sy), radius - inward, radius - inward, inward * 1000.
+        planned = vertical()
+        if planned is not None:
+            return planned
 
     # 2) 공구를 앞으로 기울여 곧바로 올라가는 계획: 가장 작은 기울기부터(수직은 이미 위에서 시도했다)
     # 기울이면 컵 아래 매달린 물체 바닥이 컵보다 (물체 높이 × sin 기울기)만큼 바깥에 놓인다(흰 상자 24mm·50도: 18mm).

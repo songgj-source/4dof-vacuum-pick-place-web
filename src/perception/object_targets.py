@@ -104,6 +104,21 @@ def top_center_xy(found, top_mm, locator):
     return _project(locator, pixel, plane_z) + locator.offset_xy
 
 
+def footprint_axis(found, top_mm, locator, entry):
+    """윗면 회전 사각형(top_corners_px)을 윗면 높이 평면에 투영해 책상 위 물체 방향(로봇 xy)을 잰다.
+    등록 크기(footprint_mm)와 맞지 않거나 잴 수 없으면 None. 결과: slot_wall.object_axis(axis_xy, half_mm)."""
+    from sorting.slot_wall import object_axis
+    corners = found.get('top_corners_px')
+    if not corners or not entry.get('footprint_mm'):
+        return None
+    plane_z = TABLE_PLANE_Z - (REFERENCE_TOP_MM - float(top_mm)) / 1000.
+    try:
+        xy = [(_project(locator, np.array(c) - np.array(DEPTH_MINUS_TOP_CENTER_PX), plane_z) + locator.offset_xy) * 1000. for c in corners]
+    except ValueError:
+        return None
+    return object_axis([(float(p[0]), float(p[1])) for p in xy], entry['footprint_mm'])
+
+
 def blob_geometry(item, locator, top_mm=None):
     """classify_objects 덩어리 하나 → 로봇 기준 윗면 중심 xy(m), 윗면 높이(mm), 사진 사각형으로 잰 가로·세로(mm),
     중심에서 사각형 모서리까지 반경(mm, 방향을 몰라도 안전한 쪽). 투영할 수 없으면 None."""
@@ -200,6 +215,7 @@ def locate_targets(bgr, depth, root, catalog=None, model=None, locator=None, min
             problems.append('top surface is not flat; vacuum seal is uncertain and the depth centre may be off')
         results.append(dict(label=label, name=found['name'], slot=slot_for(label),
                             target_xy=[x, y], contact_z=contact_z, radius_m=radius,
+                            footprint_axis=footprint_axis(found, top_mm, locator, entry),
                             pickable=pickable, problems=problems, pick_tilt_deg=pick_tilt,
                             suction_verified=bool(entry.get('suction_verified')),
                             top_center_px=found['top_center_px'], projection_pixel=[float(v) for v in pixel],

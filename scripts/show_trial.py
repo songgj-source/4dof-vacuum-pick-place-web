@@ -132,7 +132,8 @@ def show(run):
     if place_plan:
         legs = ' → '.join(LEGS.get(leg['name'], leg['name']) for leg in place_plan.get('legs', []))
         print(f"  놓기 경로   {legs}   운반 높이 {place_plan.get('carry_z', 0) * 1000:.0f}mm · 기울기 {place_plan.get('tilt_deg', 0):g}도"
-              f" · 끌어당김 {place_plan.get('pull_in_mm', 0):g}mm · 칸까지 {place_plan.get('slot_radius_m', 0) * 100:.1f}cm")
+              f" · 끌어당김 {place_plan.get('pull_in_mm', 0):g}mm · 칸까지 {place_plan.get('slot_radius_m', 0) * 100:.1f}cm"
+              f" · 로봇 쪽 벽으로 {place_plan.get('near_wall_shift_mm', 0):g}mm")
         avoided = [NAMES.get(o, '등록 안 된 물체' if o == 'unregistered' else o) for o in place_plan.get('obstacles_checked') or []]
         print(f"  피한 물체   {', '.join(avoided) or '없음'}"
               f"   (든 물체 반경 {place_plan.get('held_radius_mm', 0):.0f}mm)")

@@ -27,7 +27,7 @@ TRAVEL_GOAL_SPEED=600
 TRAVEL_GOAL_ACCELERATION=20
 TRAVEL_PULSES_PER_STEP=4
 MAX_TILT_RAD=math.radians(60.)   # place only: the tool may tilt forward from straight down by at most this much (slots beyond 0.30 m need about 43 degrees; user instruction 2026-10-15; 50->60 2026-10-21: 1번 칸 36.7cm)
-HOVER_RADIUS_MAX_M=.355  # 2026-10-23: user-requested 5 mm increase; planner and via points share this bound
+HOVER_RADIUS_MAX_M=.360  # 2026-10-23: user-requested 5 mm increase; 2026-10-27 .355->.360 (user: 1번 칸 40.4cm 정육면체가 컵 35.61~35.72cm 필요). planner and via points share this bound
 TRAVEL_PERIOD_S=.020
 QUICK_PERIOD_S=.040
 # Commanded acceleration (path pulses/s^2). The servo acceleration register limits what it
