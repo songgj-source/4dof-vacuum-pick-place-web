@@ -89,6 +89,21 @@ class LidarAutoPortTests(unittest.TestCase):
         self.assertEqual(found, 'lidar')
         self.assertIsNone(self.probe.find_ld_lidar(listen_s=.05, ports=['pump'], opener=opener))
 
+    def test_never_probes_the_arm_pump_port(self):
+        # 2026-10-27 Pi: 라이다가 꺼진 동안 탐색이 펌프 포트를 열어 팔이 펌프를 못 열었다(열면 ESP32도 재부팅된다)
+        import glob as globmod, os
+        from unittest.mock import patch
+        names = {'/dev/serial/by-path/pump': '/dev/ttyUSB0', '/dev/serial/by-path/lidar': '/dev/ttyUSB1'}
+        with patch.object(globmod, 'glob', return_value=sorted(names)), \
+             patch.object(os.path, 'realpath', side_effect=lambda p: names.get(p, p)), \
+             patch.dict(os.environ, {'LD_LIDAR_SKIP_PORTS': '/dev/serial/by-path/pump'}):
+            self.assertEqual(self.probe.candidates(), ['/dev/serial/by-path/lidar'])
+        with patch.object(globmod, 'glob', return_value=sorted(names)), patch.object(os.path, 'realpath', side_effect=lambda p: names.get(p, p)), \
+             patch.dict(os.environ, {'LD_LIDAR_SKIP_PORTS': ''}):
+            self.assertEqual(len(self.probe.candidates()), 2)                 # 설정이 없으면 예전처럼 모두
+        script = (ROOT / 'pi' / 'drive_ctl.sh').read_text()
+        self.assertIn("LD_LIDAR_SKIP_PORTS='$PUMP_PORT'", script)
+
     def test_launch_defaults_to_auto(self):
         launch = (SLAM / 'src' / 'car2_bringup' / 'launch' / 'robot_lidar.launch.py').read_text()
         self.assertIn("LIDAR_PORT = 'auto'", launch)

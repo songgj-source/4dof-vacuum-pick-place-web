@@ -25,9 +25,15 @@ def looks_like_ld(data, need=3):
     return False
 
 
+def skipped():
+    """열어 보지 않을 포트(실제 장치 경로). LD_LIDAR_SKIP_PORTS에 ':'로 구분(pi/drive_ctl.sh가 팔의 펌프 포트를 넣는다).
+    2026-10-27 Pi: 라이다가 꺼진 동안 12초마다 펌프 ESP32 포트를 1초씩 열어(열면 ESP32가 재부팅된다) 팔이 펌프를 못 열었다."""
+    return {os.path.realpath(p) for p in os.environ.get('LD_LIDAR_SKIP_PORTS', '').split(':') if p.strip()}
+
+
 def candidates():
-    """USB 시리얼(ttyUSB*)의 포트 위치 이름. 같은 장치의 usb-/usbv2- 두 이름은 하나로 센다."""
-    seen, ports = set(), []
+    """USB 시리얼(ttyUSB*)의 포트 위치 이름. 같은 장치의 usb-/usbv2- 두 이름은 하나로 센다. 건너뛸 포트(skipped)는 뺀다."""
+    seen, ports = set(skipped()), []
     for path in sorted(glob.glob('/dev/serial/by-path/*')):
         real = os.path.realpath(path)
         if 'ttyUSB' in real and real not in seen:

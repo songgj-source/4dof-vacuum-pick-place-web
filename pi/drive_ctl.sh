@@ -20,7 +20,9 @@ MAP_NAME="${ARM_DRIVE_MAP:-remap_20261023_1156}"
 MAP="$WS/maps/$MAP_NAME.yaml"
 CAR_PORT="${ARM_CAR_PORT:-/dev/ttyAMA0}"
 read -r INIT_X INIT_Y INIT_YAW <<< "${ARM_DRIVE_INIT:-0.0 0.0 0.0}"
-ENV="export ROS_DISTRO=jazzy ROS_DOMAIN_ID=$DOMAIN RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; source /opt/ros/jazzy/setup.bash; source '$WS/install/setup.bash'"
+# 라이다 자동 탐색(port:=auto)이 팔의 펌프 포트를 열지 않게 한다(열면 펌프 ESP32가 재부팅되고 팔이 펌프를 못 연다, 2026-10-27)
+PUMP_PORT="${ARM_PUMP_PORT:-$(sed -n 's/^ARM_PUMP_PORT=//p' "$ROOT/pi/arm-api.env" 2>/dev/null)}"
+ENV="export ROS_DISTRO=jazzy ROS_DOMAIN_ID=$DOMAIN RMW_IMPLEMENTATION=rmw_cyclonedds_cpp LD_LIDAR_SKIP_PORTS='$PUMP_PORT'; source /opt/ros/jazzy/setup.bash; source '$WS/install/setup.bash'"
 SESSIONS=(arm_drive_robot arm_drive_nav arm_drive_web)
 LOGS="$HOME/arm_drive"
 
