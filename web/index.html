@@ -306,7 +306,7 @@
     <section class="card">
       <div class="card-head"><div><h2>메뉴</h2><p>누르면 확인 창이 뜬 뒤 실행합니다</p></div><button type="button" id="api-toggle" class="ghost" aria-pressed="false" title="각 메뉴가 부르는 REST 주소를 보여 줍니다">API 주소</button></div>
       <ol class="menu">
-        <li><button class="item hero" data-run="all"><i>1</i>책상 정리하기<small id="tidy-order">흰 상자 → 정육면체 → 줄자 → 등록 물체 순서</small><code class="api">POST /api/menu/4</code></button></li>
+        <li><button class="item hero" data-run="all"><i>1</i>책상 정리하기<small id="tidy-order">정육면체 → 흰 상자 → 줄자 → 등록 물체 순서</small><code class="api">POST /api/menu/4</code></button></li>
         <li><button class="item" data-open="pick5"><i>2</i>물체와 칸을 골라서 넣기<code class="api">POST /api/menu/5</code></button>
           <div class="sub" id="pick5" hidden>
             <select id="obj" aria-label="물체">
@@ -365,7 +365,7 @@
 
 <script>
 const NAMES = { white_box: '흰 상자', red_cube: '빨간 정육면체', tape_measure: '줄자', unknown: '새 물체' };
-const DEFAULT_SLOT = { white_box: 1, red_cube: 2, tape_measure: 3, unknown: 3 };
+const DEFAULT_SLOT = { white_box: 2, red_cube: 1, tape_measure: 3, unknown: 3 };
 const REASONS = {
   object_not_found: '물체를 찾지 못했습니다.', slot_too_small: '칸에 들어갈 여유가 부족합니다.', unreachable: '팔이 닿지 않는 위치입니다.', path_blocked: '운반 경로에 다른 물체가 있어 부딪힐 수 있습니다.',
   tray_not_found: '트레이를 찾지 못했습니다.', tray_moved: '트레이 위치가 바뀌었습니다.', torque_off: '서보 토크가 꺼져 있습니다. 팔을 받치고 토크를 켜 주세요.',
@@ -449,7 +449,7 @@ document.querySelectorAll('.examples [data-ex]').forEach((b) => b.onclick = () =
 })();
 // 결과는 대화창에 남긴다(진행 상태 칸은 작업 중에만 쓰인다).
 // 5번: 물체 등록·삭제. 목록(GET /api/objects)으로 이름표·기본 칸·물체 선택 칸도 함께 맞춘다.
-let OBJECT_ORDER = ['white_box', 'red_cube', 'tape_measure'];
+let OBJECT_ORDER = ['red_cube', 'white_box', 'tape_measure'];
 function tidyOrder() { return OBJECT_ORDER.map((o) => NAMES[o] || o).join(' → '); }
 async function loadObjects() {
   let res; try { res = await api('GET', '/api/objects'); } catch (e) { return; }

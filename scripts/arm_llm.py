@@ -21,7 +21,7 @@ MAX_TURNS = 3        # 상태·사진을 본 뒤 답하는 정도까지만 반�
 OBJECTS = ['white_box', 'red_cube', 'tape_measure', 'unknown']     # 등록 물체(custom_N)는 _refresh가 unknown 앞에 넣는다
 
 SYSTEM = f"""당신은 SO-101 4축 진공흡착 로봇팔 '{ROBOT_NAME}'입니다. 이름을 물으면 {ROBOT_NAME}라고 답하세요. 사용자의 한국어 요청을 도구 호출로 바꿉니다.
-물체: white_box(흰 상자, 기본 1번 칸), red_cube(빨간 정육면체·큐브, 기본 2번 칸), tape_measure(줄자, 기본 3번 칸),
+물체: white_box(흰 상자, 기본 2번 칸), red_cube(빨간 정육면체·큐브, 기본 1번 칸), tape_measure(줄자, 기본 3번 칸),
 unknown(목록에 없는 새 물체: 책상에 둔 등록 안 된 물체 하나를 바로 사진으로 찾아 집는다). 칸은 1·2·3번뿐입니다.
 - 물체를 넣으라는 요청은 sort_object를 호출하세요. 칸을 말하지 않으면 slot을 빼세요(기본 칸). unknown은 칸이 꼭 필요하니 없으면 되물으세요.
 - "새 물체", "새로운 물체", "모르는 물체"는 object_name "unknown"입니다.
@@ -44,7 +44,7 @@ TOOLS = [
     _tool('look_at_table', '위 카메라로 지금 작업대를 찍어 보이는 물체와 쓸 수 있는 메뉴 번호를 알려 준다. 로봇은 움직이지 않는다(약 4초). '
           '사용자가 무엇이 있는지 물을 때만 부른다. 넣으라는 명령에는 부르지 말고 바로 sort_object를 쓴다.'),
     _tool('get_arm_status', '로봇팔이 작업 중인지, HOME 자세인지, 진행 단계를 읽는다. 움직이지 않는다.'),
-    _tool('sort_object', '물체를 찾아 집어 트레이 칸에 넣고 HOME으로 돌아온다. 칸을 말하지 않으면 기본 칸(흰 상자 1, 정육면체 2, 줄자 3). '
+    _tool('sort_object', '물체를 찾아 집어 트레이 칸에 넣고 HOME으로 돌아온다. 칸을 말하지 않으면 기본 칸(정육면체 1, 흰 상자 2, 줄자 3). '
           'unknown(새 물체)은 칸이 꼭 필요하고, 시작하면 책상의 등록 안 된 물체 하나를 바로 찍어 집는다.',
           {'object_name': {'type': 'string', 'enum': OBJECTS, 'description': '넣을 물체(등록 물체는 custom_N)'},
            'slot': {'type': 'integer', 'enum': [1, 2, 3], 'description': '넣을 칸 번호. 사용자가 말했을 때만'}}, ['object_name']),
@@ -58,7 +58,7 @@ TOOLS = [
 ]
 MOTION = {'sort_object', 'sort_all_objects', 'arm_return_home', 'move_to_place'}
 NAMES = {'white_box': '흰 상자', 'red_cube': '빨간 정육면체', 'tape_measure': '줄자', 'unknown': '새 물체'}
-DEFAULT_SLOT = {'white_box': 1, 'red_cube': 2, 'tape_measure': 3}
+DEFAULT_SLOT = {'white_box': 2, 'red_cube': 1, 'tape_measure': 3}
 
 # ---- 규칙으로 먼저 처리하는 분명한 명령(9B 모델이 흔들려도 결과가 같게) ----
 # 물체·칸 해석은 터미널 명령(run_sort.py --command)과 같은 sorting.sort_job.parse_command를 쓴다.
@@ -142,7 +142,7 @@ def normalize(proposal):
     return proposal
 
 
-ORDER = ['white_box', 'red_cube', 'tape_measure']      # 책상 정리 순서: 기본 세 물체 → 등록 물체
+ORDER = ['red_cube', 'white_box', 'tape_measure']      # 책상 정리 순서(칸 번호 순서: 1번 정육면체 → 2번 흰 상자 → 3번 줄자, 2026-10-27): 기본 세 물체 → 등록 물체
 
 
 def _refresh():

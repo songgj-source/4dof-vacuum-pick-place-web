@@ -20,7 +20,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_FILE = 'config/registered_objects.json'
 PHOTO_DIR = 'output/registered_objects'
-BUILTIN = ('white_box', 'red_cube', 'tape_measure')
+BUILTIN = ('red_cube', 'white_box', 'tape_measure')
 BUILTIN_NAMES = {'white_box': '흰 상자', 'red_cube': '빨간 정육면체', 'tape_measure': '줄자'}
 # 기존 이름·별칭(메뉴·채팅·NOMI가 이미 쓰는 말)과 겹치는 이름은 받지 않는다
 RESERVED_NAMES = ('unknown', '새 물체', '새로운 물체', '모르는 물체', '등록 안 된 물체', '미등록 물체', '물체',

@@ -63,7 +63,7 @@ class RegisterTests(RegistryBase):
         self.assertFalse(entry['suction_verified'])                 # 흡착은 확인하지 않고 등록(바로 집는다)
         self.assertTrue((self.root / 'output/registered_objects/custom_1.png').exists())
         self.assertEqual([f['label'] for f in classify_objects(*scene())], ['custom_1'])
-        self.assertEqual(object_registry.labels(self.root), ['white_box', 'red_cube', 'tape_measure', 'custom_1'])
+        self.assertEqual(object_registry.labels(self.root), ['red_cube', 'white_box', 'tape_measure', 'custom_1'])
         self.assertEqual(load_catalog(self.root / 'config/object_catalog.json')['objects']['custom_1']['height_mm'], 34.0)
         self.assertEqual((slot_for('custom_1'), choose_slot('custom_1'), choose_slot('custom_1', 3)), (2, 2, 3))
         self.assertEqual(parse_command('파란컵 넣어줘'), ('custom_1', None))
@@ -115,7 +115,7 @@ class RegisterTests(RegistryBase):
         with self.assertRaisesRegex(ValueError, '삭제할 수 없습니다'):
             object_registry.remove('white_box', self.root)
         self.assertEqual(object_registry.remove('파란 컵', self.root)['label'], 'custom_1')
-        self.assertEqual(object_registry.labels(self.root), ['white_box', 'red_cube', 'tape_measure'])
+        self.assertEqual(object_registry.labels(self.root), ['red_cube', 'white_box', 'tape_measure'])
         self.assertEqual([f['label'] for f in classify_objects(*scene())], ['unknown'])
 
     def test_sync_tables_edits_in_place(self):

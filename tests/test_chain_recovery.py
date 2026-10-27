@@ -74,11 +74,11 @@ def test_recovery_retries_same_object_from_home_once(monkeypatch):
     outcome = sort_menu.run_all_chained(run=run, labels=['white_box', 'red_cube'],
                 on_item=lambda label, stage: stages.append((label, stage)))
     assert outcome['ok']
-    assert [item['object'] for item in outcome['items']] == ['white_box', 'red_cube']
+    assert [item['object'] for item in outcome['items']] == ['red_cube', 'white_box']      # 순서는 칸 번호 순서(정육면체 1번 → 흰 상자 2번)
     first, home, retry = calls[3:]
     assert '--start-above-tray' in first
     assert Path(home[1]).name == 'return_home.py'
     assert '--start-above-tray' not in retry
-    assert retry[retry.index('--object') + 1] == 'red_cube'
+    assert retry[retry.index('--object') + 1] == 'white_box'
     assert retry[retry.index('--plan-in') + 1] == first[first.index('--plan-in') + 1]
-    assert stages[-2:] == [('red_cube', 'recover_home'), ('red_cube', 'retry_pick')]
+    assert stages[-2:] == [('white_box', 'recover_home'), ('white_box', 'retry_pick')]

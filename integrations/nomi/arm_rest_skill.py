@@ -14,8 +14,8 @@ import urllib.error
 import urllib.request
 
 OBJECTS = ('white_box', 'red_cube', 'tape_measure', 'unknown')
-DEFAULT_SLOT = {'white_box': 1, 'red_cube': 2, 'tape_measure': 3}    # 칸을 말하지 않았을 때 넣는 칸(메뉴 5번에 그대로 보낸다)
-TIDY_ORDER = ('white_box', 'red_cube', 'tape_measure')                # 책상 정리하기 순서
+DEFAULT_SLOT = {'white_box': 2, 'red_cube': 1, 'tape_measure': 3}    # 칸을 말하지 않았을 때 넣는 칸(메뉴 5번에 그대로 보낸다)
+TIDY_ORDER = ('red_cube', 'white_box', 'tape_measure')                # 책상 정리하기 순서
 MENU_TIDY, MENU_PICK, MENU_HOME, MENU_UNKNOWN = 4, 5, 6, 7           # REST 주소 번호(/api/menu/N). 화면 메뉴 번호와는 다르다
 # 결과 이유 코드 → 말할 문장(원문이 영어이거나 비어 있을 때 쓴다. TTS가 그대로 읽는다)
 REASON_TEXT = {

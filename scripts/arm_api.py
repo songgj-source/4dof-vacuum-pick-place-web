@@ -17,7 +17,7 @@
   POST /robot_arm    {"action": "pick_place"|"return_home"|"status"|"stop", "object": ..., "slot": ...}
                      → LLM 도구(function) 호출 내용을 그대로 넘기는 한 개짜리 주소(docs/ROBOT_API.md의 도구 정의와 같은 모양)
 
-object: white_box(기본 1번 칸) · red_cube(2) · tape_measure(3) · unknown(책상의 등록 안 된 물체 하나를 바로 찍어 집는다, 칸 필요)
+object: white_box(기본 2번 칸) · red_cube(1) · tape_measure(3) · unknown(책상의 등록 안 된 물체 하나를 바로 찍어 집는다, 칸 필요)
 한 번에 한 작업만 받는다. 실행 중에 다른 명령이 오면 409(busy). 토크가 꺼졌거나 팔 상태를 읽지 못하면 움직이지 않고 거절한다.
 """
 import argparse
@@ -45,9 +45,9 @@ import arm_stt               # 로컬 음성 인식(faster-whisper는 처음 쓸
 import base_drive            # 팀 주행 서버(map_web)로 차를 움직인다: base_state, goto_label_wall
 from hardware import devices
 
-OBJECTS = {'white_box': 1, 'red_cube': 2, 'tape_measure': 3, 'unknown': 3}      # 물체 → 기본 칸
+OBJECTS = {'white_box': 2, 'red_cube': 1, 'tape_measure': 3, 'unknown': 3}      # 물체 → 기본 칸
 NAMES = {'white_box': '흰 상자', 'red_cube': '빨간 정육면체', 'tape_measure': '줄자', 'unknown': 'unknown'}
-ALL_ORDER = ['white_box', 'red_cube', 'tape_measure']     # 메뉴 4번: 흰 상자 → 정육면체 → 줄자 → 등록 물체, 각자 기본 칸
+ALL_ORDER = ['red_cube', 'white_box', 'tape_measure']     # 메뉴 4번: 정육면체 → 흰 상자 → 줄자 → 등록 물체(칸 번호 순서), 각자 기본 칸
 from perception import object_registry     # noqa: E402  등록 물체(config/registered_objects.json)
 
 
@@ -831,10 +831,10 @@ def describe_scene(bgr, depth):
 # 메뉴 1~7번을 그대로 REST API로 둔다(터미널 메뉴 sort_menu.py와 같은 번호·동작). 웹 화면의 버튼도 이 주소를 부른다.
 # GET /api/menu가 이 목록을 그대로 돌려주고, /docs가 이 목록으로 설명 페이지를 만든다.
 MENU = [
-    dict(id=1, label='흰 상자 → 1번 칸', path='/api/menu/1', body=None, skill='pick_place', params=dict(object='white_box', slot=1),
-         description='흰 상자를 찾아 집은 뒤 1번 칸에 넣고 HOME으로 돌아온다.'),
-    dict(id=2, label='빨간 정육면체 → 2번 칸', path='/api/menu/2', body=None, skill='pick_place', params=dict(object='red_cube', slot=2),
-         description='빨간 정육면체를 찾아 집은 뒤 2번 칸에 넣고 HOME으로 돌아온다.'),
+    dict(id=1, label='흰 상자 → 2번 칸', path='/api/menu/1', body=None, skill='pick_place', params=dict(object='white_box', slot=2),
+         description='흰 상자를 찾아 집은 뒤 2번 칸에 넣고 HOME으로 돌아온다.'),
+    dict(id=2, label='빨간 정육면체 → 1번 칸', path='/api/menu/2', body=None, skill='pick_place', params=dict(object='red_cube', slot=1),
+         description='빨간 정육면체를 찾아 집은 뒤 1번 칸에 넣고 HOME으로 돌아온다.'),
     dict(id=3, label='줄자 → 3번 칸', path='/api/menu/3', body=None, skill='pick_place', params=dict(object='tape_measure', slot=3),
          description='줄자를 찾아 집은 뒤 3번 칸에 넣고 HOME으로 돌아온다.'),
     dict(id=4, label='책상 정리하기', path='/api/menu/4', body={'objects': '(선택) [white_box, red_cube, tape_measure] 중 일부'}, skill='pick_all', params={},

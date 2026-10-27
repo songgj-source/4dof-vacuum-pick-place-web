@@ -22,7 +22,7 @@ from motion import guard_mode               # noqa: E402  가드 배율(HOME 판
 from sorting.place_followup import home_return_succeeded, home_failure_reason
 
 PY = sys.executable
-BUILTIN_OBJECTS = (('white_box', '흰 상자', 1), ('red_cube', '빨간 정육면체', 2), ('tape_measure', '줄자', 3))
+BUILTIN_OBJECTS = (('red_cube', '빨간 정육면체', 1), ('white_box', '흰 상자', 2), ('tape_measure', '줄자', 3))
 OBJECTS = {}            # 번호 → (label, 이름, 기본 칸). 기본 세 물체 + 등록 물체(refresh_objects가 채운다)
 OBJECTS_DEFAULT = {}    # label → 기본 칸
 
@@ -86,7 +86,7 @@ def plain(text):
 TRAY_FRAME = (ROOT / 'output' / 'tray_frames' / 'latest_rgb.png', ROOT / 'output' / 'tray_frames' / 'latest_depth.npy')
 HOME_COMMAND = [PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32']
 ITEMS = [
-    ('1', '책상 정리하기 (흰 상자 → 정육면체 → 줄자 → 등록 물체 순서)'),
+    ('1', '책상 정리하기 (정육면체 → 흰 상자 → 줄자 → 등록 물체 순서)'),
     ('2', '물체와 칸을 골라서 넣기'),
     ('3', 'HOME으로 복귀'),
     ('4', 'unknown 집기 (책상의 등록 안 된 물체 하나를 바로 찍어 집기)'),
@@ -445,7 +445,7 @@ def chain_refused(result):
 
 
 def run_all_chained(run=None, on_item=None, stopped=lambda: False, labels=None):
-    """메뉴 1(책상 정리하기): 흰 상자 → 정육면체 → 줄자(labels를 주면 그 물체만, 같은 순서). (1) HOME에서 차례로 계획(사진)
+    """메뉴 1(책상 정리하기): 정육면체 → 흰 상자 → 줄자(labels를 주면 그 물체만, 같은 순서). (1) HOME에서 차례로 계획(사진)
     (2) 놓은 뒤 HOME을 거치지 않고 다음 물체. 계획에서 물체가 안 보이면 멈추지 않고 건너뛴다(책상에 있는 것만 정리).
     등록 안 된 물체는 집지 않고 장애물로만 피한다(계획마다 센 수 중 가장 큰 값을 unregistered_left로 알린다).
     run(cmd) → (code, result, seconds). on_item(label, stage)은 진행 표시용.

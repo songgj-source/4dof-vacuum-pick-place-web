@@ -245,38 +245,38 @@ class ApiTests(ApiBase):
         task = self.wait_done(body['task_id'])
         self.assertTrue(task['result']['ok'])
         plans, picks = self.commands[:3], self.commands[3:]
-        self.assertEqual([self.label_of(c) for c in plans], ['white_box', 'red_cube', 'tape_measure'])
+        self.assertEqual([self.label_of(c) for c in plans], ['red_cube', 'white_box', 'tape_measure'])
         self.assertTrue(all('--plan-out' in c and '--plan-in' not in c for c in plans))   # 1) 팔이 HOME일 때 세 물체를 미리 계획
-        self.assertEqual([self.label_of(c) for c in picks], ['white_box', 'red_cube', 'tape_measure'])
+        self.assertEqual([self.label_of(c) for c in picks], ['red_cube', 'white_box', 'tape_measure'])
         for plan, pick in zip(plans, picks):                                              # 2) 같은 계획 파일로 집는다(사진을 다시 찍지 않는다)
             self.assertEqual(self.flag_value(pick, '--plan-in'), self.flag_value(plan, '--plan-out'))
         self.assertEqual([('--skip-home-after-place' in c, '--start-above-tray' in c) for c in picks],
                          [(True, False), (True, True), (False, True)])                    # 마지막 물체만 HOME으로 돌아간다
         self.assertFalse(any('return_home.py' in ' '.join(c) for c in self.commands))
-        self.assertEqual(task['phases'][0]['label'], '흰 상자: 계획(사진)')
-        self.assertEqual([i['object'] for i in task['items']], ['white_box', 'red_cube', 'tape_measure'])
+        self.assertEqual(task['phases'][0]['label'], '빨간 정육면체: 계획(사진)')
+        self.assertEqual([i['object'] for i in task['items']], ['red_cube', 'white_box', 'tape_measure'])
 
     def test_pick_all_plan_failure_runs_the_planned_ones_and_ends_at_home(self):
         self.release.set()
         self.run_with([(0, dict(ok=True), 1.), (1, dict(ok=False, reason='planning failed: tray not found'), 1.), (0, dict(ok=True), 1.)])
         _, body = self.call('POST', '/pick_all')
         task = self.wait_done(body['task_id'])
-        self.assertEqual(len(self.commands), 3)                   # 계획 흰 상자, 계획 정육면체(실패), 흰 상자 집기. 줄자는 계획도 안 한다
+        self.assertEqual(len(self.commands), 3)                   # 계획 정육면체, 계획 흰 상자(실패), 정육면체 집기. 줄자는 계획도 안 한다
         pick = self.commands[2]
-        self.assertEqual(self.label_of(pick), 'white_box')
+        self.assertEqual(self.label_of(pick), 'red_cube')
         self.assertNotIn('--skip-home-after-place', pick)          # 계획된 마지막 물체라 놓은 뒤 HOME으로 돌아간다
         self.assertNotIn('--start-above-tray', pick)
         self.assertEqual(task['result']['reason_code'], 'tray_not_found')
-        self.assertIn('빨간 정육면체에서 멈췄습니다', task['result']['reason'])
+        self.assertIn('흰 상자에서 멈췄습니다', task['result']['reason'])
 
     def test_pick_all_failure_after_a_chained_place_returns_home(self):
         self.release.set()
         self.run_with([(0, dict(ok=True), 1.)] * 3 + [(0, dict(ok=True), 1.), (1, dict(ok=False, reason='target not found'), 1.), (0, dict(home_return_complete=True, final_hold_confirmed=True, restoration_verified=True), 1.)])
         _, body = self.call('POST', '/pick_all')
         task = self.wait_done(body['task_id'])
-        self.assertIn('return_home.py', ' '.join(self.commands[-1]))   # 흰 상자를 놓고 트레이 위에 서 있었을 수 있다: HOME 복귀
+        self.assertIn('return_home.py', ' '.join(self.commands[-1]))   # 정육면체를 놓고 트레이 위에 서 있었을 수 있다: HOME 복귀
         self.assertEqual(len(self.commands), 6)                        # 줄자는 실행하지 않았다
-        self.assertIn('빨간 정육면체에서 멈췄습니다', task['result']['reason'])
+        self.assertIn('흰 상자에서 멈췄습니다', task['result']['reason'])
         self.assertEqual([i['ok'] for i in task['items']], [True, False])
 
     def test_pick_all_refused_chain_start_goes_home_then_retries_and_continues(self):
@@ -287,11 +287,11 @@ class ApiTests(ApiBase):
         _, body = self.call('POST', '/pick_all')
         task = self.wait_done(body['task_id'])
         self.assertTrue(task['result']['ok'])
-        red_first, home, red_again, tape = self.commands[4:8]
-        self.assertIn('--start-above-tray', red_first)
+        white_first, home, white_again, tape = self.commands[4:8]
+        self.assertIn('--start-above-tray', white_first)
         self.assertIn('return_home.py', ' '.join(home))                       # 움직이기 전에 멈췄으니 검증된 HOME 복귀
-        self.assertEqual((self.label_of(red_again), '--start-above-tray' in red_again, '--skip-home-after-place' in red_again),
-                         ('red_cube', False, True))                             # HOME에서 다시 하고, 놓은 뒤에는 다시 연속으로
+        self.assertEqual((self.label_of(white_again), '--start-above-tray' in white_again, '--skip-home-after-place' in white_again),
+                         ('white_box', False, True))                             # HOME에서 다시 하고, 놓은 뒤에는 다시 연속으로
         self.assertIn('--start-above-tray', tape)
         self.assertEqual([i['ok'] for i in task['items']], [True, True, True])
 
@@ -312,34 +312,34 @@ class ApiTests(ApiBase):
 
     def test_pick_all_skips_objects_missing_from_the_desk(self):
         self.release.set()
-        missing = (1, dict(ok=False, attempts=[], reason='planning failed: plan_sort.py: error: red_cube not found in the current camera view'), 1.)
+        missing = (1, dict(ok=False, attempts=[], reason='planning failed: plan_sort.py: error: white_box not found in the current camera view'), 1.)
         self.run_with([(0, dict(ok=True), 1.), missing, (0, dict(ok=True), 1.), (0, dict(ok=True), 1.), (0, dict(ok=True), 1.)])
         _, body = self.call('POST', '/pick_all')
         task = self.wait_done(body['task_id'])
         self.assertTrue(task['result']['ok'])
-        self.assertIn('빨간 정육면체', task['result']['note'])
+        self.assertIn('흰 상자', task['result']['note'])
         picks = self.commands[3:]
-        self.assertEqual([self.label_of(c) for c in picks], ['white_box', 'tape_measure'])
+        self.assertEqual([self.label_of(c) for c in picks], ['red_cube', 'tape_measure'])
         self.assertEqual([('--skip-home-after-place' in c, '--start-above-tray' in c) for c in picks], [(True, False), (False, True)])
-        self.assertEqual(task['items'][-1], dict(object='red_cube', ok=None, skipped=True, reason_code='object_not_found'))
+        self.assertEqual(task['items'][-1], dict(object='white_box', ok=None, skipped=True, reason_code='object_not_found'))
 
     def test_pick_all_reports_unregistered_objects_left(self):
         self.release.set()
         planned = (0, dict(ok=True, unregistered_left=1), 1.)            # 계획이 등록 안 된 물체 1개를 장애물로 봤다
-        missing = (1, dict(ok=False, attempts=[], reason='planning failed: red_cube not found in the current camera view'), 1.)
+        missing = (1, dict(ok=False, attempts=[], reason='planning failed: white_box not found in the current camera view'), 1.)
         self.run_with([planned, missing, planned, (0, dict(ok=True), 1.), (0, dict(ok=True), 1.)])
         _, body = self.call('POST', '/pick_all')
         task = self.wait_done(body['task_id'])
         self.assertTrue(task['result']['ok'])
         self.assertEqual(task['result']['unregistered_left'], 1)
         self.assertIn('등록 안 된 물체 1개는 그대로 뒀습니다', task['result']['note'])
-        self.assertIn('빨간 정육면체', task['result']['note'])
-        self.assertEqual([self.label_of(c) for c in self.commands[3:]], ['white_box', 'tape_measure'])   # 등록 안 된 물체는 집지 않는다
+        self.assertIn('흰 상자', task['result']['note'])
+        self.assertEqual([self.label_of(c) for c in self.commands[3:]], ['red_cube', 'tape_measure'])   # 등록 안 된 물체는 집지 않는다
 
     def test_pick_all_with_nothing_on_the_desk(self):
         self.release.set()
         missing = lambda label: (1, dict(ok=False, attempts=[], reason=f'planning failed: {label} not found in the current camera view'), 1.)
-        self.run_with([missing('white_box'), missing('red_cube'), missing('tape_measure')])
+        self.run_with([missing('red_cube'), missing('white_box'), missing('tape_measure')])
         _, body = self.call('POST', '/pick_all')
         task = self.wait_done(body['task_id'])
         self.assertEqual((task['result']['ok'], task['result']['reason_code']), (False, 'object_not_found'))
@@ -427,11 +427,11 @@ class ChatTests(ApiBase):
         return self.call('POST', '/chat', {'history': history or [], 'text': text})
 
     def test_motion_is_only_proposed_never_run(self):
-        llm = FakeLlm([say('넣을게요.', call('sort_object', object_name='red_cube', slot=2)),
+        llm = FakeLlm([say('넣을게요.', call('sort_object', object_name='red_cube', slot=1)),
                        say('화면에서 실행을 눌러 주세요.')])
         status, body = self.chat(llm)
         self.assertEqual(status, 200)
-        self.assertEqual(body['proposal'], {'action': 'pick_place', 'object': 'red_cube'})   # 기본 칸(2)은 기본 칸 제안과 같게 정리
+        self.assertEqual(body['proposal'], {'action': 'pick_place', 'object': 'red_cube'})   # 기본 칸(1, 2026-10-27부터)은 기본 칸 제안과 같게 정리
         self.assertIn('바로 시작합니다', body['reply'])             # 제안 뒤 문장은 서버가 정한다(웹 화면이 바로 실행)
         self.assertEqual(body['source'], 'llm')
         self.assertEqual(self.commands, [])                       # 로봇 명령은 실행되지 않았다
@@ -442,7 +442,7 @@ class ChatTests(ApiBase):
         for target in self.fake_scene(('white_box', True), ('red_cube', True), ('tape_measure', True)):     # 정리 제안은 사진을 찍는다
             target.start(); self.addCleanup(target.stop)
         for tool_call, expected in ((call('sort_object', object_name='tape_measure'), {'action': 'pick_place', 'object': 'tape_measure'}),
-                                    (call('sort_all_objects'), {'action': 'pick_all', 'objects': ['white_box', 'red_cube', 'tape_measure']}),
+                                    (call('sort_all_objects'), {'action': 'pick_all', 'objects': ['red_cube', 'white_box', 'tape_measure']}),
                                     (call('arm_return_home'), {'action': 'return_home'})):
             status, body = self.chat(FakeLlm([say('', tool_call), say('확인해 주세요.')]))
             self.assertEqual(body['proposal'], expected)
@@ -545,10 +545,10 @@ class ChatTests(ApiBase):
         everything = self.fake_scene(('white_box', True), ('red_cube', True), ('tape_measure', True))
         for target in everything:
             target.start(); self.addCleanup(target.stop)
-        all_three = {'action': 'pick_all', 'objects': ['white_box', 'red_cube', 'tape_measure']}
+        all_three = {'action': 'pick_all', 'objects': ['red_cube', 'white_box', 'tape_measure']}
         cases = {'빨간 큐브 넣어줘': {'action': 'pick_place', 'object': 'red_cube'},
                  '줄자 1번 칸에 넣어': {'action': 'pick_place', 'object': 'tape_measure', 'slot': 1},
-                 '빨간 큐브 2번 칸에 넣어': {'action': 'pick_place', 'object': 'red_cube'},
+                 '빨간 큐브 1번 칸에 넣어': {'action': 'pick_place', 'object': 'red_cube'},
                  '새 물체 2번 칸에 넣어줘': {'action': 'pick_place', 'object': 'unknown', 'slot': 2},
                  '모르는 물체 3번 칸에 넣어줘': {'action': 'pick_place', 'object': 'unknown', 'slot': 3},
                  '흰 상자 다 넣어줘': {'action': 'pick_place', 'object': 'white_box'},

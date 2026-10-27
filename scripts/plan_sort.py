@@ -7,7 +7,7 @@
   python scripts/plan_sort.py --object white_box --acknowledge-unverified-suction
   python scripts/plan_sort.py --object red_cube --empty-run      # 물체 없이 같은 경로만 시험(흡착·해제 없음)
 
-칸을 지정하지 않으면 기본 규칙(흰 상자 1, 빨간 정육면체 2, 줄자 3). 칸 번호는 트레이에 쓴 숫자를 읽어 정한다.
+칸을 지정하지 않으면 기본 규칙(빨간 정육면체 1, 흰 상자 2, 줄자 3). 칸 번호는 트레이에 쓴 숫자를 읽어 정한다.
 """
 import argparse
 import hashlib

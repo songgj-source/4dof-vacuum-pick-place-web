@@ -55,7 +55,7 @@ class Tests(unittest.TestCase):
  def test_known_catalog_unchanged(self):
   catalog=load_catalog(ROOT/'config/object_catalog.json');before=json.dumps(catalog,sort_keys=True)
   rgb,depth,base=self.scene();geometry=self.detect(rgb,depth,base)[0]['object_geometry'];unknown_catalog(catalog,geometry)
-  self.assertEqual(json.dumps(catalog,sort_keys=True),before);self.assertEqual(choose_slot('red_cube'),2)
+  self.assertEqual(json.dumps(catalog,sort_keys=True),before);self.assertEqual(choose_slot('red_cube'),1)
 
 
  def test_merged_with_existing_object_refused(self):

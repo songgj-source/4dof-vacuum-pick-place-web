@@ -32,7 +32,7 @@ def arm_tool_specs(skill, ToolSpec, ArgumentSpec):
                  arguments=(), executor=call("get_arm_status"), timeout_seconds=12.0),
         ToolSpec(name="sort_object",
                  description="물체 하나를 찾아 집어 트레이 칸에 넣고 HOME으로 돌아온다(집기와 놓기를 한 번에 한다). "
-                             "칸을 말하지 않으면 기본 칸(흰 상자 1, 빨간 정육면체 2, 줄자 3)에 넣는다. unknown(새 물체)은 칸이 꼭 필요하고, "
+                             "칸을 말하지 않으면 기본 칸(빨간 정육면체 1, 흰 상자 2, 줄자 3)에 넣는다. unknown(새 물체)은 칸이 꼭 필요하고, "
                              "시작하면 책상(트레이 밖)의 등록 안 된 물체 하나를 바로 찍어 집는다(미리 확인하지 않는다, 둘 이상이면 거절). "
                              "사용자가 물체 이름 없이 '이거 넣어줘'라고 하면 부르지 말고 어떤 물체인지 되묻는다. "
                              "물체를 두 개 이상 말하면 이 도구 대신 sort_all_objects에 objects로 넘긴다. "
@@ -44,7 +44,7 @@ def arm_tool_specs(skill, ToolSpec, ArgumentSpec):
                  executor=call("sort_object"), timeout_seconds=320.0,
                  category="robot_actuation", requires_completion_evidence=True),
         ToolSpec(name="sort_all_objects",
-                 description="책상 정리하기: 작업대에 있는 물체를 흰 상자 → 빨간 정육면체 → 줄자 → 사용자가 등록한 물체 순서로 각자 기본 칸에 넣는다. "
+                 description="책상 정리하기: 작업대에 있는 물체를 빨간 정육면체 → 흰 상자 → 줄자 → 사용자가 등록한 물체 순서로 각자 기본 칸에 넣는다. "
                              "책상에 없는 물체는 알아서 건너뛰고, 이미 트레이에 들어 있는 물체는 건드리지 않으므로 미리 look_at_table로 확인하지 않는다. 등록 안 된 물체는 집지 않고 피해 가며 그대로 둔다. "
                              "한 물체가 실패하면 거기서 멈춘다. '책상 정리해줘', '다 치워줘', '분류해줘'처럼 물체 이름 없이 정리하라는 말과 "
                              "'흰 상자랑 줄자 치워줘'처럼 여러 물체를 말한 경우에 쓴다.",
