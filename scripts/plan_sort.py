@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 from perception.object_targets import load_catalog, locate_targets
 from sorting.sort_job import build_job, parse_command
-from tray.tray_detect import detect_tray
+from tray.tray_detect import detect_tray, detect_tray_checked
 
 
 def live_frames():
@@ -136,7 +136,8 @@ def main(argv=None):
     else:
         tray_frame_args = (bgr, depth, extra)
     try:
-        tray = detect_tray(tray_frame_args[0], tray_frame_args[1], ROOT, first_end=args.tray_numbering, extra_bgr=tray_frame_args[2])
+        tray = detect_tray_checked(tray_frame_args[0], tray_frame_args[1], ROOT, first_end=args.tray_numbering, extra_bgr=tray_frame_args[2],
+                                   prefer_floors=bool(args.tray_frame and stored_tray_ok))   # 빈 트레이 기준 사진은 칸 바닥 방식부터
         if args.tray_frame and registration is not None and tray.get('found'):
             tray['slots'] = move_slots(tray['slots'], registration, ROOT)
             tray.setdefault('problems', []).append('slot positions were carried by the measured tray move (%.0f px, %.1f deg)' % (registration['shift_px'], registration['rotation_deg']))

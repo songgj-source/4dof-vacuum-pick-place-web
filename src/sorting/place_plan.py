@@ -6,6 +6,7 @@
 import math
 
 from sorting.carry_path import polar_path
+from sorting.place_exec import LIFT_MIN_M
 from robot.robot_model import reachable
 from motion.hover_trial import HOVER_RADIUS_MAX_M
 
@@ -26,6 +27,9 @@ MAX_TILT_DEG = 60.
 SLOT_RADIUS_MAX_M = .41          # 기울이기를 허용하면 칸 반경은 이 한도까지 도달 가능성을 따져 본다(수직만이면 ENVELOPE_M[1]). 2026-10-27 .38→.41: 트레이 40cm, 1번 칸 정육면체를 로봇 쪽 벽에 붙이면 계산상 41cm까지
 CARRY_MARGIN_M = .010           # 운반 높이는 벽을 넘는 최소 높이(floor)보다 이만큼만 높게 시작한다(더 높으면 내리고 올리는 시간만 늘어난다)
 TILT_MIN_Z = .070                # 기울이는 자리의 최소 높이(이동 코드의 낮은 호버 한계)
+# 수직으로 놓는 계획은 칸 쪽 경로점이 이만큼 더 멀어도 수직으로 닿을 때만 쓴다(집기의 PICK_REACH_MARGIN_M과 같은 8mm). 2026-10-27 Pi:
+# 2번 칸 27.0cm를 수직(팔을 거의 다 편 자세)으로 계획했더니 칸 위 정렬이 두 번 다 수렴하지 않아(5.9mm) 내리지 못하고 멈췄다. 넘으면 조금 기울인다
+VERTICAL_REACH_MARGIN_M = .008
 
 
 def min_carry_z(object_height_mm, rim_height_mm, *, margin_mm=RIM_MARGIN_MM, contact_offset_mm=-3.5):
@@ -135,6 +139,12 @@ def _max_reachable_z(model, xy):
     return None
 
 
+def _grown(point, margin):
+    """같은 방향으로 반경만 margin 늘린 점(높이 그대로)."""
+    r = math.hypot(point[0], point[1])
+    return (point[0] * (r + margin) / r, point[1] * (r + margin) / r, point[2]) if r > 0 else tuple(point)
+
+
 def plan_place(model, slot, start_xyz, *, carry_z=CARRY_Z, min_carry_z=None, held_height_mm=None,
                obstacles=(), contact_offset_mm=-3.5, held_radius_mm=FOOTPRINT_RADIUS_M * 1000.,
                max_tilt_deg=DEFAULT_MAX_TILT_DEG, start_tilt_deg=0.):
@@ -208,7 +218,8 @@ def plan_place(model, slot, start_xyz, *, carry_z=CARRY_Z, min_carry_z=None, hel
         blocked = None
         for z in (_carry_heights(floor, carry_z, rim_z=min_carry_z or 0.) if start_tilt_deg == 0 else ()):
             legs = [('raise', (*start_xy, z)), ('carry', (sx, sy, z)), ('lower', (sx, sy, drop)), ('retreat', (sx, sy, z))]
-            if radius <= HOVER_RADIUS_MAX_M and all(reachable(model, point) for _, point in legs) and _segment_reachable(model, start_xy, slot_xy, z):
+            if (radius <= HOVER_RADIUS_MAX_M and all(reachable(model, point) for _, point in legs) and _segment_reachable(model, start_xy, slot_xy, z)
+                    and all(reachable(model, _grown(point, VERTICAL_REACH_MARGIN_M)) for _, point in legs[1:])):
                 try:
                     if held is not None:
                         _check_clearance('carry', start_xy, slot_xy, z, held, contact_offset_mm, obstacles, held_radius)
@@ -238,7 +249,10 @@ def plan_place(model, slot, start_xyz, *, carry_z=CARRY_Z, min_carry_z=None, hel
     # 칸 목표는 물체가 놓일 자리이므로 컵은 그만큼 안쪽으로 보낸다. 그래서 컵이 팔 한계에 있어도 물체는 더 멀리 놓인다
     # (2026-10-21 사용자 확인: 50도에서 실제로 약 2cm 더 멀리 놓임. 예전 1번 칸 고정 -20mm 보정을 대신한다).
     target_xy, target_radius = (sx, sy), radius
-    z_clear = max(start[2], TILT_MIN_Z)
+    # A measured pickup can finish just below 70 mm. The executor cannot make
+    # a vertical move shorter than 5 mm, so raise at least that far before
+    # tilting instead of planning an unexecutable 2-4 mm raise_clear leg.
+    z_clear = max(TILT_MIN_Z, start[2] + LIFT_MIN_M) if start[2] < TILT_MIN_Z else start[2]
     if reachable(model, (*start_xy, z_clear), start_pitch):
         tilt = max(TILT_STEP_DEG, start_tilt_deg)
         while tilt <= max_tilt_deg + 1e-9:

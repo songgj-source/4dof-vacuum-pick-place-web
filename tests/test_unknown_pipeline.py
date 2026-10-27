@@ -35,7 +35,7 @@ class UnknownPipelineTest(unittest.TestCase):
             np.save(directory / 'depth.npy', depth)
             np.save(directory / 'baseline.npy', depth)
             output = io.StringIO()
-            with (patch.object(plan_sort, 'detect_tray', return_value=tray),
+            with (patch.object(plan_sort, 'detect_tray', return_value=tray), patch.object(plan_sort, 'detect_tray_checked', return_value=tray),
                   patch('perception.unknown_objects.locate_unknowns', return_value=[target]),
                   patch('tray.tray_capacity.require_slot_capacity', return_value=80.),
                   contextlib.redirect_stdout(output)):

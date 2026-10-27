@@ -733,10 +733,10 @@ def tray_slots(bgr, depth):
     저장해 둔 빈 트레이 사진을 쓰고, 트레이가 조금 밀렸으면 밀린 만큼 옮긴다(plan_sort와 같은 방식)."""
     import cv2
     import numpy as np
-    from tray.tray_detect import detect_tray
+    from tray.tray_detect import detect_tray, detect_tray_checked
     root = menu.ROOT
     try:
-        live = detect_tray(bgr, depth, root, first_end='far_from_base')
+        live = detect_tray_checked(bgr, depth, root, first_end='far_from_base')
         if live.get('found'):
             return live['slots']
         rgb, dep = menu.TRAY_FRAME
@@ -744,7 +744,7 @@ def tray_slots(bgr, depth):
             return None
         from tray.tray_frame_check import tray_offset_px, register_tray, move_slots, GOOD_SCORE
         stored_bgr, stored_depth = cv2.imread(str(rgb)), np.load(dep)
-        stored = detect_tray(stored_bgr, stored_depth, root, first_end='far_from_base')
+        stored = detect_tray_checked(stored_bgr, stored_depth, root, first_end='far_from_base', prefer_floors=True)
         if not stored.get('found'):
             return None
         offset = tray_offset_px(stored_bgr, bgr, depth=stored_depth, root=root)

@@ -674,7 +674,7 @@ class TraySlotFallbackTests(unittest.TestCase):
         rgb, dep = Path(tmp.name) / 'rgb.png', Path(tmp.name) / 'depth.npy'
         rgb.write_bytes(b'x'); np.save(dep, np.zeros((2, 2)))
         stored = {1: {'x_mm': 340., 'y_mm': -170.}}
-        detect = lambda bgr, depth, root, first_end=None: dict(found=False) if bgr is not None and bgr.shape == (480, 640, 3) and bgr.any() else dict(found=True, slots=stored)
+        detect = lambda bgr, depth, root, first_end=None, **kw: dict(found=False) if bgr is not None and bgr.shape == (480, 640, 3) and bgr.any() else dict(found=True, slots=stored)
         offset = dict(ok=False, offsets_px=offsets, scores=scores)
         with patch.object(arm_api.menu, 'TRAY_FRAME', (rgb, dep)), patch('cv2.imread', return_value=np.zeros((480, 640, 3), np.uint8)), \
              patch('tray.tray_detect.detect_tray', side_effect=detect), \

@@ -464,6 +464,57 @@ METHODS = ('auto', 'walls', 'floors')
 FLOOR_METHOD_UNCERTAINTY_MM = 25.   # 끝 칸 바닥이 벽 그림자에 가려 중심이 치우치는 정도(벽 방식과 비교한 최대 차이 23mm)
 
 
+WALLS_FLOORS_DISAGREE_MM = 30.
+
+
+def _slots_on_cardboard(bgr, detection, root):
+    """칸 중심 3개가 색 영상의 판지(트레이) 실루엣 안에 찍히는가. 판지를 못 찾으면 None(판단 안 함)."""
+    found = _cardboard_blob(bgr)
+    if found is None:
+        return None
+    blob = found[0]
+    locator = _locator(root)
+    for slot in detection['slots'].values():
+        px = _color_pixel(locator, (slot['x_mm'] / 1000., slot['y_mm'] / 1000.), slot.get('floor_height_mm') or 10.)
+        if px is None:
+            return False
+        u, v = int(round(px[0])), int(round(px[1]))
+        if not (0 <= v < blob.shape[0] and 0 <= u < blob.shape[1]) or not blob[v, u]:
+            return False
+    return True
+
+
+def detect_tray_checked(bgr, depth, root, *, prefer_floors=False, **kw):
+    """트레이 인식에 두 겹 확인을 더한다(2026-10-27 사용자: 트레이 인식 오류가 종종 난다).
+
+    Pi에 저장된 빈 트레이 사진 176장에서 칸 바닥 방식은 176장 모두 맞는 배치(간격·일직선)를 찾았고, 벽 방식은 20장에서만
+    찾았는데 모두 안 보이는 벽선을 트레이 길이로 채운 추정이었고 그중 2장은 87mm 밀리거나 트레이를 90도 돌려 잡았다
+    (2026-10-27: 칸 3이 책상 위 정육면체 26mm 옆에 찍혀 정육면체를 '칸 안'으로 빼고 흰 상자를 엉뚱한 곳에 놓았다).
+    - prefer_floors: 빈 트레이로 저장한 기준 사진(칸 바닥 3개가 보여 저장됨)은 칸 바닥 방식을 먼저 쓴다.
+    - 벽 방식이 벽선을 추정했으면 칸 바닥 방식과 비교해 30mm 넘게 다르면 칸 바닥 방식을 쓴다.
+    - 칸 바닥이 안 보이면(칸에 물체) 추정한 칸 중심 3개가 모두 판지 실루엣 안에 있어야 쓴다. 아니면 찾지 못한 것으로 한다(엉뚱한 곳에 놓지 않게)."""
+    if prefer_floors:
+        floors = detect_tray(bgr, depth, root, **{**kw, 'method': 'floors'})
+        if floors.get('found'):
+            return floors
+    found = detect_tray(bgr, depth, root, **kw)
+    if not found.get('found') or found.get('method') != 'walls' or not any('hidden' in p for p in found.get('problems', [])):
+        return found
+    floors = detect_tray(bgr, depth, root, **{**kw, 'method': 'floors'})
+    if floors.get('found'):
+        gap = max(math.hypot(found['slots'][k]['x_mm'] - floors['slots'][k]['x_mm'], found['slots'][k]['y_mm'] - floors['slots'][k]['y_mm'])
+                  for k in found['slots'] if k in floors['slots'])
+        if gap <= WALLS_FLOORS_DISAGREE_MM:
+            return found
+        floors.setdefault('problems', []).append(f'wall method (inferred walls) disagreed with the floor method by {gap:.0f} mm; used the floors')
+        return floors
+    if _slots_on_cardboard(bgr, found, root) is False:
+        return dict(found=False, first_end=found.get('first_end'), usable_for_motion=False, physical_accuracy_verified=False,
+                    reason='tray layout not confirmed: the wall method had to guess hidden walls and its compartments fall outside '
+                           'the cardboard tray in the colour image (move objects so the tray floors or walls are visible)')
+    return found
+
+
 def detect_tray(bgr, depth, root, *, first_end='larger_y', rim_height_mm=RIM_HEIGHT_MM, locator=None, extra_bgr=(),
                 method='auto'):
     if first_end not in FIRST_END_RULES and first_end != READ_DIGITS:
