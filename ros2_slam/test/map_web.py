@@ -39,6 +39,8 @@ lidar_navigation / rtabmap_* launches, same ROS_DOMAIN_ID); the lidar scan,
   POST /api/nav/cancel          cancel the Nav2 goal (manual driving cancels it too)
   GET  /api/nav/tolerance       JSON: arrival tolerance saved here / active in Nav2, limits
   POST /api/nav/tolerance {"xy": 0.05, "yaw_deg": 14}
+  POST /api/amcl/settle         ask AMCL for an update at the current spot (no motion needed);
+                                /api/state amcl.received changes when the new estimate arrives
                                 set Nav2's goal checker tolerance (within the min..max
                                 limits), saved and re-applied whenever Nav2 (re)starts
   GET  /api/approach            JSON: approach settings + state
@@ -2606,6 +2608,16 @@ def make_handler(node: MapWeb):
             elif path == '/api/nav/cancel':
                 node.request_nav(('cancel',))
                 self._json({'ok': True})
+            elif path == '/api/amcl/settle':
+                # 멈춘 자리에서 AMCL이 라이다로 위치를 다시 고치게 한다(움직이지 않아도). base_drive 마무리 정렬이
+                # 판단 전마다 부른다. 새 추정이 오면 /api/state의 amcl.received가 바뀐다(2026-10-27).
+                if node.nav_active():
+                    self._json({'error': 'Navi 주행 중에는 할 수 없습니다'}, 409)
+                elif not node.nomotion_client.service_is_ready():
+                    self._json({'ok': False, 'reason': 'AMCL request_nomotion_update 서비스가 없습니다'}, 503)
+                else:
+                    node.nomotion_client.call_async(Empty.Request())
+                    self._json({'ok': True, 'requested': time.time()})
             else:
                 self._json({'error': 'not found'}, 404)
 

@@ -32,6 +32,15 @@ FINE_SPEED = (0.03, 0.06)        # 직진 속도 범위(m/s): 남은 거리에 �
 TURN_SPEED = (0.10, 0.35)        # 회전 속도 범위(rad/s)
 CLEAR_M = 0.03                   # 진행 방향 차체 끝에서 이만큼 안에 라이다 점이 있으면 멈춘다
 TICK_S = 0.1                     # map_web 주행 명령은 0.5초만 유효하다 -> 0.1초마다 다시 보낸다
+# 2026-10-27 사용자: 책상에 정확히 안 선다. 지도 위치는 map_web 0.2초 갱신 + HTTP 0.1초라 최대 약 0.3초 늦다(0.35 rad/s면 6°).
+# 늦은 만큼 지나치므로, 남은 오차가 '지금 속도 × 지연' 안이면 미리 멈춘다. 목표 근처 회전은 가장 느린 속도로만 한다.
+POSE_LAG_S = (0.15, 0.4)         # 지연 추정 범위(초): pose.age + 한 틱
+SLOW_TURN_RAD = math.radians(10)
+# AMCL은 차가 움직여야 라이다로 위치를 고친다. 마무리 정렬은 몇 cm씩만 움직여 거의 갱신되지 않아(예전 10cm·8.6°마다)
+# 오도메트리만 보고 맞추고, 마지막 확인도 그 위치로 해서 '오차 1cm'라고 하면서 실제로는 어긋날 수 있었다.
+# 그래서 판단하기 전마다 멈춰서 AMCL에 제자리 갱신을 요청하고(map_web /api/amcl/settle), 새 추정이 온 뒤의 위치를 쓴다.
+SETTLE_WAIT_S = 2.5              # 새 AMCL 추정을 기다리는 최대 시간
+SETTLE_TF_S = 0.3                # 새 추정이 지도 위치(map->odom TF, 0.2초 갱신)에 반영될 때까지
 
 
 class BaseError(RuntimeError):
@@ -204,12 +213,40 @@ def _stop(url):
         pass
 
 
-def _pose_and_scan(url):
+def _pose_and_scan(url, with_lag=False):
     state = _call('GET', '/api/state', url=url, timeout_s=2.)
     if state.get('frame') != 'map' or not state.get('pose'):
         raise BaseError('지도 위 위치를 몰라 라벨에 정확히 맞출 수 없습니다(내비게이션·위치 추정이 켜져 있는지 확인).', 'drive_failed')
     pose = state['pose']
-    return (pose['x'], pose['y'], pose['yaw']), state.get('scan') or []
+    out = (pose['x'], pose['y'], pose['yaw']), state.get('scan') or []
+    if not with_lag:
+        return out
+    age = pose.get('age') if isinstance(pose.get('age'), (int, float)) else 0.
+    return (*out, min(POSE_LAG_S[1], max(POSE_LAG_S[0], age + TICK_S)))
+
+
+def _settle_amcl(url, sleep):
+    """멈춘 채로 AMCL 제자리 갱신을 요청하고 새 추정이 올 때까지 기다린다. 기다렸으면 True.
+    map_web이 이 기능을 모르거나(옛 버전) AMCL 정보를 주지 않으면 잠깐만 서서 기다린다."""
+    _stop(url)
+    asked = time.time()
+    try:
+        _call('POST', '/api/amcl/settle', {}, url=url, timeout_s=2.)
+    except BaseError:
+        sleep(SETTLE_TF_S)
+        return False
+    deadline = time.monotonic() + SETTLE_WAIT_S
+    while time.monotonic() < deadline:
+        sleep(TICK_S * 2)
+        state = _call('GET', '/api/state', url=url, timeout_s=2.)
+        if 'amcl' not in state:
+            break
+        amcl = state.get('amcl') or {}
+        if isinstance(amcl.get('received'), (int, float)) and amcl['received'] > asked:
+            sleep(SETTLE_TF_S)
+            return True
+    sleep(SETTLE_TF_S)
+    return False
 
 
 def _blocked(pose, scan, robot, direction):
@@ -232,19 +269,21 @@ def _blocked(pose, scan, robot, direction):
 
 def _turn_to(target_yaw, tol, url, robot, stopped, sleep, timeout_s=15.):
     deadline = time.monotonic() + timeout_s
+    turning = 0.                                         # 지금 보내고 있는 회전 속도(rad/s)
     while time.monotonic() < deadline:
         if stopped():
             return 'cancelled'
-        pose, scan = _pose_and_scan(url)
+        pose, scan, lag = _pose_and_scan(url, with_lag=True)
         error = _wrap(target_yaw - pose[2])
-        if abs(error) <= tol:
+        if abs(error) <= tol + abs(turning) * lag:      # 늦게 본 위치만큼 이미 더 돌았다
             _stop(url)
             return None
         if _blocked(pose, scan, robot, 0) is not None:
             _stop(url)
             return '제자리 회전하면 주변 물체에 닿을 수 있어 멈췄습니다'
-        speed = min(TURN_SPEED[1], max(TURN_SPEED[0], 1.2 * abs(error)))
-        _drive_cmd(0., math.copysign(speed, error), url)
+        speed = TURN_SPEED[0] if abs(error) < SLOW_TURN_RAD else min(TURN_SPEED[1], max(TURN_SPEED[0], 1.2 * abs(error)))
+        turning = math.copysign(speed, error)
+        _drive_cmd(0., turning, url)
         sleep(TICK_S)
     _stop(url)
     return '회전이 제시간에 끝나지 않았습니다'
@@ -254,12 +293,13 @@ def _move_to(target, heading, direction, url, robot, stopped, sleep, timeout_s=2
     """heading 방향을 유지하며 direction(+1 앞, -1 뒤)으로 target에 가장 가까워질 때까지 직진한다."""
     deadline = time.monotonic() + timeout_s
     ux, uy = math.cos(heading) * direction, math.sin(heading) * direction    # 실제로 움직이는 방향
+    speed = 0.
     while time.monotonic() < deadline:
         if stopped():
             return 'cancelled'
-        pose, scan = _pose_and_scan(url)
+        pose, scan, lag = _pose_and_scan(url, with_lag=True)
         remaining = (target[0] - pose[0]) * ux + (target[1] - pose[1]) * uy  # 진행 방향으로 남은 거리
-        if remaining <= XY_TOL / 2:
+        if remaining <= XY_TOL / 2 + speed * lag:                            # 늦게 본 위치만큼 이미 더 갔다
             _stop(url)
             return None
         gap = _blocked(pose, scan, robot, direction)
@@ -281,29 +321,33 @@ def fine_align(label, url=None, on_phase=None, stopped=lambda: False, sleep=time
     robot = {'radius': 0.26, 'front': 0.16, 'back': 0.16, **(info.get('robot') or {})}      # map_web 값이 있으면 그것
     target = (label['x'], label['y'])
     try:
-        for _ in range(3):                               # 회전·직진 뒤 남은 옆 오차를 한두 번 더 줄인다
+        for _ in range(3):                               # 회전·직진·방향 맞춤 뒤 남은 오차를 한두 번 더 줄인다
+            _settle_amcl(url, sleep)                     # 판단은 멈춘 채 새로 받은 AMCL 위치로
             pose, _ = _pose_and_scan(url)
             dx, dy = target[0] - pose[0], target[1] - pose[1]
             distance = math.hypot(dx, dy)
-            if distance <= XY_TOL:
+            yaw_error = abs(_wrap(label['yaw'] - pose[2]))
+            if distance <= XY_TOL and yaw_error <= math.radians(YAW_TOL_DEG):
                 break
             if distance > FINE_MAX_M:
                 return dict(ok=False, reason_code='drive_failed',
                             reason=f"{label['name']} 라벨에서 {distance:.2f} m 떨어진 곳에 섰습니다(마무리 정렬 한도 {FINE_MAX_M} m). 지도 위치(AMCL)를 다시 잡아 보세요.")
-            bearing = math.atan2(dy, dx)
-            forward = abs(_wrap(bearing - pose[2])) <= abs(_wrap(bearing + math.pi - pose[2]))   # 덜 도는 쪽(앞으로 또는 뒤로)
-            heading = bearing if forward else _wrap(bearing + math.pi)
-            phase('fine_turn', f"{label['name']} 라벨 위치로 방향 맞추는 중 ({distance * 100:.0f} cm 남음)")
-            problem = _turn_to(heading, math.radians(4), url, robot, stopped, sleep)
-            if not problem:
-                phase('fine_move', f"{label['name']} 라벨 위치로 {'전진' if forward else '후진'} ({distance * 100:.0f} cm)")
-                problem = _move_to(target, heading, 1 if forward else -1, url, robot, stopped, sleep)
+            if distance > XY_TOL:
+                bearing = math.atan2(dy, dx)
+                forward = abs(_wrap(bearing - pose[2])) <= abs(_wrap(bearing + math.pi - pose[2]))   # 덜 도는 쪽(앞으로 또는 뒤로)
+                heading = bearing if forward else _wrap(bearing + math.pi)
+                phase('fine_turn', f"{label['name']} 라벨 위치로 방향 맞추는 중 ({distance * 100:.0f} cm 남음)")
+                problem = _turn_to(heading, math.radians(4), url, robot, stopped, sleep)
+                if not problem:
+                    phase('fine_move', f"{label['name']} 라벨 위치로 {'전진' if forward else '후진'} ({distance * 100:.0f} cm)")
+                    problem = _move_to(target, heading, 1 if forward else -1, url, robot, stopped, sleep)
+                if problem:
+                    return dict(ok=False, reason=problem, reason_code='cancelled' if problem == 'cancelled' else 'drive_failed')
+            phase('fine_yaw', f"{label['name']} 라벨 방향 맞추는 중")
+            problem = _turn_to(label['yaw'], math.radians(YAW_TOL_DEG), url, robot, stopped, sleep)
             if problem:
                 return dict(ok=False, reason=problem, reason_code='cancelled' if problem == 'cancelled' else 'drive_failed')
-        phase('fine_yaw', f"{label['name']} 라벨 방향 맞추는 중")
-        problem = _turn_to(label['yaw'], math.radians(YAW_TOL_DEG), url, robot, stopped, sleep)
-        if problem:
-            return dict(ok=False, reason=problem, reason_code='cancelled' if problem == 'cancelled' else 'drive_failed')
+        _settle_amcl(url, sleep)                         # 마지막 확인도 새 AMCL 위치로(예전에는 갱신 안 된 위치라 늘 맞다고 나왔다)
         pose, _ = _pose_and_scan(url)
         off = math.hypot(target[0] - pose[0], target[1] - pose[1])
         yaw_off = abs(math.degrees(_wrap(label['yaw'] - pose[2])))

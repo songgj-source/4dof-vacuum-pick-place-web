@@ -125,9 +125,11 @@ class SimMapWeb:
     """map_web 흉내 + 아주 단순한 차 운동: /api/nav/goto는 라벨에서 offset만큼 어긋난 곳에 '도착'시키고,
     /api/drive 명령(0.5초 유효)대로 위치·방향을 적분한다. scan에 장애물 점을 넣을 수 있다."""
 
-    def __init__(self, label, offset=(0.12, -0.05, 0.2), frame='map', scan=()):
+    def __init__(self, label, offset=(0.12, -0.05, 0.2), frame='map', scan=(), amcl_bias=None):
         import math as m
         self.m, self.label, self.offset, self.frame, self.scan = m, dict(label), offset, frame, list(scan)
+        # amcl_bias: 지도 위치가 실제보다 (dx, dy) 어긋나 있다가 /api/amcl/settle을 받으면 새 추정으로 맞춰진다(None = 옛 map_web: amcl 정보 없음)
+        self.bias, self.amcl = (list(amcl_bias), dict(received=0.0)) if amcl_bias is not None else ([0.0, 0.0], None)
         self.pose = [0.0, 0.0, 0.0]
         self.cmd, self.cmd_t, self.last = (0.0, 0.0), 0.0, time.monotonic()
         self.nav, self.gets, self.posts = dict(state='idle'), 0, []
@@ -152,8 +154,11 @@ class SimMapWeb:
                         lx, ly, lyaw = sim.label['x'], sim.label['y'], sim.label['yaw']
                         sim.pose = [lx + sim.offset[0], ly + sim.offset[1], lyaw + sim.offset[2]]
                         sim.nav = dict(sim.nav, state='succeeded')
-                pose = None if sim.frame != 'map' else dict(x=sim.pose[0], y=sim.pose[1], yaw=sim.pose[2])
-                self.reply(dict(frame=sim.frame, pose=pose, labels=[sim.label], nav=sim.nav, wall=dict(state='idle'), scan=sim.scan))
+                pose = None if sim.frame != 'map' else dict(x=sim.pose[0] + sim.bias[0], y=sim.pose[1] + sim.bias[1], yaw=sim.pose[2], age=0.05)
+                state = dict(frame=sim.frame, pose=pose, labels=[sim.label], nav=sim.nav, wall=dict(state='idle'), scan=sim.scan)
+                if sim.amcl is not None:
+                    state['amcl'] = sim.amcl
+                self.reply(state)
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
@@ -164,6 +169,8 @@ class SimMapWeb:
                     sim.cmd, sim.cmd_t = (body.get('linear', 0.0), body.get('angular', 0.0)), time.monotonic()
                 elif self.path in ('/api/drive/stop', '/api/nav/cancel'):
                     sim.cmd = (0.0, 0.0)
+                elif self.path == '/api/amcl/settle' and sim.amcl is not None:
+                    sim.bias, sim.amcl = [0.0, 0.0], dict(received=time.time() + 0.01)
                 self.reply(dict(ok=True))
 
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
@@ -207,6 +214,15 @@ class PreciseArrivalTests(unittest.TestCase):
         self.assertTrue({'fine_turn', 'fine_move', 'fine_yaw'} <= set(phases))
         self.assertIn(('/api/nav/goto', {'id': '59ef557c'}), sim.posts)    # 벽 붙기(goto_wall)는 쓰지 않는다
         self.assertEqual(sim.posts[-1][0], '/api/drive/stop')              # 끝나면 차를 세운다
+
+    def test_settles_amcl_before_judging_so_a_stale_map_pose_is_corrected(self):
+        import math
+        # 2026-10-27: 지도 위치가 4 cm 어긋난 채 갱신되지 않으면 예전에는 그 위치로 '도착'이라고 했다
+        sim = self.sim(offset=(0.10, -0.04, 0.15), amcl_bias=(0.04, 0.0))
+        result, _ = self.go(sim)
+        self.assertTrue(result['ok'], result)
+        self.assertIn('/api/amcl/settle', [path for path, _ in sim.posts])
+        self.assertLess(math.hypot(sim.pose[0] - 1.0, sim.pose[1] - 0.5), base_drive.XY_TOL * 1.5)   # 실제 위치가 라벨에
 
     def test_label_behind_backs_up_instead_of_turning_around(self):
         sim = self.sim(offset=(0.10 * 0.955, 0.10 * 0.296, 0.0))           # 라벨이 차 바로 뒤(라벨 방향으로 10 cm 지나침)
