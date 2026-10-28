@@ -42,6 +42,7 @@ COLOR_KIND_SHARE = .3         # 덩어리에서 색이 남은 픽셀이 이 비�
 BUILTIN_HEIGHT_GAP_MM = 9.    # 같은 색 종류의 기본 물체와 이만큼 높이가 달라야 구분한다(허용치 + 깊이 오차)
 FLAT_TOP_SPREAD_MM = 4.       # 윗면 높이(상위 10%)와 중간 높이 차이가 이보다 작으면 윗면이 평평하다고 본다
 # 기본 물체 색 종류(object_classify._color_masks와 같은 범위). 등록할 때 기본 물체와 헷갈리는지 본다
+TAPE_MIN_VALUE = 85           # 줄자(밝은 노란색) 밝기 하한. 이보다 어두운 갈색 물체는 줄자로 보지 않는다(object_classify와 공유)
 BUILTIN_COLORS = {'white_box': ('plain', None), 'red_cube': ('color', (160., 5.)), 'tape_measure': ('color', (10., 30.))}
 
 _cache = {}
@@ -181,6 +182,8 @@ def _like_builtin(sig, label, height_mm):
         return False
     if kind == 'plain':
         return sig['value'] > 100 - VALUE_TOL       # 흰 상자 규칙(밝은 무채색)
+    if label == 'tape_measure' and sig['value'] < TAPE_MIN_VALUE:
+        return False                                # 어두운 갈색은 줄자와 헷갈리지 않는다
     low, high = hues
     inside = low <= sig['hue'] or sig['hue'] <= high if low > high else low <= sig['hue'] <= high
     return inside or min(_hue_gap(sig['hue'], low), _hue_gap(sig['hue'], high)) <= HUE_TOL

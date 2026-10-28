@@ -27,6 +27,10 @@ IGNORE_RIGHT_X = 440
 # 어두워서 색 정보가 사라진 픽셀(V 낮음)은 판정에서 뺀다. 색이 남은 픽셀만으로 이름을 정한다.
 CHROMA_MIN_SAT = 60
 CHROMA_MIN_VAL = 35
+# 줄자는 밝은 노란색이다(채도 약 215·밝기 약 135). 색상(10~30)만 보면 어두운 갈색 골판지·상자(채도 약 133·밝기 약 61,
+# 2026-10-28 화면 측정)도 들어와 새 물체를 줄자로 부르던 문제가 있어 채도·밝기 하한을 둔다(표본이 적어 실물 확인 필요).
+TAPE_MIN_SAT = 150
+TAPE_MIN_VAL = object_registry.TAPE_MIN_VALUE
 MIN_CHROMATIC_PX = 60
 MIN_CHROMATIC_SHARE = .06   # 덩어리 면적 대비
 CHROMATIC_DOMINANCE = .6    # 색이 남은 픽셀 중 한 색이 차지해야 하는 비율
@@ -127,7 +131,7 @@ def _color_masks(bgr):
     chromatic = (sat >= CHROMA_MIN_SAT) & (val >= CHROMA_MIN_VAL)
     return {
         'red_cube': chromatic & ((hue <= 5) | (hue >= 160)),
-        'tape_measure': chromatic & (hue >= 10) & (hue <= 30),
+        'tape_measure': chromatic & (hue >= 10) & (hue <= 30) & (sat >= TAPE_MIN_SAT) & (val >= TAPE_MIN_VAL),
         'white_box': (sat < 60) & (val > 100),
     }, chromatic
 
@@ -147,22 +151,53 @@ def _name(blob, masks, chromatic, area):
     return 'unknown', fractions, count, shares
 
 
+OPEN_KERNEL = np.ones((5, 5), np.uint8)
+CLOSE_KERNEL = np.ones((9, 9), np.uint8)
+
+
+def _blobs(raised):
+    """솟은 픽셀 → 덩어리 마스크 목록. 잡음을 지우고(열기) 깊이 구멍을 메운다(닫기).
+    닫기는 몇 픽셀 틈도 메워서, 트레이 벽에 바짝 붙은 물체가 트레이와 한 덩어리가 돼 '큰 덩어리'로 통째로 빠졌다
+    (2026-10-28 흰 상자: 깊이에서는 70×70px 별도 덩어리였는데 트레이와 합쳐져 176×174px). 닫은 덩어리가 물체보다 크면
+    닫기 전 원래 연결로 다시 나눈다. 원래 이어진 트레이는 한 덩어리로 남고, 붙어 있던 물체만 떨어진다."""
+    opened = cv2.morphologyEx(raised, cv2.MORPH_OPEN, OPEN_KERNEL)
+    closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, CLOSE_KERNEL)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(closed)
+    raw_labels = None
+    blobs = []
+    for i in range(1, count):
+        mask = labels == i
+        if max(int(stats[i][2]), int(stats[i][3])) > MAX_OBJECT_PX:
+            if raw_labels is None:
+                raw_labels = cv2.connectedComponents(raised)[1]
+            parts = [j for j in np.unique(raw_labels[mask]) if j]
+            if len(parts) > 1:
+                for j in parts:
+                    piece = (mask & (raw_labels == j)).astype(np.uint8)
+                    piece = cv2.morphologyEx(cv2.morphologyEx(piece, cv2.MORPH_OPEN, OPEN_KERNEL), cv2.MORPH_CLOSE, CLOSE_KERNEL)
+                    piece = piece.astype(bool) & mask
+                    if piece.any():
+                        blobs.append(piece)
+                continue
+        blobs.append(mask)
+    return blobs
+
+
 def classify_objects(bgr, depth, intrinsics=None):
     _validate(bgr, depth)
     height = table_height_mm(depth, intrinsics)
     raised = ((height > MIN_HEIGHT_MM) & (depth > 0)).astype(np.uint8)
-    raised = cv2.morphologyEx(raised, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    raised = cv2.morphologyEx(raised, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
-    count, labels, stats, centers = cv2.connectedComponentsWithStats(raised)
     masks, chromatic = _color_masks(bgr)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     registered = object_registry.load()
     found = []
-    for i in range(1, count):
-        x, y, w, h, area = (int(s) for s in stats[i])
+    for blob in _blobs(raised):
+        ys, xs = np.nonzero(blob)
+        x, y = int(xs.min()), int(ys.min())
+        w, h, area = int(xs.max()) - x + 1, int(ys.max()) - y + 1, int(blob.sum())
+        center = (float(xs.mean()), float(ys.mean()))
         if area < MIN_AREA_PX or y < IGNORE_TOP_PX or x > IGNORE_RIGHT_X:
             continue
-        blob = labels == i
         label, fractions, count, shares = _name(blob, masks, chromatic, area)
         blob_median = float(np.median(height[blob & (depth > 0)]))
         top_mm = float(np.percentile(height[blob & (depth > 0)], 90))
@@ -178,7 +213,10 @@ def classify_objects(bgr, depth, intrinsics=None):
         ys, xs = np.nonzero(top)
         # 윗면 픽셀의 최소 넓이 회전 사각형(깊이 좌표, 둘레 순서). 칸에 놓을 때 물체 방향을 따지는 데 쓴다(slot_wall)
         corners = cv2.boxPoints(cv2.minAreaRect(np.c_[xs, ys].astype(np.float32))) if len(xs) >= 5 else None
-        found.append(dict(label=label, name=display_name(label), bbox_px=[x, y, w, h], center_px=[float(c) for c in centers[i]],
+        pixels = blob & (depth > 0)
+        color_hsv = [sig['hue'], float(np.median(hsv[..., 1][pixels])), float(np.median(hsv[..., 2][pixels]))] if pixels.any() else None
+        found.append(dict(label=label, name=display_name(label), bbox_px=[x, y, w, h], center_px=list(center),
+                          color_hsv=color_hsv,
                           top_center_px=[float(xs.mean()), float(ys.mean())],
                           top_corners_px=None if corners is None else [[float(a), float(b)] for a, b in corners],
                           area_px=area, height_mm=float(np.median(height[blob])), top_height_mm=top_mm,
