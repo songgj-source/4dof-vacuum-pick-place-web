@@ -199,8 +199,10 @@ def sort_command(label, slot=None, execute=True, use_tray_frame=True):
     return cmd
 
 
-def unknown_command(slot=3, execute=True, use_tray_frame=True):
+def unknown_command(slot=3, execute=True, use_tray_frame=True, which=None, of=None):
     cmd = [PY, str(ROOT / 'scripts/pick_unknown.py'), '--slot', str(slot), *COMMON]
+    if which is not None:           # 새 물체가 여러 개: 사진에서 왼쪽부터 which번째(of개 중)
+        cmd += ['--which', str(which)] + (['--of', str(of)] if of is not None else [])
     if execute:
         cmd += ['--execute', '--supported']
     if use_tray_frame and all(p.exists() for p in TRAY_FRAME):

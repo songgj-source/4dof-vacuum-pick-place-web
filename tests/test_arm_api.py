@@ -566,15 +566,23 @@ class ChatTests(ApiBase):
         a, b = self.fake_scene(('red_cube', True), ('tape_measure', True), ('white_box', False), ('unknown', False))
         with a, b:
             status, body = self.chat(FakeLlm([]), '책상 정리해줘')
-        self.assertEqual(body['proposal'], {'action': 'pick_all', 'objects': ['red_cube', 'tape_measure']})
+        self.assertEqual(body['proposal'], {'action': 'pick_all', 'objects': ['red_cube', 'tape_measure'], 'include_new': True})
         self.assertIn('빨간 정육면체, 줄자를 찾았습니다', body['reply'])
         self.assertIn('흰 상자는 보이지만 팔이 닿지 않는', body['reply'])
-        self.assertIn('등록 안 된 물체가 1개', body['reply'])
+        self.assertIn('등록 안 된 물체 1개', body['reply'])
+        self.assertIn('남는 빈 칸에 넣습니다', body['reply'])                  # 새 물체는 기존 물체를 넣고 남는 빈 칸에
         self.assertIn('image_jpeg_base64', body['scene'])                  # 화면에 사진을 띄운다
         self.assertEqual(self.commands, [])                                 # 사진만 찍고 로봇은 움직이지 않는다
 
     def test_tidy_with_an_empty_desk_proposes_nothing(self):
         a, b = self.fake_scene(('unknown', False))
+        with a, b:
+            status, body = self.chat(FakeLlm([]), '정리해줘')
+        self.assertEqual(body['proposal'], {'action': 'pick_all', 'objects': [], 'include_new': True})      # 새 물체만 있어도 정리한다
+        self.assertIn('새 물체', body['reply'])
+
+    def test_tidy_with_nothing_on_the_desk_proposes_nothing(self):
+        a, b = self.fake_scene()
         with a, b:
             status, body = self.chat(FakeLlm([]), '정리해줘')
         self.assertIsNone(body['proposal'])
@@ -602,9 +610,9 @@ class ChatTests(ApiBase):
             status, body = self.situation()
         self.assertEqual(status, 200)
         self.assertIn('흰 상자, 줄자, 빨간 정육면체, 등록 안 된 물체 1개를 찾았습니다', body['reply'])
-        self.assertEqual(body['proposal'], {'action': 'pick_all', 'objects': ['white_box', 'tape_measure']})   # 기본 행동: 책상 정리
+        self.assertEqual(body['proposal'], {'action': 'pick_all', 'objects': ['white_box', 'tape_measure'], 'include_new': True})   # 기본 행동: 책상 정리(새 물체 포함)
         joined = ' / '.join(body['actions'])
-        for expected in ("'책상 정리해줘'", "'흰 상자 넣어줘'", "'줄자 넣어줘'", '빨간 정육면체는 팔이 닿지 않습니다', "'새 물체 3번 칸에 넣어'", "'멈춰'"):
+        for expected in ("'책상 정리해줘'", "'흰 상자 넣어줘'", "'줄자 넣어줘'", '빨간 정육면체는 팔이 닿지 않습니다', "새 물체: 책상 정리에 함께 들어갑니다", "'멈춰'"):
             self.assertIn(expected, joined)
         self.assertIn('image_jpeg_base64', body['scene'])
         self.assertEqual(self.commands, [])                                  # 사진만 찍고 로봇은 움직이지 않는다

@@ -16,8 +16,9 @@ MAX_FOOTPRINT_MM = 120.
 HEIGHT_UNCERTAINTY_MM = 3.
 MIN_PATCH_DIAMETER_MM = 20.  # 초기 지원 범위. 실제 컵 크기에 대한 물리 검증은 별도.
 # 깊이로 잰 윗면 높이는 ±3mm 오차가 있어 가끔 컵이 닿기 전에 멈춰 흡착이 안 된다(사용자 2026-10-21).
-# 그래서 측정한 윗면보다 2mm 더 내려가 흡착한 뒤 들어 올린다(스프링 컵이 눌리며 밀착). 10-20 성공은 보정 0에서였다.
-CONTACT_PRESS_MM = 2.
+# 그래서 측정한 윗면보다 더 내려가 흡착한 뒤 들어 올린다(스프링 컵이 눌리며 밀착). 10-20 성공은 보정 0에서였다.
+# 2mm였던 것을 사용자 지시(2026-10-28)로 5mm로 늘렸다. 높이 20mm 물체의 접촉 높이가 15mm로 pick_auto 수동 목표 하한(15mm)에 딱 맞는다.
+CONTACT_PRESS_MM = 5.
 
 
 def validate_geometry(geometry):
@@ -174,11 +175,13 @@ DESK_FILL_MARGIN_PX = 6      # 지우는 범위: 덩어리 사각형보다 이�
 DESK_FILL_MIN_HEIGHT_MM = 5.
 
 
-def desk_baseline(bgr, depth, root, *, tray_slots=None, locator=None):
+def desk_baseline(bgr, depth, root, *, tray_slots=None, locator=None, which=None, of=None):
     """'바로 집기'용 가상 기준 깊이: 지금 책상에 있는 등록 안 된 물체 자리를 책상 높이로 지운 깊이.
     이 기준과 비교하면 그 물체가 '새로 놓인 물체'로 보이므로, 기존 unknown 검사(높이·윗면·흡착 면·칸 여유·움직이기 전 재확인)를
     그대로 쓴다. 등록 물체·트레이·로봇 자신·작업 범위 밖 덩어리는 그대로 둔다(그것들은 새 물체가 아니다).
-    돌려주는 것: (기준 깊이 uint16, 지운 물체 목록 [{bbox_px, xy, top_mm}]). 트레이 칸 안 덩어리(칸막이 등)는 빼고 센다."""
+    돌려주는 것: (기준 깊이 uint16, 지운 물체 목록 [{bbox_px, xy, top_mm}]). 트레이 칸 안 덩어리(칸막이 등)는 빼고 센다.
+    which(1부터)를 주면 새 물체가 여러 개일 때 사진에서 왼쪽부터 which번째 하나만 지운다(나머지는 기준에 그대로 남아 새 물체가 아니다).
+    of를 주면 보이는 개수가 of와 같을 때만 진행한다(안내한 번호와 실제 순서가 어긋난 채 집지 않게)."""
     from perception.object_classify import classify_objects
     from perception.object_targets import default_locator, desk_blobs
     from tray.occupancy import slot_containing
@@ -186,6 +189,13 @@ def desk_baseline(bgr, depth, root, *, tray_slots=None, locator=None):
     locator = locator or default_locator(root)
     found = [(item, geometry) for item, geometry in desk_blobs([i for i in classify_objects(bgr, depth) if i['label'] == 'unknown'], locator)
              if not tray_slots or slot_containing(geometry['xy'], tray_slots, radius_mm=70.) is None]
+    found = sorted(found, key=lambda pair: pair[0]['bbox_px'][0])       # 왼쪽 → 오른쪽(사진 기준)
+    if of is not None and len(found) != of:
+        raise ValueError(f'unknown count changed: expected {of}, now {len(found)}')
+    if which is not None:
+        if not 1 <= which <= len(found):
+            raise ValueError(f'unknown not found: 새 물체 {which}번이 없습니다(보이는 새 물체 {len(found)}개).')
+        found = [found[which - 1]]
     height = table_height_mm(depth)
     baseline = depth.astype(np.int32)
     for item, _ in found:

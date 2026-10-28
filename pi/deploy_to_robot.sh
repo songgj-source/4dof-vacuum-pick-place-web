@@ -36,7 +36,8 @@ cd "$ROOT"
 # 보낼 파일 목록: 추적 중인 파일 + 아직 추적 안 하지만 무시 대상이 아닌 새 파일. 지역 값이 든 것과 큰 것은 뺀다.
 list_files() {
   git ls-files -co --exclude-standard -z |
-    grep -zvE '^(output/|portfolio/|하드웨어 설명/|tmp/|\.venv/|config/devices\.json$|pi/arm-api\.env$|calibration/openni2_redist/)'
+    grep -zvE '^(output/|portfolio/|하드웨어 설명/|tmp/|\.venv/|config/devices\.json$|pi/arm-api\.env$|calibration/openni2_redist/)' |
+    while IFS= read -r -d '' f; do [ -e "$f" ] && printf '%s\0' "$f"; done    # git은 추적하지만 디스크에서 지운 파일은 빼야 du·rsync가 실패하지 않는다
 }
 COUNT="$(list_files | tr -cd '\0' | wc -c)"
 SIZE="$(list_files | xargs -0 du -ck 2>/dev/null | tail -1 | cut -f1)"

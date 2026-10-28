@@ -39,7 +39,7 @@ def task_arm(arrivals, stop_after_check=False):
     arm.arrival_check = check
     arm._event = lambda *args: None
     arm._ensure_torque = lambda *args: None
-    arm._pick_all = lambda *args: events.append(('pick', None)) or {'ok': True}
+    arm._pick_all = lambda *args, **kw: events.append(('pick', None)) or {'ok': True}
     def capture(grab):
         events.append(('photo', None))
         return None, {'objects': [{'label': 'red_cube', 'pickable': True}]}

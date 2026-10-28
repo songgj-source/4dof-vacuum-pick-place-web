@@ -297,7 +297,7 @@ class ArmDriveTests(unittest.TestCase):
         arm.base_check = lambda: base_reason
         arm.arrival_check = lambda: base_reason
         picked = []
-        arm._pick_all = lambda task_id, objects=None: picked.append(objects) or dict(ok=True, reason=None, reason_code=None)
+        arm._pick_all = lambda task_id, objects=None, **kw: picked.append(objects) or dict(ok=True, reason=None, reason_code=None)
         scene = dict(objects=[dict(label=label, pickable=True) for label in scene_objects], in_tray=[])
         return arm, calls, picked, scene
 

@@ -143,6 +143,8 @@ def main(argv=None):
     parser.add_argument('--slot', type=int, choices=[1, 2, 3], default=3)
     parser.add_argument('--timeout', type=float, default=90., help='--wait-new에서 새 물체를 기다리는 시간(초)')
     parser.add_argument('--wait-new', action='store_true', help='예전 방식: 기준을 찍은 뒤 새 물체를 놓을 때까지 기다린다')
+    parser.add_argument('--which', type=int, help='새 물체가 여러 개일 때 사진에서 왼쪽부터 몇 번째를 집을지(1부터). 없으면 하나만 있어야 한다')
+    parser.add_argument('--of', type=int, help='--which와 함께: 보이는 새 물체 개수(다르면 집지 않는다)')
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--supported', action='store_true')
     parser.add_argument('--attempts', type=int, choices=[1], default=1)
@@ -151,6 +153,8 @@ def main(argv=None):
         parser.error('--execute requires --supported')
     if not 5 <= args.timeout <= 300:
         parser.error('--timeout must be 5-300 seconds')
+    if (args.which is not None and args.which < 1) or (args.of is not None and (args.which is None or args.of < args.which)):
+        parser.error('--which는 1 이상, --of는 --which와 함께 쓰고 --which 이상이어야 합니다')
     reserved = {'--object', '--command', '--unknown-baseline', '--from-files', '--manual-target-mm', '--place-json', '--output'}
     if any(token.split('=', 1)[0] in reserved for token in extra):
         parser.error('unknown 대상·관측 파일은 자동으로 결정됩니다.')
@@ -175,7 +179,7 @@ def main(argv=None):
                 emit(phase='unknown_wait')
             else:
                 np.save(out / 'desk_depth.npy', baseline)          # 지우기 전 실제 깊이(확인용)
-                baseline, desk = desk_baseline(baseline_bgr, baseline, ROOT, tray_slots=live_tray_slots(baseline_bgr, baseline))
+                baseline, desk = desk_baseline(baseline_bgr, baseline, ROOT, tray_slots=live_tray_slots(baseline_bgr, baseline), which=args.which, of=args.of)
                 (out / 'desk_objects.json').write_text(json.dumps(desk, ensure_ascii=False, indent=2))
                 if not desk:
                     raise ValueError('unknown not found: 책상(트레이 밖, 로봇에서 12~42cm)에 등록 안 된 물체가 없습니다.')

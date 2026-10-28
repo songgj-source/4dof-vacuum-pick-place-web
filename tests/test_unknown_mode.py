@@ -332,3 +332,41 @@ class DeskSnapshotTests(unittest.TestCase):
             self.assertEqual(pick_unknown.main(['--slot', '2', '--execute', '--supported']), 1)
         robot.assert_not_called()
         self.assertIn('2개 있습니다', printed[-1]['reason'])
+
+
+class PickWhichUnknownTests(unittest.TestCase):
+    """새 물체가 여러 개일 때: 사진에서 왼쪽부터 몇 번째만 새 물체로 본다(나머지는 기준에 남는다)."""
+
+    def scene(self):
+        rgb = np.full((480, 640, 3), 160, np.uint8); depth = np.full((480, 640), 500, np.uint16)
+        for x0, color in ((200, (200, 70, 20)), (300, (30, 200, 30)), (400, (200, 200, 30))):     # 왼쪽 → 오른쪽 3개
+            depth[210:260, x0:x0 + 60] = 465; rgb[210:260, x0:x0 + 60] = color
+        return rgb, depth
+
+    def baseline(self, **kw):
+        from perception.unknown_objects import desk_baseline
+        rgb, depth = self.scene()
+        return desk_baseline(rgb, depth, ROOT, locator=LOC, **kw)
+
+    def test_all_three_erased_by_default_in_left_to_right_order(self):
+        _, desk = self.baseline()
+        self.assertEqual([o['bbox_px'][0] for o in desk], sorted(o['bbox_px'][0] for o in desk))
+        self.assertEqual(len(desk), 3)
+
+    def test_which_erases_only_that_object(self):
+        _, all_three = self.baseline()
+        for which in (1, 2, 3):
+            base, desk = self.baseline(which=which, of=3)
+            self.assertEqual([o['bbox_px'] for o in desk], [all_three[which - 1]['bbox_px']])
+            x = all_three[which - 1]['bbox_px'][0] + 10
+            self.assertLess(int(base[235, x]), 500 + 1)                       # 고른 물체 자리는 책상 높이(기준 500)로 지워졌다
+            other = all_three[(which % 3)]['bbox_px'][0] + 10
+            self.assertEqual(int(base[235, other]), 465)                       # 다른 물체는 기준에 그대로 남는다
+
+    def test_count_mismatch_refuses(self):
+        with self.assertRaisesRegex(ValueError, 'count changed'):
+            self.baseline(which=1, of=2)
+
+    def test_which_out_of_range_refuses(self):
+        with self.assertRaisesRegex(ValueError, 'unknown not found'):
+            self.baseline(which=4, of=3)

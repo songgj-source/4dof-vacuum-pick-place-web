@@ -227,14 +227,17 @@ class Arm:
         elif skill == 'return_home':
             command = ('return_home', {})
         elif skill == 'pick_all':
-            objects = params.get('objects')
+            objects, include_new = params.get('objects'), params.get('include_new', False)
+            if not isinstance(include_new, bool):
+                return 400, dict(ok=False, reason_code='bad_request', reason='include_new는 true/false입니다.')
+            extra = dict(include_new=True) if include_new else {}      # 등록 안 된 새 물체도 빈 칸에 넣는다(책상 정리)
             if objects is None:
-                command = ('pick_all', {})               # 세 물체(책상에 없는 것은 계획에서 건너뛴다)
-            elif (not isinstance(objects, list) or not objects or len(set(objects)) != len(objects)
+                command = ('pick_all', dict(extra))               # 세 물체(책상에 없는 것은 계획에서 건너뛴다)
+            elif (not isinstance(objects, list) or (not objects and not include_new) or len(set(objects)) != len(objects)
                   or any(o not in ALL_ORDER for o in objects)):
                 return 400, dict(ok=False, reason_code='bad_request', reason=f'objects는 {list(ALL_ORDER)} 중 하나 이상(중복 없이)이어야 합니다.')
             else:
-                command = ('pick_all', dict(objects=[o for o in ALL_ORDER if o in objects]))
+                command = ('pick_all', dict(objects=[o for o in ALL_ORDER if o in objects], **extra))
         elif skill == 'drive':
             label, gap = params.get('label'), params.get('gap')
             if not isinstance(label, str) or not label.strip() or len(label) > 40:
@@ -507,16 +510,18 @@ class Arm:
         if self.stop_requested:
             return dict(ok=False, reason_code='cancelled', reason='cancelled')
         objects = [label for label in ALL_ORDER if any(o['label'] == label and o.get('pickable') for o in scene.get('objects') or [])]
-        if not objects:
+        new_count = sum(1 for o in scene.get('objects') or [] if o['label'] == 'unknown')      # 등록 안 된 새 물체(기존 물체를 넣고 남은 빈 칸에)
+        if not objects and not new_count:
             self._event(task_id, 'phase', ('tidy_empty', f'{place}에 정리할 물체가 보이지 않습니다.'))
             return dict(ok=True, reason=None, reason_code=None, note=f'{place}에 도착했습니다. 팔이 닿는 곳에 정리할 물체가 없습니다.')
-        announcement = f"{place}에 {', '.join(NAMES[label] for label in objects)}가 보입니다. 정리하겠습니다."
+        names = [NAMES[label] for label in objects] + ([f'새 물체 {new_count}개'] if new_count else [])
+        announcement = f"{place}에 {', '.join(names)}가 보입니다. 정리하겠습니다."
         self._event(task_id, 'phase', ('tidy_found', announcement))
-        self.log.add('info', '작업', f"{place}에서 정리: {', '.join(NAMES[label] for label in objects)}")
+        self.log.add('info', '작업', f"{place}에서 정리: {', '.join(names)}")
         refused = self._ensure_torque(task_id, 'pick_all')
         if refused:
             return refused
-        outcome = self._pick_all(task_id, objects)
+        outcome = self._pick_all(task_id, objects, include_new=bool(new_count))
         outcome['announcement'] = announcement
         if outcome['ok']:
             outcome['note'] = f'{place}에 도착해 정리했습니다.' + (f" {outcome['note']}" if outcome.get('note') else '')
@@ -566,10 +571,81 @@ class Arm:
             error = None if done else menu.home_failure_reason(code, summary)
             return dict(ok=done, reason=error, reason_code=None if done else reason_code(error))
         if skill == 'pick_all':
-            return self._pick_all(task_id, params.get('objects'))
+            return self._pick_all(task_id, params.get('objects'), include_new=bool(params.get('include_new')))
         return self._pick(task_id, params['object'], params['slot'])
 
-    def _pick_all(self, task_id, objects=None):
+    def _pick_all(self, task_id, objects=None, include_new=False):
+        """include_new면 기존 물체를 다 넣은 뒤, 책상에 남은 등록 안 된 새 물체를 빈 칸에 한 개씩 넣는다(_pick_new_objects)."""
+        outcome = self._pick_registered(task_id, objects, include_new) if objects != [] else dict(ok=True, reason=None, reason_code=None, note=None, _placed=[])
+        if not include_new or self.stop_requested:
+            return {k: v for k, v in outcome.items() if k != '_placed'}
+        if not outcome['ok'] and outcome.get('reason_code') != 'object_not_found':
+            return {k: v for k, v in outcome.items() if k != '_placed'}      # 앞 물체가 실패하면 나머지는 하지 않는다
+        taken = outcome.get('_placed', [])
+        outcome = {k: v for k, v in outcome.items() if k != '_placed'}
+        refused = self._ensure_torque(task_id, 'pick_all')
+        if refused:
+            return refused
+        new = self._pick_new_objects(task_id, taken)
+        note = ' '.join(part for part in ((outcome.get('note') if outcome['ok'] else None), new.get('note')) if part) or None
+        if new['ok'] and not outcome['ok'] and new.get('done'):
+            return dict(ok=True, reason=None, reason_code=None, note=note)    # 기존 물체는 없었고 새 물체를 넣었다
+        if new['ok'] and not outcome['ok']:
+            return outcome                                                     # 아무것도 못 찾았다: 처음 결과 그대로
+        return dict(new, note=note) if not new['ok'] else dict(outcome, note=note)
+
+    def _pick_new_objects(self, task_id, taken):
+        """책상에 남은 새 물체(등록 안 된 물체)를 빈 칸에 넣는다. 책상에는 물체가 항상 3개라서 기존 물체가 N개면 빈 칸이 3-N개다.
+        가장 멀리 보낼 수 있는 물체(놓기 계획기로 잰 도달 반경이 가장 큰 것)를 가장 먼 빈 칸에, 나머지는 고정 시드 무작위로 넣는다.
+        사진에서 왼쪽부터 번호를 붙이고, 번호가 큰 것부터 집어 앞 번호가 밀리지 않게 한다. 집을 때마다 HOME을 거친다(기존 새 물체 집기 경로)."""
+        from perception import object_namer
+        from sorting import slot_assignment
+        try:
+            bgr, scene = self._steady_scene(grab_astra)
+        except Exception as exc:
+            return dict(ok=False, reason_code='camera_error', reason=f'새 물체를 찾기 위한 사진을 찍지 못했습니다: {type(exc).__name__}: {str(exc)[:160]}')
+        finally:
+            CAMERA.release()
+        news = sorted([o for o in scene.get('objects') or [] if o['label'] == 'unknown'], key=lambda o: o['pixel'][0])
+        if not news:
+            return dict(ok=True, note=None, done=0)
+        plan = self.plan_new_slots(news, scene, taken)
+        if plan['left']:
+            self._event(task_id, 'phase', ('new_left', f"새 물체 {', '.join(str(i + 1) for i in plan['left'])}번은 넣을 칸이 없어 남깁니다."))
+        done = 0
+        for index in sorted(plan['slots'], reverse=True):               # 오른쪽 것부터: 왼쪽 번호는 그대로 유지된다
+            if self.stop_requested:
+                return dict(ok=False, reason='cancelled', reason_code='cancelled', done=done)
+            slot, remaining = plan['slots'][index], len(news) - done
+            named = object_namer.label(news[index].get('color'), news[index].get('guess'))
+            guess = f'({named})' if named else ''
+            self._event(task_id, 'phase', ('new_object', f'새 물체 {index + 1}{guess}를 {slot}번 칸에 넣습니다 (도달 {plan["reach_mm"].get(index) or "?"}mm)'))
+            result = self._pick(task_id, 'unknown', slot, which=index + 1, of=remaining)
+            with self.lock:
+                self.tasks[task_id].setdefault('items', []).append(dict(object='unknown', index=index + 1, slot=slot, ok=result['ok'],
+                                                                      reason_code=None if result['ok'] else result.get('reason_code')))
+            if not result['ok']:
+                return dict(ok=False, reason=f"새 물체 {index + 1}에서 멈췄습니다: {result.get('reason')}", reason_code=result.get('reason_code'), done=done)
+            done += 1
+        left_note = (f"새 물체 {len(plan['left'])}개는 빈 칸이 없어 책상에 남겼습니다." if plan['left'] else '')
+        return dict(ok=True, note=' '.join(p for p in (f'새 물체 {done}개를 넣었습니다.', left_note) if p), done=done)
+
+    def plan_new_slots(self, news, scene, taken):
+        """새 물체 목록(왼쪽부터)을 빈 칸에 배정한다: dict(slots={번호(0부터): 칸}, left=[번호], reach_mm={번호: 도달 mm}). 로봇은 움직이지 않는다."""
+        from robot.robot_model import load_planar_model
+        from sorting import slot_assignment
+        nominal = {1: 340., 2: 270., 3: 190.}
+        radii = {int(n): float(r) for n, r in (scene.get('slot_radius_mm') or {}).items()} or nominal
+        radii = {n: radii.get(n, nominal[n]) for n in (1, 2, 3)}
+        free = slot_assignment.free_slots([o['slot'] for o in scene.get('in_tray') or []], taken)
+        model = load_planar_model(menu.ROOT)
+        angle = float((scene.get('slot_angle_rad') or {}).get(max(free, key=lambda n: radii[n]), 0.)) if free else 0.
+        reach = {i: slot_assignment.reach_limit_mm(model, angle, held_height_mm=float(o.get('height_mm') or 30.))
+                 for i, o in enumerate(news)}
+        slots, left = slot_assignment.assign(reach, radii, free, seed_text='new')
+        return dict(slots=slots, left=left, reach_mm=reach)
+
+    def _pick_registered(self, task_id, objects=None, include_new=False):
         # 메뉴 4와 같다: HOME에서 세 물체를 미리 계획(사진)한 뒤, 놓은 자리에서 HOME을 거치지 않고 다음 물체로 간다.
         def on_item(label, stage):
             with self.lock:
@@ -586,24 +662,25 @@ class Arm:
             self.tasks[task_id]['items'] = [dict(object=i['object'], ok=i['ok'], reason_code=None if i['ok'] else reason_code(i['reason']))
                                             for i in outcome['items']] + [dict(object=label, ok=None, skipped=True, reason_code='object_not_found')
                                                                           for label in outcome['skipped']]
-        left = outcome.get('unregistered_left', 0)
+        placed = [OBJECTS[i['object']] for i in outcome['items'] if i['ok']]      # 기존 물체가 쓴 칸(새 물체는 남은 칸에)
+        left = 0 if include_new else outcome.get('unregistered_left', 0)         # 새 물체를 넣을 때는 '그대로 뒀다'고 알리지 않는다
         extra = dict(unregistered_left=left)          # 등록 안 된 물체(집지 않고 피해 간 것) 수
         note = ' '.join(part for part in (
             ('책상에 없어 건너뜀: ' + ', '.join(NAMES[label] for label in outcome['skipped'])) if outcome['skipped'] else '',
             menu.unregistered_note(left)) if part) or None
         if outcome['ok']:
-            return dict(ok=True, reason=None, reason_code=None, note=note, **extra)
+            return dict(ok=True, reason=None, reason_code=None, note=note, _placed=placed, **extra)
         if outcome['failed_label'] is None:
             return dict(ok=False, reason='책상에서 등록된 물체를 찾지 못했습니다. 넣을 것이 없습니다.' + (f' {menu.unregistered_note(left)}' if left else ''),
-                        reason_code='object_not_found', **extra)
+                        reason_code='object_not_found', _placed=placed, **extra)
         if outcome['reason'] == 'cancelled':
-            return dict(ok=False, reason='cancelled', reason_code='cancelled', **extra)
+            return dict(ok=False, reason='cancelled', reason_code='cancelled', _placed=placed, **extra)
         return dict(ok=False, reason=f"{NAMES[outcome['failed_label']]}에서 멈췄습니다: {menu.brief_message(outcome['reason'])}",
-                    reason_code=reason_code(outcome['reason']), **extra)
+                    reason_code=reason_code(outcome['reason']), _placed=placed, **extra)
 
-    def _pick(self, task_id, label, slot):
+    def _pick(self, task_id, label, slot, which=None, of=None):
         since = time.time()
-        build = (lambda tray: menu.unknown_command(slot, execute=True, use_tray_frame=tray)) if label == 'unknown' else \
+        build = (lambda tray: menu.unknown_command(slot, execute=True, use_tray_frame=tray, which=which, of=of)) if label == 'unknown' else \
             (lambda tray: menu.sort_command(label, slot=slot if slot != OBJECTS[label] else None, use_tray_frame=tray))
         code, result, _ = self._run(task_id, build(True))
         if code != 0 and 'the tray moved since the stored frame' in str((result or {}).get('reason', '')):
@@ -768,6 +845,7 @@ def describe_scene(bgr, depth):
     """사진에서 보이는 물체와, 지금 쓸 수 있어 보이는 메뉴(판단 참고용). 등록 물체는 위치·집기 가능 여부까지 본다.
     이미 트레이 칸에 들어 있는 물체는 objects에서 빼고 in_tray로 따로 알린다(정리 대상이 아니다). 로봇 밑동 근처나
     작업 범위 밖의 '등록 안 된 물체'(로봇 자신, 케이블 등)도 뺀다."""
+    from perception import object_namer
     from perception.object_classify import classify_objects
     from perception.object_targets import locate_targets, load_catalog, default_locator, top_center_xy
     from perception.object_classify import table_height_mm
@@ -808,6 +886,11 @@ def describe_scene(bgr, depth):
                             pixel=[int(v) for v in item.get('top_center_px', item.get('center_px', (0, 0)))],
                             position_mm=[round(v * 1000) for v in xy] if xy is not None else None,
                             pickable=bool(target and target['pickable'])))
+        if item['label'] == 'unknown':
+            # 비전 모델의 짐작 이름(안내 문구용). 집기·칸 판단에는 쓰지 않는다. 실패하면 None이라 '등록 안 된 물체'로 말한다
+            objects[-1]['guess'] = object_namer.name_object(bgr, item['bbox_px'])
+            objects[-1]['color'] = object_namer.color_name(*item['color_hsv']) if item.get('color_hsv') else None      # 측정한 색 이름
+            objects[-1]['height_mm'] = round(float(item.get('top_height_mm') or item.get('height_mm') or 30.), 1)    # 칸 배정(가장 멀리 보낼 물체 계산)용
     if slots and locator is not None and catalog is not None:
         try:
             for found in slot_contents(bgr, table_height_mm(depth), slots, lambda xy, h: _color_pixel(locator, xy, h), DEPTH_MINUS_TOP_CENTER_PX,
@@ -824,7 +907,10 @@ def describe_scene(bgr, depth):
     available.append(6)
     if any(o['label'] == 'unknown' for o in objects):
         available.append(7)
+    geometry = {n: v for n, v in (slots or {}).items() if isinstance(v, dict) and 'x_mm' in v and 'y_mm' in v}
     return dict(objects=objects, in_tray=sorted(in_tray, key=lambda o: o['slot']), tray_found=slots is not None,
+                slot_radius_mm={int(n): round(math.hypot(v['x_mm'], v['y_mm']), 1) for n, v in geometry.items()},
+                slot_angle_rad={int(n): math.atan2(v['y_mm'], v['x_mm']) for n, v in geometry.items()},
                 available_menus=sorted(available),
                 note='available_menus는 사진에서 보이는 물체로 고른 참고값이다. 트레이 칸 안에 보이는 물체는 in_tray로 따로 알리고 정리 대상에서 뺀다.')
 
@@ -892,7 +978,7 @@ def menu_start(arm, number, params):
             return 400, dict(ok=False, reason_code='bad_request', reason='놓을 칸 slot(1~3)이 필요합니다.')
         chosen = dict(object='unknown', slot=params['slot'])
     elif item['id'] == 4 and 'objects' in params:
-        chosen = dict(objects=params['objects'])          # 사진으로 고른 물체만(책상 정리)
+        chosen = dict(objects=params['objects'], **({'include_new': params['include_new']} if 'include_new' in params else {}))   # 사진으로 고른 물체만(책상 정리)
     else:
         chosen = dict(item['params'])
     return arm.start(item['skill'], chosen)
@@ -1087,7 +1173,7 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
                     return self._send(200, arm.stop())
                 if action not in ('pick_place', 'pick_all', 'return_home', 'drive'):
                     return self._send(400, dict(ok=False, reason_code='bad_request', reason='action은 pick_place, pick_all, return_home, drive, status, stop 중 하나입니다.'))
-                status, body = arm.start(action, {k: v for k, v in params.items() if k in ('object', 'slot', 'objects', 'label', 'gap', 'then', 'mode')})
+                status, body = arm.start(action, {k: v for k, v in params.items() if k in ('object', 'slot', 'objects', 'include_new', 'label', 'gap', 'then', 'mode')})
                 return self._send(status, body)
             if self.path == '/api/image':
                 status, body = arm.capture()

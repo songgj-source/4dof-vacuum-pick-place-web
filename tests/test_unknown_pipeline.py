@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT / 'scripts'))
 import plan_sort
+from perception.unknown_objects import CONTACT_PRESS_MM
 
 
 class UnknownPipelineTest(unittest.TestCase):
@@ -23,7 +24,7 @@ class UnknownPipelineTest(unittest.TestCase):
         geometry = dict(source='depth_table_plane', height_mm=35., footprint_mm=[45., 45.],
                         height_uncertainty_mm=3., footprint_radius_mm=40., top_flat=True, physical_validated=False)
         target = dict(label='unknown', name='unknown', new_object=True, target_xy=[.217, .085],
-                      contact_z=.033, radius_m=.233, pickable=True, problems=[], object_geometry=geometry,
+                      contact_z=(35. - CONTACT_PRESS_MM) / 1000., radius_m=.233, pickable=True, problems=[], object_geometry=geometry,
                       suction_verified=False, pick_tilt_deg=0.)
         tray = dict(found=True, slots={3: dict(x_mm=180., y_mm=30., floor_height_mm=10., radius_m=.183)},
                     rim_height_mm=40., method='walls', numbering='rule:far_from_base')
