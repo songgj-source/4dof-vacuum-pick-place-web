@@ -31,6 +31,7 @@ import signal
 import subprocess
 import sys
 import threading
+from urllib.parse import parse_qs, urlsplit
 import time
 import urllib.parse
 import traceback
@@ -62,7 +63,7 @@ def refresh_objects():
 
 
 refresh_objects()
-HOME_CMD = [menu.PY, str(menu.ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32']
+HOME_CMD = [menu.PY, str(menu.ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '600', '--tracking-limit', '64']
 # 사용자가 직접 누른 'HOME 복귀'(웹 버튼·API·음성)는 시작 구간 검사만 건너뛴다(2026-10-26: 손으로 옮긴 팔이 반경 0.4mm 차이로 거부됨).
 # 경로·책상·링크 높이 검사와 추종 가드는 return_home.py에 그대로 남는다. 작업 중 자동 복귀(HOME_CMD)는 예전 기준 그대로.
 HOME_ANY_START_CMD = [*HOME_CMD, '--any-start']
@@ -173,12 +174,29 @@ class EventLog:
             return rows[-limit:], self.counter
 
 
+# 이 라벨로 갈 때는 기본이 precise_wall이다: 라벨 위치에 먼저 정밀하게 선 뒤(오차 3cm 목표) 그 자리에서 앞 벽과 수직으로 맞추고 gap 앞까지 붙는다
+# (2026-10-29 사용자: 책상 라벨로 이동한 뒤 Go to 벽근접으로 접근, 라벨과의 오차 해결).
+# 다른 라벨은 라벨 자리 그대로(precise). 요청에 mode를 주면 그것을 쓴다. ARM_WALL_LABELS=책상,이름2 로 바꾼다(비우면 모두 precise).
+WALL_LABELS = tuple(name.strip() for name in os.environ.get('ARM_WALL_LABELS', '책상').split(',') if name.strip())
+
+
+def default_drive_mode(label):
+    return 'precise_wall' if str(label).strip() in WALL_LABELS else 'precise'
+
+
+RESUMABLE = ('pick_place', 'pick_all', 'drive')      # 정지한 뒤 '다시 시작'으로 이어서 할 수 있는 작업
+
+
 class Arm:
     """한 번에 한 작업을 돌리는 상태. HTTP 핸들러와 작업 스레드가 함께 쓴다."""
 
     def __init__(self, run=menu.run_streaming, read_state=None, hold=None, base_check=None, drive=None, read_pose=None,
-                 arrival_check=None):
+                 arrival_check=None, home_after_stop=None):
         self.run = run
+        # 정지하면 멈춘 뒤 HOME으로 복귀한다(사용자 요청 2026-10-28: 그 자리에서는 어차피 이어서 못 한다). ARM_HOME_AFTER_STOP=0이면 그 자리에 선다.
+        # 멈춘 작업은 self.resume에 남겨 두고 '다시 시작'(POST /resume)이 오면 HOME에서 남은 부분을 다시 시작한다.
+        self.home_after_stop = (os.environ.get('ARM_HOME_AFTER_STOP', '1') != '0') if home_after_stop is None else home_after_stop
+        self.resume = None
         self.log = EventLog()
         self.drive = drive or base_drive.drive_to
         self.read_pose = read_pose or menu.read_arm_state       # {관절: (토크, 위치)} 또는 None
@@ -191,6 +209,7 @@ class Arm:
         self.stop_requested = False
         self.capturing = False
         self.scene = None                     # 마지막 get image 결과(웹 화면 표시용 JPEG 포함)
+        self.scene_time = 0.
         self.awaiting_desk_choice = False
         self.tasks = {}
         self.current = None
@@ -205,7 +224,7 @@ class Arm:
             return dict(state='busy' if task else 'idle', arm_home=self.arm_home,
                         task_id=shown['id'] if shown else None, skill=shown['skill'] if shown else None,
                         phase=shown['phase'] if shown else None, phase_label=shown['phase_label'] if shown else None,
-                        task_state=shown['state'] if shown else None,
+                        task_state=shown['state'] if shown else None, resumable=self.resume is not None,
                         elapsed_s=round((time.monotonic() - shown['started']) if task else shown['seconds'], 1) if shown else None)
 
     def task(self, task_id):
@@ -245,17 +264,24 @@ class Arm:
             if gap is not None and (isinstance(gap, bool) or not isinstance(gap, (int, float))
                                     or not base_drive.GAP_LIMITS[0] <= gap <= base_drive.GAP_LIMITS[1]):
                 return 400, dict(ok=False, reason_code='bad_request', reason=f'gap은 {base_drive.GAP_LIMITS[0]}~{base_drive.GAP_LIMITS[1]} m여야 합니다.')
-            then, mode = params.get('then'), params.get('mode', 'precise')
+            then, mode = params.get('then'), params.get('mode') or default_drive_mode(label)
             if mode not in base_drive.MODES:
-                return 400, dict(ok=False, reason_code='bad_request', reason=f'mode는 {base_drive.MODES} 중 하나입니다(precise: 라벨 자리 그대로, wall: 앞 벽에 붙기).')
+                return 400, dict(ok=False, reason_code='bad_request', reason=f'mode는 {base_drive.MODES} 중 하나입니다(precise: 라벨 자리 그대로, wall: 앞 벽에 붙기, precise_wall: 라벨 자리에 선 뒤 앞 벽에 붙기).')
             if then not in (None, 'tidy', 'inspect'):
                 return 400, dict(ok=False, reason_code='bad_request', reason="then은 'inspect' 또는 'tidy'(촬영 후 정리) 중 하나입니다.")
             command = ('drive', dict(label=label.strip(), mode=mode, **({'gap': float(gap)} if gap is not None else {}), **({'then': then} if then else {})))
+        elif skill == 'resume':
+            command = ('resume', {})
         else:
             return 404, dict(ok=False, reason_code='bad_request', reason='알 수 없는 명령입니다.')
         with self.lock:
             if self.current or self.capturing:
                 return 409, dict(ok=False, reason_code='busy', reason='다른 작업을 실행 중입니다.', task_id=self.current)
+            if command[0] == 'resume':
+                if not self.resume:
+                    return 409, dict(ok=False, reason_code='nothing_to_resume', reason='이어서 할 작업이 없습니다.')
+            else:
+                self.resume = None                       # 새 작업을 시키면 멈춰 둔 작업은 버린다
             task_id = uuid.uuid4().hex[:8]
             self.tasks[task_id] = dict(id=task_id, skill=command[0], params=command[1], state='running', phase=None,
                                        phase_label=None, phases=[], warnings=[], result=None, item=None, items=[],
@@ -352,6 +378,7 @@ class Arm:
                      image_url='/api/image/latest.jpg', image_jpeg_base64=base64.b64encode(jpeg.tobytes()).decode())
         with self.lock:
             self.scene = dict(scene, jpeg=jpeg.tobytes())
+            self.scene_time = time.monotonic()
         return scene
 
     @staticmethod
@@ -382,10 +409,11 @@ class Arm:
         if proc is not None and proc.poll() is None:
             proc.send_signal(signal.SIGINT)
         with self.lock:
-            driving = running and self.tasks.get(self.current, {}).get('skill') == 'drive'
-        if driving:                                  # 주행: 이동 루프도 멈추지만 차는 바로 세운다
+            skill = self.tasks.get(self.current, {}).get('skill') if running else None
+        if skill == 'drive':                         # 주행: 이동 루프도 멈추지만 차는 바로 세운다
             threading.Thread(target=base_drive.cancel, daemon=True).start()
-        return dict(ok=True, stopped=running)
+        return dict(ok=True, stopped=running, resumable=skill in RESUMABLE,
+                    home_after_stop=bool(self.home_after_stop and skill in ('pick_place', 'pick_all')))
 
     # ---- 작업 스레드 ----
     def _event(self, task_id, kind, data):
@@ -430,6 +458,13 @@ class Arm:
         result = None
         try:
             result = self._execute(task_id, skill, params)
+            if self.stop_requested and not result.get('ok') and result.get('reason_code') != 'cancelled':
+                # 정지를 눌렀는데 실행 프로그램이 신호로 끝나면(종료 코드 -2 등) 실패로 보였다('흰 상자에서 멈췄습니다: 종료 코드 -2'). 정지가 원인이니 정지됨으로 본다.
+                # 원문은 사용자에게 보이지 않게 logged_reason으로만 남긴다(로그창에는 이미 실행 프로그램의 기록이 있다).
+                result = dict(result, ok=False, reason='cancelled', reason_code='cancelled', logged_reason=result.get('reason'))
+            self._record_resume(task_id, skill, params, result)
+            if self.home_after_stop and self.stop_requested and skill in ('pick_place', 'pick_all'):
+                result = self._home_after_stop(task_id, result)      # 정지로 멈춘 팔 작업: 정지가 끝나면 HOME으로 돌아간다
         except Exception as exc:                                    # 서버가 죽지 않게 모든 실패를 결과로 돌려준다
             result = dict(ok=False, reason=f'{type(exc).__name__}: {exc}', reason_code='failed')
             self.log.add('error', '서버', f'{skill} 처리 중 예외: {type(exc).__name__}: {exc}', traceback.format_exc())
@@ -441,24 +476,125 @@ class Arm:
                 task['state'] = 'done' if result['ok'] else 'failed'
                 self._log_result(skill, task, result)
                 if skill != 'drive' or params.get('then') in ('tidy', 'inspect'):
-                    self.arm_home = True if result['ok'] else None
+                    self.arm_home = True if result['ok'] or (result.get('home_after_stop') or {}).get('ok') else None
                 self.proc = None
                 self.current = None
+
+    def _record_resume(self, task_id, skill, params, result):
+        """정지로 끝난 작업(reason_code 'cancelled')이면 남은 부분을 기억한다. 정리(pick_all)는 이미 넣은 물체를 뺀 나머지만 남긴다.
+        끝까지 마쳤거나 다른 이유로 실패한 작업은 기억하지 않는다(그 경우엔 사용자가 다시 시키는 것이 맞다)."""
+        if skill not in RESUMABLE or result.get('reason_code') != 'cancelled':
+            return
+        state = dict(skill=skill, params=dict(params))
+        if skill == 'pick_all':
+            with self.lock:
+                items = list(self.tasks[task_id].get('items') or [])
+            done = {i['object'] for i in items if i.get('ok') and i.get('object') != 'unknown'}
+            wanted = ALL_ORDER if params.get('objects') is None else params['objects']
+            remaining = [o for o in wanted if o not in done]
+            include_new = bool(params.get('include_new'))
+            if not remaining and not include_new:
+                return
+            state['params'] = dict(({'objects': remaining} if (params.get('objects') is not None or done) else {}),
+                                   **({'include_new': True} if include_new else {}))
+        with self.lock:
+            self.resume = state
+
+    def resume_summary(self, state=None):
+        """이어서 할 작업을 한 줄로(없으면 None). state를 주지 않으면 지금 기억해 둔 작업. 대화 답과 이어서 하기 안내에 쓴다."""
+        if state is None:
+            with self.lock:
+                state = self.resume
+        if not state:
+            return None
+        skill, params = state['skill'], state['params']
+        if skill == 'pick_place':
+            return f"{NAMES.get(params['object'], params['object'])}를 {params.get('slot', OBJECTS.get(params['object']))}번 칸에 넣기"
+        if skill == 'drive':
+            return f"{params['label']}으로 이동" + ('한 뒤 정리' if params.get('then') == 'tidy' else '')
+        names = [NAMES[o] for o in params.get('objects') or ALL_ORDER] + (['새 물체'] if params.get('include_new') else [])
+        return '책상 정리(' + ', '.join(names) + ')'
+
+    def _resume(self, task_id):
+        """'다시 시작': 정지한 자리에서 먼저 검증된 경로로 HOME에 복귀하고(주행은 제외), 하던 작업의 남은 부분을 다시 시작한다.
+        정지 때 흡착을 풀기 때문에 집고 있던 물체는 떨어졌을 수 있다: 이어서 하는 작업이 사진으로 다시 찾는다.
+        HOME 복귀나 이어서 하는 작업이 다시 정지되면 남은 부분을 다시 기억해 두어 또 이어서 할 수 있다."""
+        with self.lock:
+            state, self.resume = self.resume, None
+        if not state:
+            return dict(ok=False, reason='이어서 할 작업이 없습니다.', reason_code='nothing_to_resume')
+        skill, params = state['skill'], state['params']
+        if skill != 'drive' and self.arm_home is not True:          # 정지 뒤 이미 HOME으로 복귀해 있으면 그대로 시작한다
+            self._event(task_id, 'phase', ('resume_home', '이어서 하기: 먼저 HOME으로 복귀'))
+            CAMERA.release()
+            moving = self.base_check()
+            refused = (dict(ok=False, reason_code='base_moving', reason=moving + ' 차가 멈춘 뒤 다시 시키세요.') if moving
+                       else self._ensure_torque(task_id, 'return_home'))
+            if not refused:
+                code, summary, _ = self._run(task_id, HOME_ANY_START_CMD)
+                if not menu.home_return_succeeded(code, summary):
+                    reason = 'cancelled' if code == 130 else menu.home_failure_reason(code, summary)
+                    refused = dict(ok=False, reason=reason if code != 130 else 'cancelled',
+                                   reason_code='cancelled' if code == 130 else reason_code(reason))
+            if refused:
+                with self.lock:
+                    self.resume = state                  # 다시 시도할 수 있게 남겨 둔다
+                return refused
+        self._event(task_id, 'phase', ('resume_run', '이어서 하기: ' + (self.resume_summary(state) or skill)))
+        result = self._execute(task_id, skill, params)
+        self._record_resume(task_id, skill, params, result)
+        return dict(result, resumed=True)
+
+    def _home_after_stop(self, task_id, result):
+        """정지 뒤 HOME 복귀: 정지한 작업이 정리되고 끝난 직후 같은 작업으로 검증된 복귀(return_home --any-start)를 한다. 복귀 경로는 움직이기 전에
+        검사하고, 복귀 중에 정지가 또 오면 복귀도 멈춘다(그 자리에 선다). 원래 작업 결과(정지됨)는 그대로 두고 home_after_stop에 복귀 결과를 붙인다."""
+        with self.lock:
+            self.stop_requested = False              # 아래 복귀 프로세스를 띄울 수 있게. 복귀 중 다시 정지하면 stop()이 이 값을 다시 켠다
+        self._event(task_id, 'phase', ('home_after_stop', '정지 후 HOME 복귀'))
+        self.log.add('info', '작업', '정지 후 HOME으로 복귀합니다', f'task {task_id}')
+        try:
+            refused = self._ensure_torque(task_id, 'return_home')
+            if refused:
+                home = dict(ok=False, reason=refused.get('reason'))
+            else:
+                code, summary, _ = self._run(task_id, HOME_ANY_START_CMD)
+                done = menu.home_return_succeeded(code, summary)
+                home = dict(ok=bool(done), reason=None if done else ('cancelled' if code == 130 else menu.home_failure_reason(code, summary)))
+        except Exception as exc:
+            home = dict(ok=False, reason=f'{type(exc).__name__}: {exc}')
+        note = '정지 후 HOME 복귀를 마쳤습니다.' if home['ok'] else f"정지 후 HOME 복귀에 실패했습니다: {home['reason']}"
+        self.log.add('ok' if home['ok'] else 'warn', '작업', note, f'task {task_id}')
+        return dict(result, home_after_stop=home, note=' '.join(p for p in (result.get('note'), note) if p))
 
     QUIET_REASONS = ('base_moving', 'torque_off', 'object_not_found', 'unreachable', 'busy',     # 사용자가 바로 고칠 수 있는 거부
                      'label_not_found', 'arm_not_folded', 'base_unavailable', 'wall_failed')
 
+    SKILL_NAMES = {'pick_all': '책상 정리', 'pick_place': '물체 넣기', 'return_home': 'HOME 복귀', 'drive': '이동', 'resume': '이어서 하기'}
+
     def _log_result(self, skill, task, result):
+        name = self.SKILL_NAMES.get(skill, skill)               # 화면에는 내부 이름(pick_all)이 아니라 한글 이름을 보인다
         for warning in task.get('warnings') or []:
-            self.log.add('warn', '작업', f'{skill} 주의: {warning}', f"task {task['id']}")
+            self.log.add('warn', '작업', f'{name} 주의: {warning}', f"작업 {task['id']}")
         code = result.get('reason_code')
         if result['ok']:
-            self.log.add('ok', '작업', f"{skill} 완료 ({task['seconds']}초)" + (f" - {result['note']}" if result.get('note') else ''), f"task {task['id']}")
+            self.log.add('ok', '작업', f"{name} 완료 ({task['seconds']}초)" + (f" - {result['note']}" if result.get('note') else ''), f"작업 {task['id']}")
         elif code == 'cancelled':
-            self.log.add('info', '작업', f"{skill} 정지됨 ({task['seconds']}초)", f"task {task['id']}")
+            self.log.add('info', '작업', f"{name} 중지 ({task['seconds']}초)", f"작업 {task['id']}")
         else:
-            self.log.add('warn' if code in self.QUIET_REASONS else 'error', '작업', f"{skill} 실패: {result.get('reason')}",
-                         f"task {task['id']}, reason_code={code}, {task['seconds']}초")
+            self.log.add('warn' if code in self.QUIET_REASONS else 'error', '작업', f"{name} 실패: {result.get('reason')}",
+                         f"작업 {task['id']}, {code}, {task['seconds']}초")
+
+    NAV_INACTIVE = 'Nav2가 목표를 거부했습니다'
+
+    def _recover_nav(self):
+        """pi/drive_ctl.sh nav-ready: 위치가 잡힌 뒤에도 Nav2 노드가 비활성이면 내비게이션 노드만 다시 켠다(차는 움직이지 않는다). 성공하면 True."""
+        try:
+            done = subprocess.run(['bash', str(menu.ROOT / 'pi' / 'drive_ctl.sh'), 'nav-ready'], cwd=menu.ROOT, capture_output=True, text=True, timeout=150)
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.log.add('error', '주행', f'내비게이션 복구를 실행하지 못했습니다: {type(exc).__name__}', str(exc)[:200])
+            return False
+        self.log.add('info', '주행', '내비게이션 복구 ' + ('성공' if done.returncode == 0 else f'실패({done.returncode})'), (done.stdout or '')[-300:])
+        return done.returncode == 0
 
     DRIVE_FOLD_PULSES = 120     # 주행 전 팔이 이만큼 안으로 HOME에 접혀 있어야 한다(관절마다, 펄스)
 
@@ -472,17 +608,37 @@ class Arm:
             return dict(ok=False, reason_code='arm_not_folded',
                         reason='팔이 HOME으로 접혀 있지 않아 주행하지 않습니다(' + ', '.join(f'{n} {d:+d}' for n, d in far.items()) + '). 먼저 "홈으로 돌아가"를 시키세요.')
         self.log.add('info', '주행', f"{params['label']}으로 이동 시작 ({'라벨 자리 그대로' if params.get('mode', 'precise') == 'precise' else '앞 벽에 붙기'})" + (f" (벽 앞 {params['gap']} m)" if 'gap' in params else ''))
+        def go():
+            return self.drive(params['label'], mode=params.get('mode', 'precise'), gap=params.get('gap'),
+                              on_phase=lambda raw, text: self._event(task_id, 'phase', (raw, text)), stopped=lambda: self.stop_requested)
         try:
-            result = self.drive(params['label'], mode=params.get('mode', 'precise'), gap=params.get('gap'),
-                                on_phase=lambda raw, text: self._event(task_id, 'phase', (raw, text)), stopped=lambda: self.stop_requested)
+            try:
+                result = go()
+            except base_drive.BaseError as exc:
+                if self.NAV_INACTIVE not in str(exc) or self.stop_requested:
+                    raise
+                # Nav2가 시작 때 위치 변환을 못 받아 비활성으로 남으면(2026-10-28) 모든 목표를 거부한다. 내비게이션 노드만 다시 켜고 한 번 더 시도한다.
+                self._event(task_id, 'phase', ('nav_recover', '내비게이션을 다시 켜는 중'))
+                self.log.add('warn', '주행', 'Nav2가 목표를 거부해 내비게이션 노드를 다시 켭니다', str(exc))
+                if not self._recover_nav():
+                    raise base_drive.BaseError(f'{exc} 내비게이션을 다시 켜지 못했습니다. 주행 스택을 다시 시작해 주세요(drive_ctl.sh restart).', exc.code)
+                result = go()
         except base_drive.BaseError as exc:
             return dict(ok=False, reason=str(exc), reason_code=exc.code)
         if result.get('ok') and params.get('then') in ('tidy', 'inspect') and not self.stop_requested:
             return self._tidy_here(task_id, params['label'])
+        if result.get('ok') and not self.stop_requested and os.environ.get('ARM_ARRIVAL_PHOTO', '1') != '0':
+            # 그냥 이동해도 도착하면 한 번 찍어 상황을 알린다(팔은 움직이지 않는다). 사진이 안 돼도 이동은 성공이다
+            look = self._tidy_here(task_id, params['label'], look_only=True)
+            if look.get('announcement'):
+                result = dict(result, note=look['announcement'], announcement=look['announcement'])
+            elif look.get('reason_code') not in (None, 'cancelled'):
+                result = dict(result, note=f"도착했지만 사진으로 상황을 확인하지 못했습니다: {look.get('reason')}")
         return result
 
-    def _tidy_here(self, task_id, place, ask=False):
-        """도착한 곳에서 위 카메라로 찍어 팔이 닿는 등록 물체를 정리한다("책상으로 가서 정리해줘"의 뒷부분)."""
+    def _tidy_here(self, task_id, place, ask=False, look_only=False):
+        """도착한 곳에서 위 카메라로 찍어 팔이 닿는 등록 물체를 정리한다("책상으로 가서 정리해줘"의 뒷부분).
+        look_only면 찍어서 상황만 알리고(announcement) 팔은 움직이지 않는다."""
         self._event(task_id, 'phase', ('drive_settle', f'{place} 도착, 차가 완전히 멈췄는지 확인'))
         steady = 0
         for _ in range(8):                               # 0.5초 간격으로 3회 연속 정지 확인
@@ -510,12 +666,18 @@ class Arm:
         if self.stop_requested:
             return dict(ok=False, reason_code='cancelled', reason='cancelled')
         objects = [label for label in ALL_ORDER if any(o['label'] == label and o.get('pickable') for o in scene.get('objects') or [])]
-        new_count = sum(1 for o in scene.get('objects') or [] if o['label'] == 'unknown')      # 등록 안 된 새 물체(기존 물체를 넣고 남은 빈 칸에)
+        new_count = sum(1 for o in scene.get('objects') or [] if o['label'] == 'unknown' and o.get('reachable', True))      # 팔이 닿는 새 물체(기존 물체를 넣고 남은 빈 칸에)
+        import arm_llm
+        report = arm_llm.arrival_report(place, scene, tidy=not look_only)        # 도착 사진으로 본 상황(책상 위·칸 안·닿지 않는 것·정리할 것)
+        self.log.add('info', '주행', report)
+        if look_only:
+            self._event(task_id, 'phase', ('arrival_report', report))
+            return dict(ok=True, reason=None, reason_code=None, announcement=report)
         if not objects and not new_count:
-            self._event(task_id, 'phase', ('tidy_empty', f'{place}에 정리할 물체가 보이지 않습니다.'))
-            return dict(ok=True, reason=None, reason_code=None, note=f'{place}에 도착했습니다. 팔이 닿는 곳에 정리할 물체가 없습니다.')
+            self._event(task_id, 'phase', ('tidy_empty', report))
+            return dict(ok=True, reason=None, reason_code=None, note=f'{place}에 도착했습니다. 팔이 닿는 곳에 정리할 물체가 없습니다.', announcement=report)
         names = [NAMES[label] for label in objects] + ([f'새 물체 {new_count}개'] if new_count else [])
-        announcement = f"{place}에 {', '.join(names)}가 보입니다. 정리하겠습니다."
+        announcement = report
         self._event(task_id, 'phase', ('tidy_found', announcement))
         self.log.add('info', '작업', f"{place}에서 정리: {', '.join(names)}")
         refused = self._ensure_torque(task_id, 'pick_all')
@@ -554,6 +716,8 @@ class Arm:
                                 state, f'팔 상태가 움직여도 되는 상태가 아닙니다({state}). 사람이 팔을 받치고 토크를 켜야 합니다.'))
 
     def _execute(self, task_id, skill, params):
+        if skill == 'resume':
+            return self._resume(task_id)
         CAMERA.release()                    # 작업(pick_auto 등)이 카메라를 직접 연다
         moving = self.base_check()
         if moving:
@@ -574,7 +738,57 @@ class Arm:
             return self._pick_all(task_id, params.get('objects'), include_new=bool(params.get('include_new')))
         return self._pick(task_id, params['object'], params['slot'])
 
+    MORE_ROUNDS = 2      # 정리 확인에서 덜 됐으면 마저 정리하는 최대 횟수(같은 물체를 계속 못 집어 끝없이 도는 것을 막는다)
+
     def _pick_all(self, task_id, objects=None, include_new=False):
+        """책상 정리. ARM_TIDY_VERIFY=1이면 끝난 뒤 책상을 다시 찍어 정리가 잘 됐는지 확인한다(결과의 verification·note). 기본은 꺼짐(2026-10-28 사용자: 끝까지 놓고 HOME에서 확인하지 말고 집는 순간 손목 카메라로 확인).
+        확인에서 책상에 집을 수 있는 물체가 남았으면 '마저 정리하겠습니다'라고 알리고 남은 것만 이어서 정리한다(최대 MORE_ROUNDS번, 남은 물체가 줄지 않으면 멈춘다)."""
+        outcome = self._pick_all_run(task_id, objects, include_new)
+        if not outcome.get('ok') or self.stop_requested or os.environ.get('ARM_TIDY_VERIFY', '0') != '1':
+            return outcome
+        first_note, more_notes, previous = outcome.get('note'), [], None
+        for round_no in range(self.MORE_ROUNDS + 1):
+            outcome = dict(outcome, note=' '.join(p for p in (first_note, *more_notes) if p) or None)      # 확인 문장·사진 실패 문장은 이번 확인 것만 붙는다
+            outcome, scene, good = self._verify_tidy(task_id, outcome)
+            if good or scene is None or self.stop_requested or round_no == self.MORE_ROUNDS:
+                break
+            left = [label for label in ALL_ORDER if any(o['label'] == label and o.get('pickable') for o in scene.get('objects') or [])]
+            new_left = sum(1 for o in scene.get('objects') or [] if o['label'] == 'unknown' and o.get('reachable', True))
+            count = len(left) + new_left
+            if not count:
+                break                               # 남은 것이 닿지 않는 물체뿐이다: 마저 정리할 수 없다(이유는 확인 결과에 이미 있다)
+            if previous is not None and count >= previous:
+                break                               # 한 번 더 했는데도 줄지 않았다: 같은 일을 되풀이하지 않는다
+            previous = count
+            self._event(task_id, 'phase', ('tidy_more', '책상 정리가 덜 됐습니다, 마저 정리하겠습니다.'))
+            self.log.add('info', '작업', '마저 정리: ' + ', '.join([NAMES[l] for l in left] + ([f'새 물체 {new_left}개'] if new_left else [])))
+            more = self._pick_all_run(task_id, left, include_new=bool(new_left))
+            if not more.get('ok'):
+                return dict(more, verification=outcome.get('verification'))      # 마저 하다 실패: 그 이유로 알린다
+            more_notes.append(more.get('note'))
+        return outcome
+
+    def _verify_tidy(self, task_id, outcome):
+        """정리 뒤 HOME 자세에서 책상 사진으로 확인한다. 사진이 안 돼도 정리 결과는 그대로 성공이다(확인하지 못했다고만 덧붙인다).
+        돌려주는 것: (결과, 찍은 장면 또는 None, 잘 됐는가)."""
+        import arm_llm
+        self._event(task_id, 'phase', ('verify_look', '정리를 마쳤습니다. 책상 사진으로 확인합니다.'))
+        try:
+            bgr, scene = self._steady_scene(grab_astra)
+            if bgr is not None:
+                self._remember_scene(bgr, scene)
+        except Exception as exc:
+            note = f'정리 확인 사진을 찍지 못했습니다: {type(exc).__name__}: {str(exc)[:120]}'
+            self.log.add('warn', '작업', note)
+            return dict(outcome, note=' '.join(p for p in (outcome.get('note'), note) if p)), None, False
+        finally:
+            CAMERA.release()
+        good, report = arm_llm.tidy_check_report(scene)
+        self.log.add('info' if good else 'warn', '작업', report)
+        self._event(task_id, 'phase', ('tidy_verify', report))
+        return dict(outcome, verification=dict(ok=good, report=report), note=' '.join(p for p in (outcome.get('note'), report) if p)), scene, good
+
+    def _pick_all_run(self, task_id, objects=None, include_new=False):
         """include_new면 기존 물체를 다 넣은 뒤, 책상에 남은 등록 안 된 새 물체를 빈 칸에 한 개씩 넣는다(_pick_new_objects)."""
         outcome = self._pick_registered(task_id, objects, include_new) if objects != [] else dict(ok=True, reason=None, reason_code=None, note=None, _placed=[])
         if not include_new or self.stop_requested:
@@ -609,7 +823,26 @@ class Arm:
         news = sorted([o for o in scene.get('objects') or [] if o['label'] == 'unknown'], key=lambda o: o['pixel'][0])
         if not news:
             return dict(ok=True, note=None, done=0)
-        plan = self.plan_new_slots(news, scene, taken)
+        in_tray_slots = [o['slot'] for o in scene.get('in_tray') or []]
+        if not scene.get('tray_found'):
+            # 이 사진에서는 트레이를 못 찾아 어느 칸이 찼는지 모른다. 그대로 두면 '모든 칸이 빈 것'으로 보고 찬 칸에 넣으려 한다.
+            # 최근(15분 안)에 트레이를 본 사진의 상태를 쓰고, 그것도 없으면 추측하지 않는다.
+            with self.lock:
+                prior, prior_at = self.scene, self.scene_time
+            if prior and prior.get('tray_found') and time.monotonic() - prior_at < 900:
+                in_tray_slots = [o['slot'] for o in prior.get('in_tray') or []]
+            else:
+                return dict(ok=False, reason_code='tray_unknown', done=0,
+                            reason='트레이를 찾지 못해 어느 칸이 비었는지 알 수 없어 새 물체는 넣지 않았습니다. 트레이가 카메라에 잘 보이게 한 뒤 다시 시키세요.')
+        near = [i for i, o in enumerate(news) if o.get('reachable', True)]             # 팔이 닿는 것만 넣는다. 번호(왼쪽부터)와 개수는 닿지 않는 것도 포함해 유지한다
+        far = [i for i in range(len(news)) if i not in near]
+        if far:
+            self._event(task_id, 'phase', ('new_far', f"새 물체 {', '.join(str(i + 1) for i in far)}번은 팔이 닿지 않아(30cm 넘음) 남깁니다."))
+        if not near:
+            return dict(ok=True, note=f'새 물체 {len(far)}개는 팔이 닿지 않아 책상에 남겼습니다. 로봇 쪽으로 옮기면 넣을 수 있습니다.', done=0)
+        local = self.plan_new_slots([news[i] for i in near], scene, taken, in_tray_slots)
+        plan = dict(slots={near[k]: v for k, v in local['slots'].items()}, left=[near[k] for k in local['left']],
+                    reach_mm={near[k]: v for k, v in local['reach_mm'].items()})
         if plan['left']:
             self._event(task_id, 'phase', ('new_left', f"새 물체 {', '.join(str(i + 1) for i in plan['left'])}번은 넣을 칸이 없어 남깁니다."))
         done = 0
@@ -619,7 +852,7 @@ class Arm:
             slot, remaining = plan['slots'][index], len(news) - done
             named = object_namer.label(news[index].get('color'), news[index].get('guess'))
             guess = f'({named})' if named else ''
-            self._event(task_id, 'phase', ('new_object', f'새 물체 {index + 1}{guess}를 {slot}번 칸에 넣습니다 (도달 {plan["reach_mm"].get(index) or "?"}mm)'))
+            self._event(task_id, 'phase', ('new_object', f'새 물체 {index + 1}{guess}를 {slot}번 칸에 넣습니다'))
             result = self._pick(task_id, 'unknown', slot, which=index + 1, of=remaining)
             with self.lock:
                 self.tasks[task_id].setdefault('items', []).append(dict(object='unknown', index=index + 1, slot=slot, ok=result['ok'],
@@ -628,24 +861,51 @@ class Arm:
                 return dict(ok=False, reason=f"새 물체 {index + 1}에서 멈췄습니다: {result.get('reason')}", reason_code=result.get('reason_code'), done=done)
             done += 1
         left_note = (f"새 물체 {len(plan['left'])}개는 빈 칸이 없어 책상에 남겼습니다." if plan['left'] else '')
-        return dict(ok=True, note=' '.join(p for p in (f'새 물체 {done}개를 넣었습니다.', left_note) if p), done=done)
+        far_note = (f'새 물체 {len(far)}개는 팔이 닿지 않아 남겼습니다(로봇 쪽으로 옮겨 주세요).' if far else '')
+        return dict(ok=True, note=' '.join(p for p in (f'새 물체 {done}개를 넣었습니다.', left_note, far_note) if p), done=done)
 
-    def plan_new_slots(self, news, scene, taken):
+    def plan_new_slots(self, news, scene, taken, in_tray_slots=None):
         """새 물체 목록(왼쪽부터)을 빈 칸에 배정한다: dict(slots={번호(0부터): 칸}, left=[번호], reach_mm={번호: 도달 mm}). 로봇은 움직이지 않는다."""
         from robot.robot_model import load_planar_model
         from sorting import slot_assignment
         nominal = {1: 340., 2: 270., 3: 190.}
         radii = {int(n): float(r) for n, r in (scene.get('slot_radius_mm') or {}).items()} or nominal
         radii = {n: radii.get(n, nominal[n]) for n in (1, 2, 3)}
-        free = slot_assignment.free_slots([o['slot'] for o in scene.get('in_tray') or []], taken)
+        free = slot_assignment.free_slots([o['slot'] for o in scene.get('in_tray') or []] if in_tray_slots is None else in_tray_slots, taken)
         model = load_planar_model(menu.ROOT)
         angle = float((scene.get('slot_angle_rad') or {}).get(max(free, key=lambda n: radii[n]), 0.)) if free else 0.
-        reach = {i: slot_assignment.reach_limit_mm(model, angle, held_height_mm=float(o.get('height_mm') or 30.))
+        # 새 물체는 기울이지 않고 수직으로만 놓는다(place_job.build_plan: unknown은 max_tilt 0). 그래서 30cm 넘는 칸(1번 칸 약 34~36cm)에는 갈 수 없다.
+        # 기울임을 허용하는 기본 물체 기준으로 재면 1번 칸을 배정해 'unreachable'로 멈춘다(2026-10-28, 36.4cm)
+        reach = {i: slot_assignment.reach_limit_mm(model, angle, held_height_mm=float(o.get('height_mm') or 30.), max_tilt_deg=0.)
                  for i, o in enumerate(news)}
         slots, left = slot_assignment.assign(reach, radii, free, seed_text='new')
         return dict(slots=slots, left=left, reach_mm=reach)
 
     def _pick_registered(self, task_id, objects=None, include_new=False):
+        """기존 물체 정리. 한 물체에서 실패하면 HOME으로 돌아가 그 물체부터 남은 것을 다시 시도한다(_pick_retries번까지)."""
+        outcome = self._pick_registered_once(task_id, objects, include_new)
+        total, order = self._pick_retries(), objects if objects is not None else ALL_ORDER
+        finished, placed = [], list(outcome.get('_placed', []))
+        for attempt in range(1, total + 1):
+            if not self._retryable(outcome) or outcome.get('failed_label') is None:
+                break
+            with self.lock:
+                items = list(self.tasks[task_id].get('items') or [])
+            finished = [i['object'] for i in items if i.get('ok') or i.get('skipped')] + finished
+            remaining = [label for label in order if label not in finished]
+            if outcome['failed_label'] not in remaining or not self._home_for_retry(task_id):
+                break
+            self._retry_note(task_id, NAMES[outcome['failed_label']], attempt, total, outcome.get('reason'))
+            before = items
+            outcome = self._pick_registered_once(task_id, remaining, include_new)
+            with self.lock:                                   # 앞 시도에서 끝낸 물체도 결과에 남긴다
+                self.tasks[task_id]['items'] = [i for i in before if i.get('ok')] + list(self.tasks[task_id].get('items') or [])
+            placed += outcome.get('_placed', [])
+        if outcome.get('ok') or placed:
+            outcome = dict(outcome, _placed=placed)
+        return outcome
+
+    def _pick_registered_once(self, task_id, objects=None, include_new=False):
         # 메뉴 4와 같다: HOME에서 세 물체를 미리 계획(사진)한 뒤, 놓은 자리에서 HOME을 거치지 않고 다음 물체로 간다.
         def on_item(label, stage):
             with self.lock:
@@ -657,7 +917,7 @@ class Arm:
             elif stage == 'retry_pick':
                 self._event(task_id, 'phase', ('retry_pick', 'HOME 복귀 완료: 같은 물체 집기 재시도'))
         outcome = menu.run_all_chained(run=lambda cmd: self._run(task_id, cmd), on_item=on_item, stopped=lambda: self.stop_requested,
-                                       labels=objects)
+                                       labels=objects, batch_plan=os.environ.get('ARM_BATCH_PLAN', '1') != '0')
         with self.lock:
             self.tasks[task_id]['items'] = [dict(object=i['object'], ok=i['ok'], reason_code=None if i['ok'] else reason_code(i['reason']))
                                             for i in outcome['items']] + [dict(object=label, ok=None, skipped=True, reason_code='object_not_found')
@@ -676,9 +936,49 @@ class Arm:
         if outcome['reason'] == 'cancelled':
             return dict(ok=False, reason='cancelled', reason_code='cancelled', _placed=placed, **extra)
         return dict(ok=False, reason=f"{NAMES[outcome['failed_label']]}에서 멈췄습니다: {menu.brief_message(outcome['reason'])}",
-                    reason_code=reason_code(outcome['reason']), _placed=placed, **extra)
+                    reason_code=reason_code(outcome['reason']), failed_label=outcome['failed_label'], _placed=placed, **extra)
+
+    PICK_RETRY_CODES = ('not_held', 'object_moved', 'failed')      # 다시 하면 될 수 있는 실패. 닿지 않음·칸 부족·토크·장치 없음 같은 것은 같은 결과라 재시도하지 않는다
+
+    def _pick_retries(self):
+        """집기 실패 때 다시 시도할 횟수(기본 2, ARM_PICK_RETRY=0이면 끈다)."""
+        try:
+            return max(0, int(os.environ.get('ARM_PICK_RETRY', '2')))
+        except ValueError:
+            return 2
+
+    def _retryable(self, result):
+        return (not result.get('ok') and result.get('reason_code') in self.PICK_RETRY_CODES and not self.stop_requested
+                and result.get('reason') != 'cancelled')
+
+    def _home_for_retry(self, task_id):
+        """실패한 집기를 다시 하기 전에 검증된 경로로 HOME에 돌아간다. 돌아가지 못하면 False(재시도하지 않는다)."""
+        CAMERA.release()
+        if self.base_check() or self._ensure_torque(task_id, 'return_home'):
+            return False
+        code, summary, _ = self._run(task_id, HOME_ANY_START_CMD)
+        return bool(menu.home_return_succeeded(code, summary)) and not self.stop_requested
+
+    def _retry_note(self, task_id, name, attempt, total, reason):
+        text = f'{name} 집기에 실패했습니다. HOME으로 돌아가 다시 시도합니다({attempt}/{total}).'
+        self.log.add('warn', '작업', text, reason)
+        self._event(task_id, 'phase', ('pick_retry', text))
 
     def _pick(self, task_id, label, slot, which=None, of=None):
+        """한 물체 집어 넣기. 실패하면 HOME으로 돌아가 다시 시도한다(_pick_retries번까지)."""
+        result = self._pick_once(task_id, label, slot, which, of)
+        total = self._pick_retries()
+        for attempt in range(1, total + 1):
+            if not self._retryable(result):
+                break
+            if not self._home_for_retry(task_id):
+                self.log.add('warn', '작업', '집기 재시도를 위한 HOME 복귀에 실패해 다시 시도하지 않습니다')
+                break
+            self._retry_note(task_id, NAMES.get(label, '물체'), attempt, total, result.get('reason'))
+            result = self._pick_once(task_id, label, slot, which, of)
+        return result
+
+    def _pick_once(self, task_id, label, slot, which=None, of=None):
         since = time.time()
         build = (lambda tray: menu.unknown_command(slot, execute=True, use_tray_frame=tray, which=which, of=of)) if label == 'unknown' else \
             (lambda tray: menu.sort_command(label, slot=slot if slot != OBJECTS[label] else None, use_tray_frame=tray))
@@ -797,6 +1097,7 @@ def grab_astra_once():
         return cv2.imread(str(out / '0000_rgb.png')), np.load(out / '0000_depth_mm.npy')
 
 
+from perception.object_targets import ENVELOPE_M as PICK_ENVELOPE_M     # noqa: E402  집기에서 검증된 작업 거리(m)
 BASE_CLEAR_M = .12       # 이보다 로봇 밑동에 가까운 '등록 안 된 물체'는 로봇 자신(밑동·팔)으로 보고 뺀다
 FAR_CLEAR_M = .42        # 이보다 먼 것은 작업 범위 밖(케이블·설비)으로 보고 뺀다
 ARM_HEIGHT_MM = 100.     # 이보다 높은 '등록 안 된 물체'는 로봇팔 자신(등록 물체는 40mm 이하)
@@ -846,6 +1147,7 @@ def describe_scene(bgr, depth):
     이미 트레이 칸에 들어 있는 물체는 objects에서 빼고 in_tray로 따로 알린다(정리 대상이 아니다). 로봇 밑동 근처나
     작업 범위 밖의 '등록 안 된 물체'(로봇 자신, 케이블 등)도 뺀다."""
     from perception import object_namer
+    from perception.unknown_objects import MIN_COUNTED_TOP_MM
     from perception.object_classify import classify_objects
     from perception.object_targets import locate_targets, load_catalog, default_locator, top_center_xy
     from perception.object_classify import table_height_mm
@@ -863,11 +1165,14 @@ def describe_scene(bgr, depth):
     except Exception:
         locator = catalog = None
     objects, in_tray = [], []
+    named_in_slot = {}           # 칸 번호 → 그 칸 안에서 물체 분류가 이름을 붙인 물체
     for item in seen:
         if item['label'] == 'unknown' and max(item.get('bbox_px', (0, 0, 0, 0))[2:]) > 150:
             continue        # 트레이·설비 같은 큰 덩어리(새 물체 인식 unknown_objects와 같은 기준)
         if item['label'] == 'unknown' and (item.get('height_mm') or 0) > ARM_HEIGHT_MM:
             continue        # 로봇팔 자신
+        if item['label'] == 'unknown' and float(item.get('top_height_mm', item.get('height_mm') or 0)) < MIN_COUNTED_TOP_MM:
+            continue        # 너무 낮다: 트레이 칸 바닥(약 11mm). 트레이를 못 찾은 사진에서 새 물체로 잘못 세지 않는다(집을 때의 개수와 같은 기준)
         target = targets.get(item['label'])
         xy = None
         if target:
@@ -880,22 +1185,33 @@ def describe_scene(bgr, depth):
                 xy = None
         if xy is not None and item['label'] == 'unknown' and not BASE_CLEAR_M <= (float(xy[0]) ** 2 + float(xy[1]) ** 2) ** .5 <= FAR_CLEAR_M:
             continue        # 로봇 밑동 근처(로봇 자신)·작업 범위 밖(케이블 등)
-        if slot_containing(xy, slots, radius_mm=IN_TRAY_SCENE_MM) is not None:
+        slot_number = slot_containing(xy, slots, radius_mm=IN_TRAY_SCENE_MM)
+        if slot_number is not None:
+            if item['label'] != 'unknown':
+                named_in_slot[slot_number] = item['label']      # 덩어리 전체 색으로 이름 붙인 물체: 칸 판정보다 믿을 만하다
             continue        # 칸 안: 무엇이 들어 있는지는 아래에서 칸마다 높이로 따로 본다(칸막이·숫자가 '등록 안 된 물체'로 잡히기도 한다)
         objects.append(dict(label=item['label'], name=NAMES.get(item['label'], item['label']),
                             pixel=[int(v) for v in item.get('top_center_px', item.get('center_px', (0, 0)))],
                             position_mm=[round(v * 1000) for v in xy] if xy is not None else None,
                             pickable=bool(target and target['pickable'])))
+        distance = math.hypot(*xy) if xy is not None else None
+        objects[-1]['distance_mm'] = None if distance is None else round(distance * 1000)
+        # 안 닿는 이유(안내 문구용): 로봇에서 너무 가깝다/멀다/거리는 맞는데 팔 자세가 안 된다
+        objects[-1]['range'] = None if distance is None else 'near' if distance < PICK_ENVELOPE_M[0] else 'far' if distance > PICK_ENVELOPE_M[1] else 'ok'
         if item['label'] == 'unknown':
             # 비전 모델의 짐작 이름(안내 문구용). 집기·칸 판단에는 쓰지 않는다. 실패하면 None이라 '등록 안 된 물체'로 말한다
             objects[-1]['guess'] = object_namer.name_object(bgr, item['bbox_px'])
             objects[-1]['color'] = object_namer.color_name(*item['color_hsv']) if item.get('color_hsv') else None      # 측정한 색 이름
+            # 집을 수 있는 거리(16~30cm, 새 물체는 수직으로만). 먼 것은 안내 때 미리 빼야 정리 중간에 'unreachable'로 멈추지 않는다(2026-10-28, 36.4cm)
+            objects[-1]['reachable'] = bool(distance is not None and PICK_ENVELOPE_M[0] <= distance <= PICK_ENVELOPE_M[1])
             objects[-1]['height_mm'] = round(float(item.get('top_height_mm') or item.get('height_mm') or 30.), 1)    # 칸 배정(가장 멀리 보낼 물체 계산)용
     if slots and locator is not None and catalog is not None:
         try:
             for found in slot_contents(bgr, table_height_mm(depth), slots, lambda xy, h: _color_pixel(locator, xy, h), DEPTH_MINUS_TOP_CENTER_PX,
                                        {k: float(v['height_mm']) for k, v in catalog['objects'].items() if k in ALL_ORDER}):
-                in_tray.append(dict(label=found['label'], name=NAMES.get(found['label'], '물체') if found['label'] != 'unknown' else '물체', slot=found['slot']))
+                # 칸 판정은 칸 중심 한 곳의 높이·색으로 정해 틀릴 수 있다(정육면체를 '줄자'로, 2026-10-28). 물체 분류가 그 칸에서 이름을 붙였으면 그것을 쓴다
+                label = named_in_slot.get(found['slot'], found['label'])
+                in_tray.append(dict(label=label, name=NAMES.get(label, '물체') if label != 'unknown' else '물체', slot=found['slot']))
         except Exception:
             pass
     labels = {o['label'] for o in objects if o['pickable']}
@@ -958,7 +1274,8 @@ COMMON_API = [
          description='최근 사건 기록(최대 500건 중 번호가 since보다 큰 것). 작업 시작·완료·실패의 원문 이유와 실행 프로그램의 마지막 출력, 카메라·API 오류. 응답: boot(서버를 다시 켜면 바뀜), last(마지막 번호), entries[{id, time, level(info/ok/warn/error), source, message, detail}]. 웹 화면의 로그창이 쓴다.'),
     dict(method='GET', path='/status', body=None, description='지금 상태. state(idle/busy), phase_label(지금 단계), task_id, arm_home.'),
     dict(method='GET', path='/tasks/<task_id>', body=None, description='작업 하나의 단계 기록(phases)과 결과(result: ok, reason, reason_code, warnings).'),
-    dict(method='POST', path='/stop', body=None, description='실행 중인 동작을 즉시 멈춘다. 팔은 그 자리에 선다(이후 메뉴 6번으로 복귀).'),
+    dict(method='POST', path='/stop', body=None, description='실행 중인 동작을 즉시 멈춘 뒤 팔을 HOME으로 복귀시킨다(집기·정리, ARM_HOME_AFTER_STOP=0이면 그 자리에 선다). 집기·정리·주행은 멈춘 작업이 기억된다.'),
+    dict(method='POST', path='/resume', body=None, description='정지한 작업의 남은 부분을 HOME에서 다시 시작한다(HOME이 아니면 먼저 복귀, 주행은 바로). 정리는 이미 넣은 물체를 뺀 나머지만. 이어서 할 작업이 없으면 409 nothing_to_resume. /status의 resumable로 알 수 있다.'),
     dict(method='POST', path='/robot_arm', body={'action': 'pick_place | pick_all | return_home | status | stop', 'object': '...', 'slot': '...'},
          description='LLM 도구 호출 내용을 그대로 넘기는 한 개짜리 주소(메뉴와 같은 동작).'),
 ]
@@ -1153,6 +1470,9 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
                 return self._send(400, dict(ok=False, reason_code='bad_request', reason=str(exc)))
             if self.path == '/stop':
                 return self._send(200, arm.stop())
+            if self.path == '/resume':                     # 정지한 작업을 이어서(먼저 HOME 복귀)
+                status, body = arm.start('resume', {})
+                return self._send(status, body)
             if self.path == '/chat':
                 text = params.get('text')
                 history = params.get('history', [])
@@ -1171,8 +1491,8 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
                     return self._send(200, arm.status())
                 if action == 'stop':
                     return self._send(200, arm.stop())
-                if action not in ('pick_place', 'pick_all', 'return_home', 'drive'):
-                    return self._send(400, dict(ok=False, reason_code='bad_request', reason='action은 pick_place, pick_all, return_home, drive, status, stop 중 하나입니다.'))
+                if action not in ('pick_place', 'pick_all', 'return_home', 'drive', 'resume'):
+                    return self._send(400, dict(ok=False, reason_code='bad_request', reason='action은 pick_place, pick_all, return_home, drive, resume, status, stop 중 하나입니다.'))
                 status, body = arm.start(action, {k: v for k, v in params.items() if k in ('object', 'slot', 'objects', 'include_new', 'label', 'gap', 'then', 'mode')})
                 return self._send(status, body)
             if self.path == '/api/image':

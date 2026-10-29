@@ -27,10 +27,11 @@ IGNORE_RIGHT_X = 440
 # 어두워서 색 정보가 사라진 픽셀(V 낮음)은 판정에서 뺀다. 색이 남은 픽셀만으로 이름을 정한다.
 CHROMA_MIN_SAT = 60
 CHROMA_MIN_VAL = 35
-# 줄자는 밝은 노란색이다(채도 약 215·밝기 약 135). 색상(10~30)만 보면 어두운 갈색 골판지·상자(채도 약 133·밝기 약 61,
-# 2026-10-28 화면 측정)도 들어와 새 물체를 줄자로 부르던 문제가 있어 채도·밝기 하한을 둔다(표본이 적어 실물 확인 필요).
-TAPE_MIN_SAT = 150
-TAPE_MIN_VAL = object_registry.TAPE_MIN_VALUE
+# 줄자는 진한 노란색이다. 색상(10~30)만 보면 갈색 골판지·상자도 들어와 새 물체를 줄자로 불렀다. 밝기로는 못 가른다(밝은 조명의
+# 갈색 상자 밝기 중앙값 96, 줄자 118~136). 채도가 확실히 다르다: 색상 범위 안 픽셀 중 채도 170 이상 비율이 줄자 0.64~0.93,
+# 갈색 상자 0.02~0.04(2026-10-28 실제 프레임 3장). 채도 150·밝기 85 하한은 조명이 바뀌면 진짜 줄자도 떨어뜨렸다(채도 중앙 114인 순간).
+TAPE_VIVID_SAT = 170
+TAPE_VIVID_SHARE = .30
 MIN_CHROMATIC_PX = 60
 MIN_CHROMATIC_SHARE = .06   # 덩어리 면적 대비
 CHROMATIC_DOMINANCE = .6    # 색이 남은 픽셀 중 한 색이 차지해야 하는 비율
@@ -131,13 +132,20 @@ def _color_masks(bgr):
     chromatic = (sat >= CHROMA_MIN_SAT) & (val >= CHROMA_MIN_VAL)
     return {
         'red_cube': chromatic & ((hue <= 5) | (hue >= 160)),
-        'tape_measure': chromatic & (hue >= 10) & (hue <= 30) & (sat >= TAPE_MIN_SAT) & (val >= TAPE_MIN_VAL),
+        'tape_measure': chromatic & (hue >= 10) & (hue <= 30),
         'white_box': (sat < 60) & (val > 100),
     }, chromatic
 
 
-def _name(blob, masks, chromatic, area):
-    """이름 판정. 흰색은 덩어리 전체의 밝은 무채색 비율, 나머지는 색이 남은 픽셀의 우세 색."""
+def _vivid_tape(hsv):
+    """줄자 색상 범위이면서 채도가 높은(진한 노랑) 픽셀. 갈색은 같은 색상이라도 채도가 낮다."""
+    hue, sat = hsv[..., 0].astype(int), hsv[..., 1].astype(int)
+    return (hue >= 10) & (hue <= 30) & (sat >= TAPE_VIVID_SAT)
+
+
+def _name(blob, masks, chromatic, area, vivid=None):
+    """이름 판정. 흰색은 덩어리 전체의 밝은 무채색 비율, 나머지는 색이 남은 픽셀의 우세 색.
+    줄자는 우세 색이 노랑 계열이고, 그중 진한(채도 높은) 픽셀이 충분할 때만이다(아니면 갈색 새 물체)."""
     fractions = {name: float(mask[blob].mean()) for name, mask in masks.items()}
     count = int(chromatic[blob].sum())
     shares = {name: (float(masks[name][blob].sum()) / count if count else 0.)
@@ -147,6 +155,10 @@ def _name(blob, masks, chromatic, area):
     if count >= max(MIN_CHROMATIC_PX, MIN_CHROMATIC_SHARE * area):
         best = max(shares, key=shares.get)
         if shares[best] >= CHROMATIC_DOMINANCE:
+            if best == 'tape_measure' and vivid is not None:
+                band = int(masks['tape_measure'][blob].sum())
+                if not band or float((vivid & masks['tape_measure'])[blob].sum()) / band < TAPE_VIVID_SHARE:
+                    return 'unknown', fractions, count, shares            # 노랑 계열이지만 탁하다: 갈색 상자·골판지
             return best, fractions, count, shares
     return 'unknown', fractions, count, shares
 
@@ -155,7 +167,10 @@ OPEN_KERNEL = np.ones((5, 5), np.uint8)
 CLOSE_KERNEL = np.ones((9, 9), np.uint8)
 
 
-def _blobs(raised):
+SPLIT_PIECE_MAX_TOP_MM = 50.   # 큰 덩어리를 나눈 조각 중 이보다 높은 것은 트레이 벽·칸 안 물체다(책상 물체는 45mm 이하)
+
+
+def _blobs(raised, height=None):
     """솟은 픽셀 → 덩어리 마스크 목록. 잡음을 지우고(열기) 깊이 구멍을 메운다(닫기).
     닫기는 몇 픽셀 틈도 메워서, 트레이 벽에 바짝 붙은 물체가 트레이와 한 덩어리가 돼 '큰 덩어리'로 통째로 빠졌다
     (2026-10-28 흰 상자: 깊이에서는 70×70px 별도 덩어리였는데 트레이와 합쳐져 176×174px). 닫은 덩어리가 물체보다 크면
@@ -176,8 +191,15 @@ def _blobs(raised):
                     piece = (mask & (raw_labels == j)).astype(np.uint8)
                     piece = cv2.morphologyEx(cv2.morphologyEx(piece, cv2.MORPH_OPEN, OPEN_KERNEL), cv2.MORPH_CLOSE, CLOSE_KERNEL)
                     piece = piece.astype(bool) & mask
-                    if piece.any():
-                        blobs.append(piece)
+                    if not piece.any():
+                        continue
+                    # 트레이를 못 찾은 사진에서는 이렇게 나눈 트레이 조각(벽 약 53mm 이상)이 '새 물체'로 잡혔다(2026-10-28).
+                    # 물체 크기의 벽 높이 조각만 버린다. 트레이 크기 조각은 '큰 덩어리'로 남겨 둔다(아래에서 unknown, 크기로 걸러진다)
+                    ys, xs = np.nonzero(piece)
+                    small = max(int(xs.max() - xs.min()), int(ys.max() - ys.min())) + 1 <= MAX_OBJECT_PX
+                    if small and height is not None and float(np.percentile(height[piece], 90)) > SPLIT_PIECE_MAX_TOP_MM:
+                        continue
+                    blobs.append(piece)
                 continue
         blobs.append(mask)
     return blobs
@@ -189,16 +211,17 @@ def classify_objects(bgr, depth, intrinsics=None):
     raised = ((height > MIN_HEIGHT_MM) & (depth > 0)).astype(np.uint8)
     masks, chromatic = _color_masks(bgr)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    vivid = _vivid_tape(hsv)
     registered = object_registry.load()
     found = []
-    for blob in _blobs(raised):
+    for blob in _blobs(raised, height):
         ys, xs = np.nonzero(blob)
         x, y = int(xs.min()), int(ys.min())
         w, h, area = int(xs.max()) - x + 1, int(ys.max()) - y + 1, int(blob.sum())
         center = (float(xs.mean()), float(ys.mean()))
         if area < MIN_AREA_PX or y < IGNORE_TOP_PX or x > IGNORE_RIGHT_X:
             continue
-        label, fractions, count, shares = _name(blob, masks, chromatic, area)
+        label, fractions, count, shares = _name(blob, masks, chromatic, area, vivid)
         blob_median = float(np.median(height[blob & (depth > 0)]))
         top_mm = float(np.percentile(height[blob & (depth > 0)], 90))
         sig = object_registry.signature(hsv, chromatic, blob & (depth > 0), top_mm, blob_median, area)

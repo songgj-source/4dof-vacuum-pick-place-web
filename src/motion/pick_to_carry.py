@@ -4,6 +4,7 @@ import math
 from robot.planar_kinematics import NAMES, finite_vector
 from motion import guard_mode
 from motion.hover_trial import _execute_path, _hold_offset, HOVER_RADIUS_MAX_M, MAX_TILT_RAD, LIFT_MAX_M, HELD_LEAD_S
+from motion.tick_pulses import tick_pulses
 
 VERTICAL = -math.pi / 2
 CLEAR_Z = .070
@@ -56,7 +57,7 @@ def run_pick_to_carry_trial(driver, geometry, zeros, transition, *, supported=Fa
     """Solve and sample the whole rise before one ramped waypoint execution."""
     if not supported or driver.state != 'hold_only' or not driver.hold_confirmed:
         raise LiftPathRefused('pick-to-carry requires supported confirmed hold')
-    if (not math.isfinite(rate) or not 13 <= rate <= 150
+    if (not math.isfinite(rate) or not 13 <= rate <= 600
             or not math.isfinite(min_contact_z) or not .005 <= min_contact_z <= .030
             or tuple(driver.names) != NAMES or set(zeros) != set(NAMES)):
         raise LiftPathRefused('invalid pick-to-carry rate, floor or joint mapping')
@@ -129,6 +130,7 @@ def run_pick_to_carry_trial(driver, geometry, zeros, transition, *, supported=Fa
         # 서보 속도 레지스터(이 팔의 설정에서 약 펄스/초)를 경로 속도에 맞춘다. 40이면 관절이 초당 약 40펄스에 묶여
         # 물체를 든 어깨가 경로(53~65펄스/초)를 못 따라가 계속 뒤처지고 컵이 집은 자리에서 옆으로 밀렸다(2026-10-26 Pi 두 번).
         servo_speed = max(40, int(math.ceil(rate)))
+        pps = tick_pulses(rate)        # 150 이하 2펄스, 300 4펄스, 500 7펄스: 틱이 통신 한계(약 13.4ms) 밑으로 짧아지지 않게
         return _execute_path(driver, geometry, joints, angles, clear, origin, goals[-1], target, record, cancelled,
-                             pulses_per_step=2, speed=servo_speed, period_s=2 / rate, tracking_limit=tracking_limit,
-                             waypoints=goals, seg_pulses=[2] * len(goals), lead_s=HELD_LEAD_S)
+                             pulses_per_step=pps, speed=servo_speed, period_s=pps / rate, tracking_limit=tracking_limit,
+                             waypoints=goals, seg_pulses=[pps] * len(goals), lead_s=HELD_LEAD_S)

@@ -71,12 +71,15 @@ def test_script_initial_lift_preserves_tilt_only_for_tray_route(tray_start):
     driver = SimpleNamespace(_snapshot=lambda **kw: None)
     env = dict(folded=False, interrupted=False, driver=driver,
                tcp=lambda s: next(positions), tray_start=tray_start, start_pitch=-.85,
-               g=None, zeros={}, math=math, stopped=lambda: False,
+               g=None, zeros={}, math=math, stopped=lambda: False, RAISE_MIN_CONTACT_Z=.010,
+               RAISE_PROFILE=dict(smooth_motion=True, quick_ticks=True, pulses_per_step=2, tick_s=2. / 150., tracking_limit=32),
                run_hover_trial=lambda *a, **kw: calls.append(kw),
                stage=lambda name, operation, **kw: operation(lambda e: None))
     exec(compile(ast.Module(body=[loop], type_ignores=[]), 'home_lift', 'exec'), env)
     assert len(calls) == 2
     assert all(c['lift_m'] == .030 for c in calls)
+    assert all(c['quick_ticks'] and c['pulses_per_step'] == 2 and abs(c['tick_s'] - 2. / 150.) < 1e-9 for c in calls)     # 150펄스/초(pick_auto reset_raise와 같다)
+    assert all(c['min_contact_z'] == .010 for c in calls)                     # 낮은 접촉 높이에서 정지한 팔도 올릴 수 있다
     assert all(c['pitch_rad'] == (-.85 if tray_start else -math.pi/2) for c in calls)
 
 

@@ -59,9 +59,9 @@ def test_default_low_motion_rates_are_150_in_plan_only_output():
     result = json.loads(completed.stdout)
     assert result['motor_writes'] is False and result['pump_writes'] is False
     profile = result['plan']['motion_profile']
-    assert profile['descent_rate_pulses_s'] == 150
-    assert profile['held_rate_pulses_s'] == 150
-    assert profile['slow_rate_pulses_s'] == 150
+    assert profile['descent_rate_pulses_s'] == 600          # 2026-10-28 사용자 지시: 저속 동작 150 → 300 → 500 (접촉·탐침·재중심은 150 그대로)
+    assert profile['held_rate_pulses_s'] == 600
+    assert profile['slow_rate_pulses_s'] == 600
 
 
 def test_place_pick_rises_to_70_mm_in_one_continuous_phase():

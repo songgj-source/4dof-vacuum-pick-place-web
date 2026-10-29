@@ -79,12 +79,13 @@ _WHO = re.compile(r'이름이?\s*(뭐|무엇)|누구(야|니|세요|예요|에�
 # 움직이지 않는 질문은 LLM(노트북까지 왕복 수 초)을 거치지 않고 바로 답한다
 _LOOK = re.compile(r'(뭐|뭘|무엇|무슨\s*물체).{0,8}(있|보여|넣을|놓여)|작업대|다시\s*(봐|보기)')
 _STATUS = re.compile(r'상태|뭐\s*하고\s*있|어디까지|진행\s*(상황|중)')
-_ARM_STATES = {'ok': '팔은 토크가 켜져 있어 움직일 수 있습니다.',
-               'off_at_home': '팔은 HOME 위치에 있고 토크가 꺼져 있습니다. 작업을 시키면 토크를 자동으로 켭니다.',
-               'off_near_fold': '팔이 접힌 HOME 근처에 있고 토크가 꺼져 있습니다. 작업을 시키면 토크를 켜고 HOME에 맞춘 뒤 시작합니다.',
-               'off_elsewhere': '토크가 꺼져 있고 팔이 HOME이 아닌 곳에 있습니다. "홈으로 돌아가"라고 하면 현재 자세에서 붙잡고 HOME으로 복귀합니다(팔이 걸리거나 처지지 않게 받쳐 주세요). 다른 작업은 HOME에서만 됩니다.',
+_ARM_STATES = {'ok': '팔은 바로 움직일 수 있습니다.',
+               'off_at_home': '팔은 HOME에 있고 토크가 꺼져 있습니다. 작업을 시키면 자동으로 켭니다.',
+               'off_near_fold': '팔이 HOME 근처에 있고 토크가 꺼져 있습니다. 작업을 시키면 토크를 켜고 HOME에 맞춘 뒤 시작합니다.',
+               'off_elsewhere': '토크가 꺼져 있고 팔이 HOME이 아닌 곳에 있습니다. "홈으로 돌아가"라고 하면 지금 자세에서 붙잡고 HOME으로 돌아갑니다(팔을 받쳐 주세요).',
                'mixed': '일부 관절만 토크가 켜져 있습니다.',
-               'unknown': '서보 상태를 읽지 못했습니다(USB와 전원을 확인하세요).'}
+               'unknown': '서보 상태를 읽지 못했습니다. USB와 전원을 확인해 주세요.'}
+_RESUME = re.compile(r'^\s*(다시\s*(시작|작업)|작업\s*(다시)?|이어서(\s*작업)?|계속(\s*작업)?|재개|resume)\s*(해|해줘|해\s*줘|해봐|하자|해라|할게|합시다)?\s*[.!]*\s*$', re.I)
 _AGAIN = re.compile(r'^\s*(다시|한\s*번\s*더|재시도)\s*(해|해줘|해\s*줘|해봐|해\s*봐|하자|시도해|시도해줘|실행해|실행해줘)?\s*[.!]*\s*$')
 _CLAIMS_ACTION = re.compile(r'(시작합니다|진행합니다|넣습니다|옮깁니다|정리합니다|돌아갑니다|실행합니다)')   # 도구 없이 이렇게 말하면 거짓 안내다
 # "책상으로 이동해줘", "휴지통 앞으로 가", "밥먹는곳까지 가자" -> 그 장소 라벨로 주행. "홈으로 가"는 위의 _HOME(팔 복귀)이 먼저 잡는다.
@@ -166,6 +167,16 @@ def system_prompt():
     return SYSTEM + f'\n- 사용자가 등록한 물체: {listed}. 이름으로 부르면 그 object_name을 쓰세요. 책상 정리(sort_all_objects)에도 들어갑니다.'
 
 
+def josa(word, with_final, without_final):
+    """끝소리에 받침이 있으면 with_final, 없으면 without_final(예: 을/를). 괄호 안 설명은 빼고 마지막 낱말로 판단한다
+    ('줄자(3번 칸)'은 '줄자'가 기준). 한글이 아니면 without_final."""
+    head = re.sub(r'\([^)]*\)', '', word or '').strip().rstrip(',')
+    last = head[-1:]
+    if last and '가' <= last <= '힣':
+        return with_final if (ord(last) - 0xAC00) % 28 else without_final
+    return without_final
+
+
 WAIT = ' 바로 시작합니다.'      # 2026-10-21 사용자: 실행 여부를 묻지 말고 바로 실행(웹 화면이 제안을 받자마자 실행한다)
 
 
@@ -178,9 +189,50 @@ def read_desk(scene):
     return present, far, unknown
 
 
+def reach_reason(o):
+    """안 닿는 물체 하나의 이유: '너무 가깝습니다(12cm, 최소 16cm)' / '너무 멉니다(34cm, 최대 30cm)'. 거리를 모르거나 거리는 맞으면 ''."""
+    cm = None if o.get('distance_mm') is None else round(o['distance_mm'] / 10)
+    if o.get('range') == 'near':
+        return f'너무 가깝습니다({cm}cm, 최소 16cm)'
+    if o.get('range') == 'far':
+        return f'너무 멉니다({cm}cm, 최대 30cm)'
+    return ''
+
+
+def unreachable_note(scene):
+    """팔이 닿지 않아 뺀 물체(등록 물체·새 물체)와 이유: '닿지 않아 뺐습니다: 줄자는 너무 가깝습니다(12cm, 최소 16cm).' 없으면 ''."""
+    parts = []
+    for o in scene.get('objects') or []:
+        if o['label'] == 'unknown':
+            if o.get('reachable', True):
+                continue
+            name = '새 물체'
+        elif o.get('pickable'):
+            continue
+        else:
+            name = NAMES.get(o['label'], o['label'])
+        why = reach_reason(o)
+        parts.append(f"{name}{josa(name, '은', '는')} {why}" if why else name)
+    if not parts:
+        return ''
+    return '닿지 않아 뺐습니다: ' + ', '.join(parts) + '.' + (' 로봇에서 16~30cm 안으로 옮겨 주세요.' if any('(' in x for x in parts) else '')
+
+
+def unknown_counts(scene):
+    """(팔이 닿는 새 물체 수, 닿지 않는 새 물체 수). 닿는 것만 정리 대상이다(집기 거리 16~30cm)."""
+    news = [o for o in scene.get('objects') or [] if o['label'] == 'unknown']
+    near = sum(1 for o in news if o.get('reachable', True))
+    return near, len(news) - near
+
+
+def far_unknown_note(scene):
+    far = unknown_counts(scene)[1]
+    return f'새 물체 {far}개는 팔이 닿지 않아(30cm 넘음) 뺐습니다.' if far else ''
+
+
 def unknown_guess(scene):
-    """등록 안 된 물체의 짐작 이름 덧말: '(박스, 펜 같음)'. 비전 모델의 짐작이라 '같음'을 붙이고, 이름이 없으면 ''."""
-    objects = [o for o in scene.get('objects') or [] if o['label'] == 'unknown']
+    """닿는 등록 안 된 물체의 짐작 이름 덧말: '(박스, 펜 같음)'. 비전 모델의 짐작이라 '같음'을 붙이고, 이름이 없으면 ''."""
+    objects = [o for o in scene.get('objects') or [] if o['label'] == 'unknown' and o.get('reachable', True)]
     guesses = [g for g in dict.fromkeys(object_namer.label(o.get('color'), o.get('guess')) for o in objects) if g]
     return f"({', '.join(guesses)} 같음)" if guesses else ''
 
@@ -192,7 +244,53 @@ def tidy_proposal(present, unknown):
 
 def tray_sentence(in_tray):
     listed = ', '.join(f"{o['name'] if o['label'] != 'unknown' else '등록 안 된 물체'}({o['slot']}번 칸)" for o in in_tray)
-    return f'트레이에는 {listed}가 이미 들어 있습니다(정리 대상에서 뺐습니다).'
+    return f'{listed}{josa(listed, "은", "는")} 이미 칸에 있습니다.'
+
+
+def arrival_report(place, scene, tidy=True):
+    """주행으로 도착한 뒤 다시 찍은 사진의 상황 설명(2026-10-28 사용자: 도착하면 한 번 더 찍고 상황을 설명).
+    책상 위에 보이는 것, 이미 칸에 든 것, 팔이 닿지 않는 것, 그래서 무엇을 정리할지를 짧게 말한다(tidy=False면 정리 방법만 안내). 로봇은 움직이지 않는다."""
+    _refresh()
+    present, far, _ = read_desk(scene)
+    near_new, far_new = unknown_counts(scene)
+    desk = [NAMES[label] for label in present + far] + ([f'새 물체 {near_new + far_new}개{unknown_guess(scene)}'] if near_new + far_new else [])
+    parts = [f'{place}에 도착해 다시 찍었습니다.', f"책상 위: {', '.join(desk)}." if desk else '책상 위에 물체가 없습니다.']
+    if scene.get('in_tray'):
+        parts.append('칸 안: ' + ', '.join(f"{o['name'] if o['label'] != 'unknown' else '등록 안 된 물체'}({o['slot']}번 칸)" for o in scene['in_tray']) + '.')
+    if far or far_new:
+        parts.append(unreachable_note(scene))
+    todo = [NAMES[label] for label in present] + ([f'새 물체 {near_new}개'] if near_new else [])
+    if todo:
+        names = ', '.join(todo)
+        parts.append(f"{names}{josa(names, '을', '를')} 정리하겠습니다." if tidy else "정리하려면 '책상 정리해줘'라고 하세요.")
+    else:
+        parts.append('팔이 닿는 곳에 정리할 물체가 없습니다.')
+    if scene.get('unstable'):
+        parts.append('사진마다 보이는 것이 달라 마지막 사진으로 판단했습니다.')
+    return ' '.join(parts)
+
+
+def tidy_check_report(scene):
+    """책상 정리를 마친 뒤 다시 찍은 사진의 확인 결과. 돌려주는 것: (잘 됐는가, 문장).
+    잘 됨 = 책상 위에 물체가 남지 않았고, 칸 안 물체가 있고, 기본 물체가 기본 칸에 있다. 팔이 닿지 않아 뺀 물체가 남은 것은 이유와 함께 알린다."""
+    _refresh()
+    in_tray = scene.get('in_tray') or []
+    left = scene.get('objects') or []          # 칸 안 물체는 objects에 들어가지 않는다(describe_scene)
+    wrong = [o for o in in_tray if o['label'] in DEFAULT_SLOT and DEFAULT_SLOT[o['label']] != o['slot']]
+    parts = []
+    if in_tray:
+        parts.append('칸 안: ' + ', '.join(f"{o['name'] if o['label'] != 'unknown' else '새 물체'}({o['slot']}번 칸)" for o in sorted(in_tray, key=lambda o: o['slot'])) + '.')
+    for o in wrong:
+        parts.append(f"{o['name']}{josa(o['name'], '이', '가')} {o['slot']}번 칸에 있습니다(기본 {DEFAULT_SLOT[o['label']]}번 칸).")
+    if left:
+        names = ', '.join(NAMES.get(o['label'], o['label']) if o['label'] != 'unknown' else '새 물체' for o in left)
+        reasons = unreachable_note(scene)
+        parts.append(f'책상에 남은 물체: {names}.' + (' ' + reasons if reasons else ''))
+    ok = bool(in_tray) and not left and not wrong
+    head = '정리 확인: 책상에 남은 물체 없이 잘 정리됐습니다.' if ok else '정리 확인: 정리가 덜 됐습니다.' if (left or wrong) else '정리 확인: 사진에서 칸 안 물체를 확인하지 못했습니다.'
+    if scene.get('tray_found') is False and not in_tray:
+        head += ' (트레이가 사진에 보이지 않았습니다)'
+    return ok, ' '.join([head] + parts)
 
 
 def situation(arm, scene=None, ask_only=False):
@@ -201,34 +299,35 @@ def situation(arm, scene=None, ask_only=False):
     돌려주는 것: dict(reply, speech(소리로 읽을 짧은 문장), actions(기능 목록), proposal, scene)."""
     _refresh()
     status, scene = (200, scene) if scene is not None else arm.capture()
-    always = ["HOME 복귀: '홈으로 돌아가'", "멈춤: '멈춰'", "다시 보기: '작업대에 뭐 있어?'"]
+    always = ["HOME 복귀: '홈으로 돌아가'", "정지: '멈춰'", "다시 보기: '작업대에 뭐 있어?'"]
     if status != 200:
         why = scene.get('reason') or scene.get('reason_code') or status
-        text = f'사진을 찍지 못했습니다({why}). 말이나 입력으로 명령해 주세요.'
+        text = f'사진을 찍지 못했습니다({why}). 그래도 말로 시키면 됩니다.'
         return dict(reply=text, speech=text, actions=always, proposal=None, scene=None)
     present, far, unknown = read_desk(scene)
+    unknown, far_unknown = unknown_counts(scene)                  # 닿는 새 물체만 정리 대상. 닿지 않는 것은 따로 알린다
     seen = [NAMES[label] for label in present + far] + ([f'등록 안 된 물체 {unknown}개{unknown_guess(scene)}'] if unknown else [])
     head = f"책상에서 {', '.join(seen)}를 찾았습니다." if seen else '책상에 정리할 물체가 없습니다.'
+    if far or far_unknown:
+        head += ' ' + unreachable_note(scene)
     if scene.get('in_tray'):
         head += ' ' + tray_sentence(scene['in_tray'])
     actions = []
     if present:
-        actions.append(f"책상 정리: {', '.join(NAMES[label] for label in present)}를 모두 칸에 넣기 - '책상 정리해줘'")
-        actions += [f"{NAMES[label]}만 넣기({DEFAULT_SLOT[label]}번 칸) - '{NAMES[label]} 넣어줘', 칸을 바꾸려면 '{NAMES[label]} 3번 칸에 넣어'" for label in present]
+        actions.append("책상 정리: '책상 정리해줘'")
+        actions += [f"{NAMES[label]} 넣기: '{NAMES[label]} 넣어줘'" for label in present]
     if far:
-        actions.append(f"{', '.join(NAMES[label] for label in far)}는 팔이 닿지 않습니다. 로봇 쪽으로 옮기면 넣을 수 있습니다.")
+        actions.append("닿지 않는 물체는 로봇 쪽 16~30cm 안으로 옮겨 주세요.")
     if unknown:
-        actions.append("새 물체: 책상 정리에 함께 들어갑니다(기존 물체를 넣고 남는 빈 칸에). 칸을 정하려면 '새 물체 3번 칸에 넣어'(하나만 있을 때)")
+        actions.append("새 물체는 책상 정리 때 빈 칸에 넣습니다.")
     actions += always
     if present or unknown:
         proposal = tidy_proposal(present, unknown)
-        tail = "기본으로 책상 정리를 준비했습니다. '실행'이나 '정리해'라고 하면 바로 시작하고, 다른 일을 원하면 말해 주세요."
-        if unknown:
-            tail = f"등록 안 된 물체 {unknown}개{unknown_guess(scene)}는 기존 물체를 넣고 남는 빈 칸에 넣습니다. " + tail
+        tail = "책상 정리를 준비했습니다. '실행'이나 '정리해'라고 하면 시작합니다."
     else:
         proposal, tail = None, '무엇을 할까요?'
     if ask_only:
-        tail = '어떤 작업을 할까요? 원하는 물체와 작업을 말씀해 주세요.'
+        tail = '어떤 작업을 할까요?'
     return dict(reply=' '.join([head, tail]), speech=' '.join([head, tail]), actions=actions, proposal=proposal, scene=scene)
 
 
@@ -239,11 +338,23 @@ def at_desk(scene):
                 or any(o['label'] != 'unknown' for o in scene.get('objects') or []))
 
 
+def busy_text(arm):
+    """로봇이 작업 중이면 그 안내 문장, 아니면 None. 작업 중에는 사진을 찍을 수 없고 새 작업도 시작할 수 없어서(409) 책상 정리 제안을 만들지 않는다."""
+    status = arm.status()
+    if status['state'] != 'busy':
+        return None
+    where = f"{status['phase_label']}, " if status.get('phase_label') else ''
+    return f"지금 작업 중입니다({where}{status['elapsed_s']}초). 멈추려면 '멈춰'라고 하세요."
+
+
 def desk_request(arm):
     """'책상 정리해줘': 먼저 사진을 찍어 상황을 파악한다. 책상 앞이면 그 자리에서 정리할 물체를 확인해 정리를 제안하고,
     책상이 보이지 않으면 책상으로 이동한 뒤 정리한다(도착하면 다시 찍어 정리). 사진을 못 찍으면 확인할 수 없으니 이동부터 한다.
     돌려주는 것: chat()의 결과 dict. 제안은 웹 화면이 받자마자 실행한다. 이 함수는 로봇을 움직이지 않는다."""
     _refresh()
+    busy = busy_text(arm)
+    if busy:                                              # 작업 중에 또 말하면 '사진 실패 → 책상으로 이동'이 아니라 작업 중이라고 알린다
+        return dict(reply=busy, proposal=None, executed=[], scene=None, source='rule')
     status, scene = arm.capture()
     if status == 200 and at_desk(scene):
         proposal, reply, scene = tidy(arm, scene=scene)
@@ -262,36 +373,42 @@ def tidy(arm, scene=None):
     돌려주는 것: (제안 또는 None, 답 문장, 찍은 장면 또는 None). 로봇은 움직이지 않는다."""
     _refresh()
     status, scene = (200, scene) if scene is not None else arm.capture()
+    if status == 409 and scene.get('reason_code') == 'busy':
+        busy = busy_text(arm)
+        if busy:                                          # 정말 작업 중이면 제안하지 않는다(사진도 새 작업도 안 된다). 아니면 아래 대체 경로
+            return None, busy, None
     if status != 200:
-        # 카메라를 못 쓰면(작업 중 등) 물체를 차례로 계획해 보고 책상에 없는 것은 건너뛴다
+        # 카메라를 못 쓰면 물체를 차례로 계획해 보고 책상에 없는 것은 건너뛴다
         why = scene.get('reason') or scene.get('reason_code') or status
         return {'action': 'pick_all'}, f'사진을 찍지 못했습니다({why}). 물체를 차례로 확인해 책상에 있는 것만 넣습니다.' + WAIT, None
     present, far, unknown = read_desk(scene)
+    unknown, far_unknown = unknown_counts(scene)
     notes = []
-    if far:
-        notes.append(f"{', '.join(NAMES[label] for label in far)}는 보이지만 팔이 닿지 않는 위치라 뺐습니다.")
-    if unknown:
-        notes.append(f"등록 안 된 물체 {unknown}개{unknown_guess(scene)}는 기존 물체를 넣고 남는 빈 칸에 넣습니다"
-                     "(가장 멀리 보낼 수 있는 것이 가장 먼 빈 칸).")
+    if far or far_unknown:
+        notes.append(unreachable_note(scene))
     if scene.get('in_tray'):
         notes.append(tray_sentence(scene['in_tray']))
     if not present and not unknown:
         return None, ' '.join(['책상에 정리할 물체가 없습니다.'] + notes), scene
     proposal = tidy_proposal(present, unknown)
-    return proposal, proposal_reply(proposal, notes), scene
+    items = [NAMES[label] for label in present] + ([f'새 물체 {unknown}개{unknown_guess(scene)}'] if unknown else [])
+    names_all = ', '.join(items)
+    return proposal, ' '.join([f"{names_all}{josa(names_all, '을', '를')} 정리합니다.", *notes]) + WAIT, scene      # 한 줄로: 무엇을 정리하는지 + 뺀 것
 
 
 def proposal_reply(proposal, notes=()):
     if proposal['action'] == 'return_home':
-        what = '팔을 HOME 자세로 돌려놓습니다.'
+        what = 'HOME으로 돌아갑니다.'
     elif proposal['action'] == 'drive' and proposal.get('then') == 'inspect':
-        return f"{proposal['label']}으로 이동하고, 정지를 확인한 뒤 사진을 찍어 보이는 물체를 정리하겠습니다."
+        return f"{proposal['label']}으로 이동해 사진을 찍고 보이는 물체를 정리합니다."
     elif proposal['action'] == 'drive' and proposal.get('then') == 'tidy':
-        what = f"{proposal['label']}으로 이동한 뒤, 도착하면 사진을 찍어 팔이 닿는 물체를 정리합니다."
+        what = f"{proposal['label']}으로 이동한 뒤 사진을 찍어 정리합니다."
         return what + WAIT
     elif proposal['action'] == 'drive':
-        what = f"{proposal['label']}으로 이동합니다(라벨을 만든 자리와 방향에 맞춰 섭니다)."
+        what = f"{proposal['label']}으로 이동합니다."
         return what + WAIT
+    elif proposal['action'] == 'resume':
+        what = '멈춘 작업의 남은 부분을 다시 시작합니다.'
     elif proposal['action'] == 'pick_all' and proposal.get('include_new') and proposal.get('objects') == []:
         what = '책상에서 등록 안 된 새 물체를 찾았습니다. 빈 칸에 한 개씩 넣습니다.'
         what = ' '.join([what, *notes])
@@ -301,16 +418,37 @@ def proposal_reply(proposal, notes=()):
                 f"({', '.join(f'{NAMES[label]} {DEFAULT_SLOT[label]}번 칸' for label in found)}).")
         what = ' '.join([what, *notes])
     elif proposal['action'] == 'pick_all':
-        what = f"책상에 있는 물체를 기본 칸에 넣습니다({' → '.join(NAMES[label] for label in ORDER)})."
+        what = '책상 위 물체를 기본 칸에 넣습니다.'
     elif proposal['object'] == 'unknown':
-        what = f"책상의 등록 안 된 물체를 {proposal['slot']}번 칸에 넣습니다."
+        what = f"새 물체를 {proposal['slot']}번 칸에 넣습니다."
     else:
-        what = f"{NAMES[proposal['object']]}를 {proposal.get('slot') or DEFAULT_SLOT[proposal['object']]}번 칸에 넣습니다."
+        name = NAMES[proposal['object']]
+        what = f"{name}{josa(name, '을', '를')} {proposal.get('slot') or DEFAULT_SLOT[proposal['object']]}번 칸에 넣습니다."
     return what + WAIT
 
 
 def stop_reply(outcome):
-    return '정지 명령을 보냈습니다.' if outcome.get('stopped') else '실행 중인 동작이 없습니다.'
+    if not outcome.get('stopped'):
+        return '지금 하고 있는 작업이 없습니다.'
+    hint = " '다시 시작해'라고 하면 남은 일을 이어서 합니다." if outcome.get('resumable') else ''
+    if outcome.get('home_after_stop'):
+        return '멈춥니다. 멈춘 뒤 HOME으로 돌아갑니다.' + hint
+    return '멈춥니다. 팔은 그 자리에 섭니다.' + hint
+
+
+def resume_reply(arm):
+    """'다시 시작해'/'이어서 해'/'다시 작업해줘': 정지해 둔 작업이 있으면 그 남은 부분을 다시 시작하는 제안(HOME에서, 아니면 먼저 복귀).
+    없으면 마지막 작업을 다시 한다('다시 해'와 같다: 정리는 사진을 새로 찍어 지금 책상에 있는 것만). 둘 다 없으면 그렇게 알린다."""
+    summary = arm.resume_summary()
+    if summary:
+        return dict(reply=f'멈춘 작업을 이어서 합니다: {summary}.' + WAIT,
+                    proposal={'action': 'resume'}, executed=[], scene=None, source='rule')
+    proposal, reply, scene = retry(arm)
+    if proposal is None and scene is None and arm.status()['task_id'] is None:
+        reply = '이어서 할 작업이 없습니다. 무엇을 할까요?'
+    return dict(reply=reply, proposal=proposal, executed=[], scene=scene, source='rule')
+
+
 IMMEDIATE = {'look_at_table', 'get_arm_status', 'stop_arm'}
 
 
@@ -412,7 +550,7 @@ def retry(arm):
     """"다시 해줘": 마지막 작업을 다시 제안한다. 책상 정리는 사진을 새로 찍어 지금 책상에 있는 것만. 돌려주는 것: (제안 또는 None, 답, 장면 또는 None)."""
     status = arm.status()
     if status['state'] == 'busy':
-        return None, '지금 작업 중입니다. 끝난 뒤 다시 말해 주세요.', None
+        return None, busy_text(arm) or '지금 작업 중입니다.', None
     last = arm.task(status['task_id']) if status['task_id'] else None
     if not last:
         return None, '다시 할 작업이 없습니다. 무엇을 할까요?', None
@@ -428,7 +566,7 @@ def retry(arm):
         if params.get('slot'):
             proposal['slot'] = params['slot']
     else:
-        return None, '마지막 작업은 다시 할 수 없는 종류입니다. 무엇을 할지 말해 주세요.', None
+        return None, '그 작업은 다시 할 수 없습니다. 무엇을 할까요?', None
     proposal = normalize(proposal)
     return proposal, proposal_reply(proposal), None
 
@@ -458,7 +596,7 @@ def chat(history, text, arm, client=None):
     _refresh()
     if _DESK_REQUEST.match(text):
         if _NOT.search(text):
-            return dict(reply='주행과 팔 작업을 실행하지 않았습니다. 원하시면 “책상 정리해줘”라고 말씀해 주세요.',
+            return dict(reply='알겠습니다. 아무것도 하지 않습니다. 필요하면 “책상 정리해줘”라고 말해 주세요.',
                         proposal=None, executed=[], scene=None, source='rule')
         if not getattr(arm, 'awaiting_desk_choice', False):
             return desk_request(arm)                    # 먼저 사진을 찍어 책상 앞인지 보고, 아니면 이동
@@ -466,6 +604,8 @@ def chat(history, text, arm, client=None):
         drive = drive_proposal(text)
         if drive is not None:
             return dict(reply=drive[1], proposal=drive[0], executed=[], scene=None, source='rule')
+    if _RESUME.match(text):
+        return resume_reply(arm)
     rule = rule_command(text)
     if rule is not None:
         kind, value = rule
@@ -548,5 +688,5 @@ def chat(history, text, arm, client=None):
     elif any(e['command'] == 'stop' for e in executed):
         reply = stop_reply(next(e['result'] for e in executed if e['command'] == 'stop'))
     elif not executed and _CLAIMS_ACTION.search(reply or ''):
-        reply = '무엇을 할지 분명하지 않아 아무것도 실행하지 않았습니다. 예: "흰 상자 넣어줘", "책상 정리해줘", "홈으로 돌아가".'
+        reply = '무엇을 할지 잘 모르겠습니다. 예를 들어 "흰 상자 넣어줘", "책상 정리해줘", "홈으로 돌아가"라고 말해 주세요.'
     return dict(reply=reply or '무엇을 할까요? 예: "빨간 큐브 넣어줘", "작업대에 뭐 있어?"', proposal=proposal, executed=executed, scene=scene, source='llm')

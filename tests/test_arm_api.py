@@ -345,13 +345,19 @@ class ApiTests(ApiBase):
         self.assertEqual((task['result']['ok'], task['result']['reason_code']), (False, 'object_not_found'))
         self.assertEqual(len(self.commands), 3)                       # 계획만 하고 아무것도 집지 않았다
 
-    def test_pick_all_stop_does_not_move_home(self):
+    def test_pick_all_stop_returns_home_and_can_be_restarted(self):
+        # 2026-10-28 사용자 요청: 정지하면 멈춘 뒤 HOME으로 복귀한다('다시 시작'은 남은 작업을 HOME에서 다시 한다)
         _, body = self.call('POST', '/pick_all')
         time.sleep(.1)
         self.call('POST', '/stop')
         task = self.wait_done(body['task_id'])
         self.assertEqual(task['result']['reason_code'], 'cancelled')
-        self.assertFalse(any('return_home.py' in ' '.join(c) for c in self.commands))
+        homes = [c for c in self.commands if 'return_home.py' in ' '.join(c)]
+        self.assertEqual(len(homes), 1)
+        self.assertIn('--any-start', homes[0])
+        self.assertIn('home_after_stop', task['result'])
+        _, status = self.call('GET', '/status')
+        self.assertTrue(status['resumable'])
 
     def test_menu_endpoints_match_the_terminal_menu(self):
         self.release.set()
@@ -473,7 +479,7 @@ class ChatTests(ApiBase):
         time.sleep(.1)
         status, body = self.chat(FakeLlm([]), '멈춰')               # 규칙으로 바로 멈춘다(LLM을 부르지 않는다: 부르면 FakeLlm이 실패)
         self.assertEqual((body['executed'][0]['command'], body['source']), ('stop', 'rule'))
-        self.assertEqual(body['reply'], '정지 명령을 보냈습니다.')
+        self.assertEqual(body['reply'], '멈춥니다. 팔은 그 자리에 섭니다.')    # 홈 복귀 자체를 멈춘 것: 또 홈에 보내지 않고 이어서 할 작업도 없다
         self.assertTrue(self.interrupted.wait(2))
 
     def test_robot_name_is_stripped_and_answered_by_rule(self):
@@ -509,7 +515,7 @@ class ChatTests(ApiBase):
     def test_llm_claiming_an_action_without_a_tool_is_corrected(self):
         status, body = self.chat(FakeLlm([say('흰 상자, 빨간 정육면체, 줄자를 차례로 넣습니다. 바로 시작합니다.')]), '그거 해')
         self.assertIsNone(body['proposal'])
-        self.assertIn('아무것도 실행하지 않았습니다', body['reply'])
+        self.assertIn('무엇을 할지 잘 모르겠습니다', body['reply'])
 
     def test_status_and_table_questions_skip_the_llm(self):
         import numpy as np
@@ -567,10 +573,9 @@ class ChatTests(ApiBase):
         with a, b:
             status, body = self.chat(FakeLlm([]), '책상 정리해줘')
         self.assertEqual(body['proposal'], {'action': 'pick_all', 'objects': ['red_cube', 'tape_measure'], 'include_new': True})
-        self.assertIn('빨간 정육면체, 줄자를 찾았습니다', body['reply'])
-        self.assertIn('흰 상자는 보이지만 팔이 닿지 않는', body['reply'])
-        self.assertIn('등록 안 된 물체 1개', body['reply'])
-        self.assertIn('남는 빈 칸에 넣습니다', body['reply'])                  # 새 물체는 기존 물체를 넣고 남는 빈 칸에
+        self.assertIn('빨간 정육면체, 줄자, 새 물체 1개를 정리합니다', body['reply'])      # 한 줄로: 무엇을 정리하는지
+        self.assertIn('닿지 않아 뺐습니다: 흰 상자', body['reply'])
+        self.assertLess(len(body['reply']), 80)                                      # 말이 길지 않게
         self.assertIn('image_jpeg_base64', body['scene'])                  # 화면에 사진을 띄운다
         self.assertEqual(self.commands, [])                                 # 사진만 찍고 로봇은 움직이지 않는다
 
@@ -612,7 +617,7 @@ class ChatTests(ApiBase):
         self.assertIn('흰 상자, 줄자, 빨간 정육면체, 등록 안 된 물체 1개를 찾았습니다', body['reply'])
         self.assertEqual(body['proposal'], {'action': 'pick_all', 'objects': ['white_box', 'tape_measure'], 'include_new': True})   # 기본 행동: 책상 정리(새 물체 포함)
         joined = ' / '.join(body['actions'])
-        for expected in ("'책상 정리해줘'", "'흰 상자 넣어줘'", "'줄자 넣어줘'", '빨간 정육면체는 팔이 닿지 않습니다', "새 물체: 책상 정리에 함께 들어갑니다", "'멈춰'"):
+        for expected in ("'책상 정리해줘'", "'흰 상자 넣어줘'", "'줄자 넣어줘'", '닿지 않는 물체는 로봇 쪽 16~30cm 안으로', "새 물체는 책상 정리 때 빈 칸에 넣습니다", "'멈춰'"):
             self.assertIn(expected, joined)
         self.assertIn('image_jpeg_base64', body['scene'])
         self.assertEqual(self.commands, [])                                  # 사진만 찍고 로봇은 움직이지 않는다
@@ -632,7 +637,7 @@ class ChatTests(ApiBase):
         with patch.object(arm_api, 'grab_astra', return_value=frame), patch.object(arm_api, 'describe_scene', return_value=scene):
             _, body = self.situation()
             _, tidy = self.chat(FakeLlm([]), '정리해줘')
-        self.assertIn('트레이에는 줄자(3번 칸)가 이미 들어 있습니다', body['reply'])
+        self.assertIn('줄자(3번 칸)는 이미 칸에 있습니다', body['reply'])
         self.assertEqual(body['proposal'], {'action': 'pick_all', 'objects': ['red_cube']})
         self.assertEqual(tidy['proposal'], {'action': 'pick_all', 'objects': ['red_cube']})
 

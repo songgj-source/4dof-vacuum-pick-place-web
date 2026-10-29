@@ -42,7 +42,7 @@ COLOR_KIND_SHARE = .3         # 덩어리에서 색이 남은 픽셀이 이 비�
 BUILTIN_HEIGHT_GAP_MM = 9.    # 같은 색 종류의 기본 물체와 이만큼 높이가 달라야 구분한다(허용치 + 깊이 오차)
 FLAT_TOP_SPREAD_MM = 4.       # 윗면 높이(상위 10%)와 중간 높이 차이가 이보다 작으면 윗면이 평평하다고 본다
 # 기본 물체 색 종류(object_classify._color_masks와 같은 범위). 등록할 때 기본 물체와 헷갈리는지 본다
-TAPE_MIN_VALUE = 85           # 줄자(밝은 노란색) 밝기 하한. 이보다 어두운 갈색 물체는 줄자로 보지 않는다(object_classify와 공유)
+TAPE_LIKE_MIN_SATURATION = 160   # 줄자는 채도가 높다(중앙 204~228). 이보다 탁한 노랑·갈색 물체는 줄자와 헷갈리지 않는다(갈색 상자 119~139)
 BUILTIN_COLORS = {'white_box': ('plain', None), 'red_cube': ('color', (160., 5.)), 'tape_measure': ('color', (10., 30.))}
 
 _cache = {}
@@ -149,7 +149,8 @@ def signature(hsv, chromatic, blob, top_mm, median_mm, area):
     if share >= COLOR_KIND_SHARE:
         angle = hsv[..., 0][blob & chromatic].astype(float) * (2 * math.pi / 180.)
         mean = math.atan2(float(np.sin(angle).mean()), float(np.cos(angle).mean())) % (2 * math.pi)
-        sig.update(kind='color', hue=round(mean * 180. / (2 * math.pi), 1))
+        sig.update(kind='color', hue=round(mean * 180. / (2 * math.pi), 1),
+                   saturation=round(float(np.median(hsv[..., 1][blob & chromatic])), 1))
     return sig
 
 
@@ -182,8 +183,8 @@ def _like_builtin(sig, label, height_mm):
         return False
     if kind == 'plain':
         return sig['value'] > 100 - VALUE_TOL       # 흰 상자 규칙(밝은 무채색)
-    if label == 'tape_measure' and sig['value'] < TAPE_MIN_VALUE:
-        return False                                # 어두운 갈색은 줄자와 헷갈리지 않는다
+    if label == 'tape_measure' and sig.get('saturation') is not None and sig['saturation'] < TAPE_LIKE_MIN_SATURATION:
+        return False                                # 탁한 노랑·갈색은 줄자와 헷갈리지 않는다(밝기가 아니라 채도로 가른다)
     low, high = hues
     inside = low <= sig['hue'] or sig['hue'] <= high if low > high else low <= sig['hue'] <= high
     return inside or min(_hue_gap(sig['hue'], low), _hue_gap(sig['hue'], high)) <= HUE_TOL

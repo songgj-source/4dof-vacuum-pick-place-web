@@ -26,9 +26,10 @@ class TapeVersusBrownTest(unittest.TestCase):
         self.assertEqual(_label((17, 133, 86)), ['unknown'])
 
     def test_dark_brown_is_not_registration_conflict_with_tape(self):
-        sig = dict(kind='color', hue=17., value=61., top_height_mm=30.)
+        sig = dict(kind='color', hue=17., value=61., saturation=133., top_height_mm=30.)     # 갈색은 채도가 낮다
         self.assertFalse(object_registry._like_builtin(sig, 'tape_measure', 30.))
-        self.assertTrue(object_registry._like_builtin(dict(sig, value=135.), 'tape_measure', 30.))
+        self.assertTrue(object_registry._like_builtin(dict(sig, saturation=215.), 'tape_measure', 30.))
+        self.assertTrue(object_registry._like_builtin(dict(sig, saturation=190., value=90.), 'tape_measure', 30.))   # 어두운 조명의 줄자
 
 
 if __name__ == '__main__':

@@ -28,10 +28,17 @@ from motion.return_corridor import start_in_corridor,interrupted_near_home_start
 from optional.video_recording.astra_recorder import AstraRecorder
 from robot.robot_frame import SHOULDER_HEIGHT_M
 class AlreadyAtHome(Exception):pass
+# 들어올리기는 위로만 간다. 집기 접촉 높이(흰 상자 15.5~18mm)에서 정지한 팔도 올릴 수 있어야 하므로 기본 하한 30mm가 아니라 pick_auto와 같은 최소선(10mm)을 쓴다.
+# 30mm 하한이면 낮은 물체를 집다 멈춘 팔이 'sampled link endpoint/table clearance failed'로 홈 복귀를 못 했다(2026-10-28 Pi, 컵 끝 18mm).
+RAISE_MIN_CONTACT_Z=.010
+# 들어올리기 속도: 설정이 없으면 구형 기본값(틱당 1펄스, 약 73ms ≈ 14펄스/초)이라 낮은 자세에서 위로 세 번 올리는 데 한참 걸렸다(사용자 2026-10-28 '너무 느리다').
+# pick_auto의 같은 용도 동작(reset_raise)과 같은 기본 저속 프로파일: 틱당 2펄스·150펄스/초·추종 한계 32·부드러운 가감속.
+RAISE_RATE_PPS=600.
+RAISE_PROFILE=dict(smooth_motion=True,quick_ticks=True,pulses_per_step=8,tick_s=8./RAISE_RATE_PPS,tracking_limit=64)      # 600펄스/초 = 8펄스 x 13.3ms(2026-10-28 사용자: 저속 동작 300→500→600). 추종 가드는 속도에 맞춰 64
 parser=argparse.ArgumentParser(description='Explicit guarded HOME return, default300pulse/s. No pump commands.')
 parser.add_argument('--execute',action='store_true');parser.add_argument('--supported',action='store_true')
-parser.add_argument('--travel-rate',type=float,default=300.);parser.add_argument('--pitch-p',type=int,choices=(32,48,64),default=None,help='temporary shoulder/elbow P gain during the return (default: automatic, 32 unless the arm starts far extended: at 48 the shoulder hunted at about 8 Hz, rms 2-3 pulses, where the arm folds (shoulder raw 2000-2340); at 32 it measured 0.4-0.6 but a far start lagged 17 pulses over the 16-pulse guard, 2026-10-16)');parser.add_argument('--shoulder-i',type=int,choices=(0,1),default=1,help='temporary shoulder I gain during the return (default 1)');parser.add_argument('--damping',type=int,choices=(32,48,64,96),default=None,help='temporary D gain on shoulder and elbow during the return (default: unchanged 32)');parser.add_argument('--record-astra',action='store_true')
-parser.add_argument('--tracking-limit',type=int,choices=range(16,33),metavar='16-32',default=16,help='HOME stage follow-error guard in pulses (default 16, unchanged). The follow lag grows with speed (about 70 ms: 17 pulses at 240 pulses/s, so ~21 at the 300 pulses/s peak, measured 2026-10-19) and trips 16 on the fold; 32 is the project approach default. Not for the 100 approach limit.')
+parser.add_argument('--travel-rate',type=float,default=600.);parser.add_argument('--pitch-p',type=int,choices=(32,48,64),default=None,help='temporary shoulder/elbow P gain during the return (default: automatic, 32 unless the arm starts far extended: at 48 the shoulder hunted at about 8 Hz, rms 2-3 pulses, where the arm folds (shoulder raw 2000-2340); at 32 it measured 0.4-0.6 but a far start lagged 17 pulses over the 16-pulse guard, 2026-10-16)');parser.add_argument('--shoulder-i',type=int,choices=(0,1),default=1,help='temporary shoulder I gain during the return (default 1)');parser.add_argument('--damping',type=int,choices=(32,48,64,96),default=None,help='temporary D gain on shoulder and elbow during the return (default: unchanged 32)');parser.add_argument('--record-astra',action='store_true')
+parser.add_argument('--tracking-limit',type=int,choices=range(16,65),metavar='16-64',default=16,help='HOME stage follow-error guard in pulses (default 16, unchanged). The follow lag grows with speed (about 70 ms: 17 pulses at 240 pulses/s, so ~21 at the 300 pulses/s peak, measured 2026-10-19) and trips 16 on the fold; 32 is the project approach default. Not for the 100 approach limit.')
 parser.add_argument('--output',type=Path)
 parser.add_argument('--any-start',action='store_true',help='skip only the start-corridor check (path/desk/link checks and tracking guards stay); for a stop that left the arm outside the corridor, 2026-10-21')
 args=parser.parse_args()
@@ -135,7 +142,7 @@ with ServoTransport(profile) as bus:
                 current=driver._snapshot(torque=1);xyz=tcp(current)[:3]
                 if xyz[2]>=.080:break
                 target=(*xyz[:2],xyz[2]+.030)
-                stage('raise'+str(index+1),lambda record:run_hover_trial(driver,g,zeros,target,math.hypot(*target[:2]),supported=True,lift_m=.030,record=record,cancelled=stopped,pitch_rad=start_pitch if tray_start else -math.pi/2),expected_xyz=target)
+                stage('raise'+str(index+1),lambda record:run_hover_trial(driver,g,zeros,target,math.hypot(*target[:2]),supported=True,lift_m=.030,min_contact_z=RAISE_MIN_CONTACT_Z,**RAISE_PROFILE,record=record,cancelled=stopped,pitch_rad=start_pitch if tray_start else -math.pi/2),expected_xyz=target)
             # 접히는 도중 P 전환·정지 인계를 하지 않는다. 중간 경유점도
             # 한 번의 가감속 스트림으로 통과하고 HOME에서만 정지를 확인한다.
             result.update(continuous_home_return=True,pitch_p_home=pitch_p)

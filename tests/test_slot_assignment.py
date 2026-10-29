@@ -45,6 +45,21 @@ def test_free_slots_exclude_tray_and_default_slots():
     assert sa.free_slots([], []) == [1, 2, 3]
 
 
+def test_far_slot_is_the_farthest_one_somebody_can_reach():
+    radii = {1: 344., 2: 253., 3: 168.}                                        # 실제 Pi 트레이의 칸 거리
+    slots, left = sa.assign({'a': 265., 'b': 262.}, radii, [1, 2, 3])        # 수직 놓기만: 1번 칸(344)은 아무도 못 간다
+    assert 1 not in slots.values() and slots['a'] == 2 and slots['b'] == 3 and left == []
+
+
+def test_vertical_only_reach_is_about_26_cm_and_below_slot_1():
+    from robot.robot_model import load_planar_model
+    model = load_planar_model(Path(__file__).resolve().parents[1])
+    for height in (20., 30., 45.):
+        reach = sa.reach_limit_mm(model, 0., held_height_mm=height, max_tilt_deg=0.)
+        assert 255. <= reach <= 300. < 340.                                     # 1번 칸(약 34cm)에는 닿지 않는다
+        assert sa.reach_limit_mm(model, 0., held_height_mm=height) > reach       # 기울이면 더 멀리 간다
+
+
 def test_planner_says_taller_held_object_reaches_farther():
     from robot.robot_model import load_planar_model
     model = load_planar_model(Path(__file__).resolve().parents[1])

@@ -124,12 +124,13 @@ start() {
 
   if [ -z "${NO_BROWSER:-}" ]; then
     say "화면"
-    local tabs=()      # 주행 화면(map_web)도 같은 창의 탭으로. 늦게 뜨면 그 탭에서 새로 고침
+    # 화면은 하나(자비스 주소 :8000). 주행 화면(map_web :8082)은 그 화면 위쪽의 '주행' 탭에 들어 있다(2026-10-29 사용자: 웹을 하나로).
+    # 주행 탭은 들어갈 때만 불러온다. 따로 보고 싶으면 http://$PI_IP:8082 로도 열린다.
+    ARM_URL="http://$PI_IP:8000" bash "$ROOT/pi/open_jarvis.sh" | sed 's/^/   /'
     if [ -z "${NO_DRIVE:-}" ]; then
-      tabs+=("http://$PI_IP:8082")
-      curl -s -m 3 "http://$PI_IP:8082/api/drive" >/dev/null || warn "주행 화면(8082)이 아직 응답하지 않습니다 - 잠시 뒤 그 탭을 새로 고침하세요"
+      curl -s -m 3 "http://$PI_IP:8082/api/drive" >/dev/null || warn "주행 서버(8082)가 아직 응답하지 않습니다 - 잠시 뒤 '주행' 탭을 다시 누르세요"
+      echo "   주행은 위쪽 '주행' 탭에서 봅니다(따로 열기: http://$PI_IP:8082)"
     fi
-    ARM_URL="http://$PI_IP:8000" bash "$ROOT/pi/open_jarvis.sh" "${tabs[@]}" | sed 's/^/   /'
   fi
   echo
   [ "$pump_ok" = 1 ] || warn "펌프가 답하지 않아 흡착이 안 됩니다 - 위 안내를 확인하세요(집기·정리는 실패합니다)"

@@ -12,6 +12,7 @@ import math
 from robot.planar_kinematics import NAMES, finite_vector
 from motion import guard_mode
 from motion.hover_trial import _execute_path, _hold_offset, HOVER_RADIUS_MAX_M, MAX_TILT_RAD
+from motion.tick_pulses import tick_pulses
 
 VERTICAL = -math.pi / 2
 MAX_PITCH_STEP_RAD = math.radians(15)      # 점 사이 손목 각도 변화(예전 제자리 세우기와 같은 15도)
@@ -37,7 +38,7 @@ def run_place_exit_trial(driver, geometry, zeros, transition, *, supported=False
     clear_z 아래(칸 안)에서는 놓은 자리 바로 위로 수직, 기울기 유지. 위로 올라온 뒤에는 clear_z 아래로 내려가지 않는다."""
     if not supported or driver.state != 'hold_only' or not driver.hold_confirmed:
         raise ExitPathRefused('place exit requires supported confirmed hold')
-    if (not math.isfinite(rate) or not 13 <= rate <= 150
+    if (not math.isfinite(rate) or not 13 <= rate <= 600
             or not math.isfinite(min_contact_z) or not .005 <= min_contact_z <= .030
             or tuple(driver.names) != NAMES or set(zeros) != set(NAMES)):
         raise ExitPathRefused('invalid place exit rate, floor or joint mapping')
@@ -116,6 +117,7 @@ def run_place_exit_trial(driver, geometry, zeros, transition, *, supported=False
         record(dict(phase='place_exit_preflight', points=len(goals), steps=steps, target=target,
                     start_pitch=start_pitch, clear_z=clear_z, intermediate_holds=0, physically_validated=False))
         # 칸 안(2펄스/틱 = rate)과 벽 위(4펄스/틱 = 2×rate)를 한 경로로. 서보 속도 레지스터는 _execute_path가 경로 속도에 맞춘다
+        scale = max(1, round(tick_pulses(rate) / 2))      # 150 이하 1배, 250~300 2배, 500 4배(7/2 올림): 틱당 펄스를 늘려 틱을 통신 한계 위로 유지(칸 안 2→4, 벽 위 4→8)
         return _execute_path(driver, geometry, joints, angles, clear, origin, goals[-1], target, record, cancelled,
-                             pulses_per_step=2, period_s=2 / rate, tracking_limit=tracking_limit,
-                             waypoints=goals, seg_pulses=seg_pulses)      # 놓은 뒤 빈 컵: 앞당기기 없음(넣은 뒤 끝에서 넘쳐 흔들렸다)
+                             pulses_per_step=2 * scale, period_s=2 * scale / rate, tracking_limit=tracking_limit,
+                             waypoints=goals, seg_pulses=[p * scale for p in seg_pulses])      # 놓은 뒤 빈 컵: 앞당기기 없음(넣은 뒤 끝에서 넘쳐 흔들렸다)

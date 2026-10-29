@@ -41,6 +41,7 @@ def live_frames():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--command', help='예: "빨간 상자 3번 칸에 넣어줘"')
+    parser.add_argument('--objects', help='물체 여러 개를 한 번에 계획(쉼표로 구분, unknown 제외). 사진·트레이·물체 검출은 한 번만 하고 물체마다 작업 파일을 만든다(2026-10-29). 출력: {"plans": [{label, ok, plan|reason}]}')
     from perception import object_registry
     parser.add_argument('--object', choices=sorted([*object_registry.labels(), 'unknown']))     # 기본 세 물체 + 등록 물체(custom_N)
     parser.add_argument('--slot', type=int, help='칸 지정(없으면 기본 규칙)')
@@ -60,10 +61,18 @@ def main(argv=None):
     parser.add_argument('--unknown-baseline', type=Path, help='unknown 추가 전 기준 깊이 프레임(.npy)')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
-    if bool(args.command) == bool(args.object):
-        parser.error('give exactly one of --command or --object')
+    if bool(args.command) + bool(args.object) + bool(args.objects) != 1:
+        parser.error('give exactly one of --command, --object or --objects')
+    multi = bool(args.objects)
+    labels = [name.strip() for name in args.objects.split(',') if name.strip()] if multi else []
+    if multi:
+        known = set(object_registry.labels())
+        if not labels or any(name not in known for name in labels) or len(set(labels)) != len(labels):
+            parser.error('--objects needs distinct registered labels (unknown is not allowed)')
     try:
-        if args.command:
+        if multi:
+            label, commanded = labels[0], None
+        elif args.command:
             label, commanded = parse_command(args.command)
             if args.slot is not None and commanded is not None and args.slot != commanded:
                 parser.error(f'--slot {args.slot} conflicts with the slot in the command ({commanded})')
@@ -135,26 +144,7 @@ def main(argv=None):
             tray_offset = registration['shift_px']
     else:
         tray_frame_args = (bgr, depth, extra)
-    try:
-        tray = detect_tray_checked(tray_frame_args[0], tray_frame_args[1], ROOT, first_end=args.tray_numbering, extra_bgr=tray_frame_args[2],
-                                   prefer_floors=bool(args.tray_frame and stored_tray_ok))   # 빈 트레이 기준 사진은 칸 바닥 방식부터
-        if args.tray_frame and registration is not None and tray.get('found'):
-            tray['slots'] = move_slots(tray['slots'], registration, ROOT)
-            tray.setdefault('problems', []).append('slot positions were carried by the measured tray move (%.0f px, %.1f deg)' % (registration['shift_px'], registration['rotation_deg']))
-        if label == 'unknown':
-            import numpy as np
-            from perception.unknown_objects import locate_unknowns
-            targets = locate_unknowns(bgr, depth, np.load(args.unknown_baseline, allow_pickle=False), ROOT)
-        else:
-            from perception.object_targets import locate_unregistered
-            # 등록 안 된 물체도 장애물로 넣어 운반 경로가 피하게 한다(집지는 않는다). 2026-10-26 전에는 등록 물체끼리만 피했다.
-            targets = locate_targets(bgr, depth, ROOT) + locate_unregistered(bgr, depth, ROOT)
-            if tray.get('found'):                       # 이미 칸에 들어 있는 물체는 다시 꺼내지 않는다(없는 것으로 보고 건너뛰게). 칸막이가 등록 안 된 물체로 잡히는 것도 여기서 빠진다
-                from tray.occupancy import outside_tray
-                targets = outside_tray(targets, tray['slots'])
-            from sorting.place_job import MAX_OBSTACLES
-            if len(targets) - 1 > MAX_OBSTACLES:          # 집는 도중(pick_auto의 place job 검사)이 아니라 움직이기 전에 거절한다
-                raise ValueError(f'책상 위 물체가 너무 많습니다({len(targets)}개, 피해 갈 물체는 최대 {MAX_OBSTACLES}개). 팔 주변 물체를 몇 개 치워 주세요.')
+    def make_result(label, commanded):
         result = build_job(targets, tray,
                            load_catalog(ROOT / 'config/object_catalog.json'), label, commanded,
                            acknowledge_unverified_suction=args.acknowledge_unverified_suction,
@@ -187,6 +177,63 @@ def main(argv=None):
                 baseline_sha256=hashlib.sha256(args.unknown_baseline.read_bytes()).hexdigest(),
                 target_xy=list(next(t for t in targets if t.get('new_object'))['target_xy']),
                 planned_at=datetime.now(timezone.utc).isoformat())
+        return result
+
+    def emit(lb, result, out):
+        out.mkdir(parents=True, exist_ok=False)
+        place_json = out / 'place.json'
+        try:                                           # 계획에 쓴 프레임을 남긴다(칸 위치가 이상할 때 같은 입력으로 다시 확인하려고)
+            import cv2
+            import numpy as np
+            cv2.imwrite(str(out / 'frame_rgb.png'), tray_frame_args[0])
+            np.save(out / 'frame_depth_mm.npy', tray_frame_args[1])
+        except Exception:
+            pass
+        place_json.write_text(json.dumps(result['job'], ensure_ascii=False, indent=2, allow_nan=False))
+        command = [sys.executable, 'scripts/pick_auto.py', '--execute', '--supported',
+                   '--manual-target-mm', *(repr(round(v, 2)) for v in result['manual_target_mm']), '--place-json', str(place_json)]
+        if result.get('pick_tilt_deg'):
+            command += ['--pick-tilt-deg', repr(float(result['pick_tilt_deg']))]
+        if args.empty_run:
+            command.append('--place-empty-run')
+        return dict(label=lb, slot_number=result['slot_number'], slot_source=result['slot_source'],
+                              empty_run=args.empty_run, place_json=str(place_json), manual_target_mm=result['manual_target_mm'], camera_target_mm=result['camera_target_mm'],
+                              pick_radial_offset_mm=result['pick_radial_offset_mm'], pick_tilt_radial_correction_mm=result.get('pick_tilt_radial_correction_mm', 0.), pick_tangential_correction_mm=result.get('pick_tangential_correction_mm', 0.), pick_tilt_deg=result.get('pick_tilt_deg') or 0.,
+                              warnings=result['warnings'], tray_method=result['tray_method'],
+                              unregistered_left=sum(1 for t in targets if t.get('obstacle_only')),       # 책상에 그대로 두는 등록 안 된 물체 수(장애물로만 봤다)
+                              tray_slots={str(k): dict(x_mm=round(v['x_mm']), y_mm=round(v['y_mm']), radius_m=round(v['radius_m'], 3)) for k, v in tray.get('slots', {}).items()}, tray_numbering=result['tray_numbering'], tray_source=tray_source, tray_frame_offset_px=tray_offset,
+                              pick_auto_command=command, pick_auto_command_text=shlex.join(command),
+                              executed=False, motor_writes=False, pump_writes=False, physical_accuracy_verified=False)
+
+    try:
+        tray = detect_tray_checked(tray_frame_args[0], tray_frame_args[1], ROOT, first_end=args.tray_numbering, extra_bgr=tray_frame_args[2],
+                                   prefer_floors=bool(args.tray_frame and stored_tray_ok))   # 빈 트레이 기준 사진은 칸 바닥 방식부터
+        if args.tray_frame and registration is not None and tray.get('found'):
+            tray['slots'] = move_slots(tray['slots'], registration, ROOT)
+            tray.setdefault('problems', []).append('slot positions were carried by the measured tray move (%.0f px, %.1f deg)' % (registration['shift_px'], registration['rotation_deg']))
+        if label == 'unknown':
+            import numpy as np
+            from perception.unknown_objects import locate_unknowns
+            targets = locate_unknowns(bgr, depth, np.load(args.unknown_baseline, allow_pickle=False), ROOT)
+        else:
+            from perception.object_targets import locate_unregistered
+            # 등록 안 된 물체도 장애물로 넣어 운반 경로가 피하게 한다(집지는 않는다). 2026-10-26 전에는 등록 물체끼리만 피했다.
+            targets = locate_targets(bgr, depth, ROOT) + locate_unregistered(bgr, depth, ROOT)
+            if tray.get('found'):                       # 이미 칸에 들어 있는 물체는 다시 꺼내지 않는다(없는 것으로 보고 건너뛰게). 칸막이가 등록 안 된 물체로 잡히는 것도 여기서 빠진다
+                from tray.occupancy import outside_tray
+                targets = outside_tray(targets, tray['slots'])
+            from sorting.place_job import MAX_OBSTACLES
+            if len(targets) - 1 > MAX_OBSTACLES:          # 집는 도중(pick_auto의 place job 검사)이 아니라 움직이기 전에 거절한다
+                raise ValueError(f'책상 위 물체가 너무 많습니다({len(targets)}개, 피해 갈 물체는 최대 {MAX_OBSTACLES}개). 팔 주변 물체를 몇 개 치워 주세요.')
+        if multi:
+            results = {}
+            for name in labels:                       # 물체마다 build_job만 다시 한다(사진·트레이·물체 검출은 위에서 한 번만 했다)
+                try:
+                    results[name] = make_result(name, None)
+                except ValueError as exc:
+                    results[name] = exc
+        else:
+            result = make_result(label, commanded)
     except ValueError as exc:
         parser.error(str(exc))
     # 카메라로 찍었으면 저장 프레임을 썼더라도 트레이가 비어 있을 때(칸 바닥 3개) 새 기준으로 저장한다. 10-21: 기준이 10:46 것으로 남아
@@ -199,32 +246,19 @@ def main(argv=None):
             save_if_empty(*(tray_frame_args[:2] if not stored_tray_ok and fresh_tray else (bgr, depth)))
         except Exception:
             pass
-    out = args.output or ROOT / 'output/place_jobs' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
-    out.mkdir(parents=True, exist_ok=False)
-    place_json = out / 'place.json'
-    try:                                           # 계획에 쓴 프레임을 남긴다(칸 위치가 이상할 때 같은 입력으로 다시 확인하려고)
-        import cv2
-        import numpy as np
-        cv2.imwrite(str(out / 'frame_rgb.png'), tray_frame_args[0])
-        np.save(out / 'frame_depth_mm.npy', tray_frame_args[1])
-    except Exception:
-        pass
-    place_json.write_text(json.dumps(result['job'], ensure_ascii=False, indent=2, allow_nan=False))
-    command = [sys.executable, 'scripts/pick_auto.py', '--execute', '--supported',
-               '--manual-target-mm', *(repr(round(v, 2)) for v in result['manual_target_mm']), '--place-json', str(place_json)]
-    if result.get('pick_tilt_deg'):
-        command += ['--pick-tilt-deg', repr(float(result['pick_tilt_deg']))]
-    if args.empty_run:
-        command.append('--place-empty-run')
-    print(json.dumps(dict(label=label, slot_number=result['slot_number'], slot_source=result['slot_source'],
-                          empty_run=args.empty_run, place_json=str(place_json), manual_target_mm=result['manual_target_mm'], camera_target_mm=result['camera_target_mm'],
-                          pick_radial_offset_mm=result['pick_radial_offset_mm'], pick_tilt_radial_correction_mm=result.get('pick_tilt_radial_correction_mm', 0.), pick_tangential_correction_mm=result.get('pick_tangential_correction_mm', 0.), pick_tilt_deg=result.get('pick_tilt_deg') or 0.,
-                          warnings=result['warnings'], tray_method=result['tray_method'],
-                          unregistered_left=sum(1 for t in targets if t.get('obstacle_only')),       # 책상에 그대로 두는 등록 안 된 물체 수(장애물로만 봤다)
-                          tray_slots={str(k): dict(x_mm=round(v['x_mm']), y_mm=round(v['y_mm']), radius_m=round(v['radius_m'], 3)) for k, v in tray.get('slots', {}).items()}, tray_numbering=result['tray_numbering'], tray_source=tray_source, tray_frame_offset_px=tray_offset,
-                          pick_auto_command=command, pick_auto_command_text=shlex.join(command),
-                          executed=False, motor_writes=False, pump_writes=False, physical_accuracy_verified=False),
-                     ensure_ascii=False, indent=2, default=float))
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
+    if multi:
+        entries = []
+        for name in labels:
+            outcome = results[name]
+            if isinstance(outcome, Exception):
+                entries.append(dict(label=name, ok=False, reason=str(outcome)))
+            else:
+                entries.append(dict(label=name, ok=True, plan=emit(name, outcome, ROOT / 'output/place_jobs' / f'{stamp}_{name}')))
+        print(json.dumps(dict(plans=entries), ensure_ascii=False, default=float))
+        return 0
+    out = args.output or ROOT / 'output/place_jobs' / stamp
+    print(json.dumps(emit(label, result, out), ensure_ascii=False, indent=2, default=float))
     return 0
 
 

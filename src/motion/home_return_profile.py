@@ -2,14 +2,15 @@
 import math
 
 from motion import guard_mode
+from motion.tick_pulses import tick_pulses
 
 
 def return_profile(rate=300.):
-    if not math.isfinite(rate) or not 50<=rate<=300:
-        raise ValueError('HOME travel rate must be50..300pulse/s')
+    if not math.isfinite(rate) or not 50<=rate<=600:
+        raise ValueError('HOME travel rate must be50..600pulse/s')
     # 틱이 길수록(4펄스/26.7ms) 접히는 구간에서 어깨·밑동이 약 8Hz로 떨렸다(2026-10-16 기록: 떨림 rms 1.1~1.7펄스).
     # 속도 150 이하는 2펄스/약 13.3ms 틱으로 같은 속도를 낸다(place 운반과 같은 방식, 접근에서 떨림이 가장 작았던 틱).
-    pulses = 2 if rate <= 150 else 4
+    pulses = tick_pulses(rate)       # 150→2, 300→4, 500→7: 틱이 통신 한계(약 13.4ms) 밑으로 짧아져 밀리지 않게(2026-10-28)
     return dict(pulses_per_step=pulses,fast_travel=True,tick_s=pulses/rate,
                 tracking_limit=16,smooth_motion=True,native=False,
                 batch_slow_joints=False)

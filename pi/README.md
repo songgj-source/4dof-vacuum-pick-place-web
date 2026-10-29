@@ -125,7 +125,7 @@ ssh user@192.168.0.31 'bash ~/4dof_ik_pi_test/pi/drive_ctl.sh log nav'       # �
 - 팀 주행(드라이버·라이다·map_web·AMCL)이 이미 돌고 있으면 바퀴 드라이버·라이다가 겹치므로 **켜지 않고 알립니다.** 팀 프로그램은 끄지 않습니다.
 - 차 시리얼은 이 Pi에서 `/dev/ttyAMA0`입니다(사본 launch 기본값 `/dev/ttyS0`은 입출력 오류로 드라이버가 죽음, 10-23 확인).
 - 코드를 바꾸면 `bash pi/deploy_to_robot.sh`가 사본을 Pi로 보내고 빌드합니다. 그 뒤 `bash pi/start_all.sh stop && bash pi/start_all.sh`.
-- 처음 실행할 때 기본 지도의 라벨(`remap_20261023_1156.labels.json`)을 `drive_data/labels.json`으로 복사합니다. 이미 저장된 내 라벨은 덮어쓰지 않습니다.
+- 처음 실행할 때 기본 지도의 라벨(`map_20261029_1503.labels.json`)을 `drive_data/labels.json`으로 복사합니다. 이미 저장된 내 라벨은 덮어쓰지 않습니다.
 - 지도 위 장소(라벨)는 map_web 화면(`http://192.168.0.31:8082`)에서 만듭니다. 라벨은 책상에서 조금(3 cm 넘게) 떨어진 자리에서 만드세요.
 
 ### 팀 주행 코드 사본(`ros2_slam/`)과 같이 쓰기

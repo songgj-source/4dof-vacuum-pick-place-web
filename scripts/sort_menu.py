@@ -48,7 +48,7 @@ def refresh_objects():
 refresh_objects()
 COMMON = ['--acknowledge-unverified-suction', '--accept-uncertain-tray', '--tray-numbering', 'far_from_base',
           '--attempts', '1', '--approach-tracking-limit', '100',
-          '--place-rate', '400', '--place-pulses-per-step', '4', '--home-rate', '300']   # 속도 우선(사용자 2026-10-19): 운반·후퇴 300, 틱당 4펄스(13.4ms), 자동 HOME 복귀 300. 2026-10-27 운반 400(틱 10ms, 실제는 통신 13~14ms)
+          '--place-rate', '600', '--place-pulses-per-step', '8', '--home-rate', '600']   # 속도 우선(사용자 2026-10-19, 2026-10-28): 운반·후퇴·자동 HOME 복귀 600펄스/초, 틱당 8펄스(13.3ms = 통신 한계라 틱이 밀리지 않는다)
 COLOR = sys.stdout.isatty() and not os.environ.get('NO_COLOR')
 
 
@@ -84,7 +84,7 @@ def plain(text):
 
 
 TRAY_FRAME = (ROOT / 'output' / 'tray_frames' / 'latest_rgb.png', ROOT / 'output' / 'tray_frames' / 'latest_depth.npy')
-HOME_COMMAND = [PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32']
+HOME_COMMAND = [PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '600', '--tracking-limit', '64']
 ITEMS = [
     ('1', '책상 정리하기 (정육면체 → 흰 상자 → 줄자 → 등록 물체 순서)'),
     ('2', '물체와 칸을 골라서 넣기'),
@@ -100,11 +100,18 @@ def brief_message(message):
     """화면 문구만 번역·요약하고 내부 판정용 원문은 유지한다."""
     text = str(message or '')
     names = {'white_box': ('흰 상자가', '흰 상자'), 'red_cube': ('빨간 정육면체가', '빨간 정육면체'),
-             'tape_measure': ('줄자가', '줄자'), 'unknown': ('unknown이', 'unknown'),
+             'tape_measure': ('줄자가', '줄자'), 'unknown': ('새 물체가', '새 물체'),
              **{label: (f'{name}이(가)', name) for label, name, _ in OBJECTS.values() if label.startswith('custom_')}}
     subject, name = next((pair for label, pair in names.items() if label in text), ('물체가', '물체'))
     # 경계 수치를 원문에서 읽어 실제 적용 중인 제한과 같은 값을 안내한다.
     radius = re.search(r'radius ([0-9.]+) m outside (?:the )?([0-9.]+)-([0-9.]+) m pick envelope', text)
+    if radius and 'tray slot radius' in text:
+        # 놓을 칸(트레이)의 거리다. 물체가 아니다(2026-10-29: 1번 칸 41.6cm를 '물체가 너무 멉니다'로 안내해 헷갈렸다)
+        distance, lower, upper = (float(value) * 100 for value in radius.groups())
+        if distance > upper:
+            return f'놓을 칸이 로봇에서 너무 멉니다({distance:g}cm, 최대 {upper:g}cm). 트레이를 로봇 쪽으로 옮기세요(팔이 닿는 한계는 약 39~40cm).'
+        if distance < lower:
+            return f'놓을 칸이 로봇에 너무 가깝습니다({distance:g}cm, 최소 {lower:g}cm). 트레이를 조금 멀리 놓으세요.'
     if radius:
         distance, lower, upper = (float(value) * 100 for value in radius.groups())
         if distance < lower:
@@ -112,6 +119,9 @@ def brief_message(message):
         if distance > upper:
             return f'{subject} 너무 멉니다({distance:g}cm, 최대 {upper:g}cm). 로봇 쪽으로 옮기세요.'
     translations = (
+        ('unknown count changed', '새 물체 개수가 달라졌습니다. 다시 시도해 주세요.'),
+        ('gain baseline changed', '서보 설정이 기준값과 다릅니다. restore_gains.py로 되돌린 뒤 다시 시도하세요.'),
+        ('table clearance failed', '팔 일부가 책상에 너무 가까워 안전하게 움직일 수 없습니다. 팔을 손으로 조금 들어 올려 주세요.'),
         ('more than one unknown', '새 물체는 한 번에 하나씩 놓으세요.'),
         ('unknown not found', '등록 안 된 물체를 찾지 못했습니다. 책상(트레이 밖, 팔이 닿는 곳)에 하나를 두고 다시 실행하세요.'),
         ('the tray moved since the stored frame', '트레이 위치 변경: 빈 트레이로 계획을 한 번 실행해 다시 저장하세요.'),
@@ -300,7 +310,7 @@ def ensure_torque():
             print('   토크를 켜지 못했습니다. 팔을 확인하세요.')
             return False
         print('   토크를 켜서 팔을 붙잡았습니다. HOME 자세로 맞춥니다.')
-        code, summary, _ = run_streaming([PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32'])
+        code, summary, _ = run_streaming([PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '600', '--tracking-limit', '64'])
         done = home_return_succeeded(code, summary)
         print('   → HOME 자세로 맞췄습니다.' if done else f'   → HOME에 맞추지 못했습니다: {brief_message(home_failure_reason(code, summary))} (팔 위치를 확인하세요)')
         return done
@@ -407,7 +417,7 @@ def recover_home_if_placed(since):
     if not result or not result.get('motion_cycle_complete') or result.get('error'):
         return False
     print('   물체는 칸에 넣었지만 자동 HOME 복귀가 실패했습니다. HOME 복귀를 다시 시도합니다.')
-    code, summary, _ = run_streaming([PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32'])
+    code, summary, _ = run_streaming([PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '600', '--tracking-limit', '64'])
     done = home_return_succeeded(code, summary)
     print('   → HOME 복귀 완료' if done else f'   → HOME 복귀 실패: {brief_message(home_failure_reason(code, summary))} (팔 위치를 확인하세요)')
     return done
@@ -433,6 +443,14 @@ def plan_command(label, path, use_tray_frame=True):
     return sort_command(label, use_tray_frame=use_tray_frame) + ['--plan-out', str(path)]
 
 
+def plan_batch_command(labels, plan_dir, prefix):
+    """물체 여러 개를 한 번에 계획하는 명령(사진·트레이·물체 검출을 한 번만). 물체마다 plan_dir/<prefix><물체>.json을 만든다."""
+    cmd = [PY, str(ROOT / 'scripts' / 'run_sort.py'), '--objects', ','.join(labels), '--plan-out-dir', str(plan_dir), '--plan-prefix', prefix, *COMMON]
+    if all(p.exists() for p in TRAY_FRAME):
+        cmd += ['--tray-frame', str(TRAY_FRAME[0]), str(TRAY_FRAME[1]), '--tray-fallback-live']
+    return cmd
+
+
 def chained_command(label, path, index, count, from_home=False):
     flags = [f for f in chain_flags(index, count) if not (from_home and f == '--start-above-tray')]
     return sort_command(label) + ['--plan-in', str(path), *flags]
@@ -446,7 +464,7 @@ def chain_refused(result):
     return bool(attempts) and attempts[-1].get('exit_code') == CHAIN_REFUSED_EXIT_CODE
 
 
-def run_all_chained(run=None, on_item=None, stopped=lambda: False, labels=None):
+def run_all_chained(run=None, on_item=None, stopped=lambda: False, labels=None, batch_plan=False):
     """메뉴 1(책상 정리하기): 정육면체 → 흰 상자 → 줄자(labels를 주면 그 물체만, 같은 순서). (1) HOME에서 차례로 계획(사진)
     (2) 놓은 뒤 HOME을 거치지 않고 다음 물체. 계획에서 물체가 안 보이면 멈추지 않고 건너뛴다(책상에 있는 것만 정리).
     등록 안 된 물체는 집지 않고 장애물로만 피한다(계획마다 센 수 중 가장 큰 값을 unregistered_left로 알린다).
@@ -463,11 +481,32 @@ def run_all_chained(run=None, on_item=None, stopped=lambda: False, labels=None):
     order = [label for label, _, _ in OBJECTS.values()]          # 기본 세 물체 → 등록 물체(등록 순서)
     wanted = [label for label in order if labels is None or label in labels]
     planned, items, skipped = [], [], []
+    batch = None
+    if batch_plan and len(wanted) > 1 and not stopped():
+        # 계획을 물체마다 따로 하면 매번 프로그램을 새로 켜고 카메라를 다시 열어 물체당 6~16초가 걸린다(2026-10-29). 사진·트레이·물체 검출을 한 번만 한다.
+        # 통째로 실패하면(트레이를 못 찾음 등) 예전처럼 물체마다 계획해 같은 결과·같은 안내를 얻는다.
+        if on_item:
+            on_item(wanted[0], 'plan')
+        code, result, _ = run(plan_batch_command(wanted, CHAIN_PLAN_DIR, f'{stamp}_'))
+        if code == 0 and isinstance((result or {}).get('plans'), dict):
+            batch = result['plans']
     for label in wanted:
         if stopped():
             return done(ok=False, failed_label=label, reason='cancelled')
         if on_item:
             on_item(label, 'plan')
+        entry = (batch or {}).get(label)
+        if entry is not None and (entry.get('ok') or 'the tray moved since the stored frame' not in str(entry.get('reason'))):
+            left[0] = max(left[0], int(entry.get('unregistered_left') or 0))
+            if entry.get('ok'):
+                planned.append((label, Path(entry['plan_file'])))
+                continue
+            reason = str(entry.get('reason') or 'planning failed')
+            if 'not found in the current camera view' in reason:
+                skipped.append(label)                 # 책상에 없다: 건너뛰고 다음 물체
+                continue
+            failed = dict(label=label, reason=reason)
+            break
         path = CHAIN_PLAN_DIR / f'{stamp}_{label}.json'
         code, result, _ = run(plan_command(label, path))
         if code != 0 and 'the tray moved since the stored frame' in str((result or {}).get('reason', '')) and all(p.exists() for p in TRAY_FRAME):
@@ -695,7 +734,7 @@ def main():
                 print('   계획 확인 완료(이동 없음).' if code == 0 else '   실패: ' + brief_message((result or {}).get('reason') or f'종료 코드 {code}'))
         elif choice == '3':
             if confirm('HOME으로 복귀합니다.') and ensure_torque():
-                code, result, seconds = run_streaming([PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '150', '--tracking-limit', '32'])
+                code, result, seconds = run_streaming([PY, str(ROOT / 'scripts' / 'return_home.py'), '--execute', '--supported', '--travel-rate', '600', '--tracking-limit', '64'])
                 done = home_return_succeeded(code, result)
                 print('   → 복귀 완료' if done else f'   → 복귀 결과: {brief_message(home_failure_reason(code, result))}')
         elif choice == '5':

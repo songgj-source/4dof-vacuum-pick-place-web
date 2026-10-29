@@ -18,11 +18,35 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, OpaqueFunction, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+
+
+BT_XML = 'navigate_to_pose_limited_recovery.xml'     # 복구를 줄인 행동 트리(config/behavior_trees). 제자리 회전을 빼고 복구 반복을 6번에서 2번으로
+
+
+def with_limited_recovery_bt(params_path, bringup_share):
+    """params_path의 Nav2 설정에 bt_navigator.default_nav_to_pose_bt_xml(설치된 행동 트리 경로)을 넣은 임시 설정 파일 경로를 돌려준다.
+    행동 트리 파일이 없거나 설정을 못 읽으면 원래 설정을 그대로 쓴다(기본 Nav2 복구 동작)."""
+    import tempfile
+    import yaml
+    bt = os.path.join(bringup_share, 'config', 'behavior_trees', BT_XML)
+    try:
+        if not os.path.isfile(bt):
+            return params_path
+        with open(params_path) as handle:
+            data = yaml.safe_load(handle)
+        data['bt_navigator']['ros__parameters']['default_nav_to_pose_bt_xml'] = bt
+        handle = tempfile.NamedTemporaryFile('w', suffix='_nav2_params.yaml', prefix='car2_', delete=False)
+        with handle:
+            yaml.safe_dump(data, handle)
+        return handle.name
+    except Exception as exc:       # 주행 전체가 안 켜지는 것보다 기본 복구 동작이 낫다
+        print(f'[lidar_navigation] 복구 줄인 행동 트리를 쓰지 못했습니다({exc!r}): 기본 Nav2 복구 동작을 씁니다')
+        return params_path
 
 
 def generate_launch_description():
@@ -38,10 +62,13 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(os.path.join(nav2_share, 'launch', 'localization_launch.py')),
         launch_arguments={'map': map_yaml, **common}.items(),
     )
-    navigation = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(nav2_share, 'launch', 'navigation_launch.py')),
-        launch_arguments=common.items(),
-    )
+    def navigation_action(context):
+        nav_common = dict(common, params_file=with_limited_recovery_bt(params_file.perform(context), bringup_share))
+        return [IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(nav2_share, 'launch', 'navigation_launch.py')),
+            launch_arguments=nav_common.items(),
+        )]
+    navigation = OpaqueFunction(function=navigation_action)
     # Initial pose for AMCL (map frame), sent once AMCL subscribes (-w 1).
     initial_pose = TimerAction(period=4.0, actions=[ExecuteProcess(
         cmd=['ros2', 'topic', 'pub', '--once', '-w', '1', '/initialpose',

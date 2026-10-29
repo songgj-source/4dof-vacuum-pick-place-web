@@ -44,11 +44,13 @@ def should_return_home(result, *, enabled):
 
 
 def home_return_command(root, rate, output):
-    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate) or not 50. <= rate <= 300.:
-        raise ValueError('home return rate must be 50-300 pulses/s')
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate) or not 50. <= rate <= 600.:
+        raise ValueError('home return rate must be 50-600 pulses/s')
     command = [sys.executable, str(Path(root) / 'scripts' / 'return_home.py'), '--execute', '--supported',
                '--travel-rate', str(float(rate)), '--output', str(output)]
-    if rate > 150.:                 # 150을 넘으면 어깨 추종이 16을 넘는다(300에서 17~29 실측): 추종 한도를 32로 둔다(사용자: 속도 우선, 2026-10-19)
+    if rate > 300.:                 # 300에서 어깨 추종이 17~29 뒤처졌다(실측). 속도에 비례하면 500에서는 약 30~50: 한도를 64로 둔다(사용자: 속도 우선, 2026-10-28)
+        command += ['--tracking-limit', '64']
+    elif rate > 150.:               # 150을 넘으면 어깨 추종이 16을 넘는다(300에서 17~29 실측): 추종 한도를 32로 둔다(사용자: 속도 우선, 2026-10-19)
         command += ['--tracking-limit', '32']
     return command
 

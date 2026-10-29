@@ -136,12 +136,15 @@ def blob_geometry(item, locator, top_mm=None):
     return dict(xy=[float(xy[0]), float(xy[1])], top_mm=top_mm, footprint_mm=footprint, radius_mm=radius)
 
 
-def desk_blobs(found, locator, top_margin_mm=0.):
+def desk_blobs(found, locator, top_margin_mm=0., min_top_mm=0.):
     """책상 위 물체로 볼 덩어리(이름과 상관없이): 트레이·설비 같은 큰 덩어리, 로봇팔 자신(높은 것),
-    로봇 밑동 근처·작업 범위 밖(케이블 등)은 뺀다(arm_api.describe_scene과 같은 기준). (덩어리, blob_geometry) 목록."""
+    로봇 밑동 근처·작업 범위 밖(케이블 등)은 뺀다(arm_api.describe_scene과 같은 기준). min_top_mm보다 낮은 덩어리도 뺀다(새 물체를 셀 때: 트레이를
+    못 찾은 사진에서 칸 바닥 골판지(약 11mm)가 '새 물체'로 잡혀 안내 때와 집을 때 개수가 달라졌다, 2026-10-28). (덩어리, blob_geometry) 목록."""
     out = []
     for item in found:
         if max(item['bbox_px'][2:]) > UNREGISTERED_MAX_PX:
+            continue
+        if float(item.get('top_height_mm', item['height_mm'])) < min_top_mm:
             continue
         top_mm = float(item.get('top_height_mm', item['height_mm'])) + top_margin_mm
         if top_mm > UNREGISTERED_MAX_HEIGHT_MM:

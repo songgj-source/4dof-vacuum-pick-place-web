@@ -6,14 +6,15 @@ import math
 from robot.planar_kinematics import NAMES,finite_vector
 from motion.hover_trial import _hold_offset,_execute_path,SLOW_JOINT_BATCH_PULSES,TRAVEL_GOAL_SPEED,TRAVEL_PERIOD_S,SLOW_TRAVEL_PERIOD_S
 from motion.home_return_profile import continuous_home_waypoints
+from motion.tick_pulses import ALLOWED_STEPS
 
 SETTLE_TRIES=10;SETTLE_WAIT_S=.1      # HOME 시작 전 정지 확인: 0.1초씩 최대 10번
 
 
 def run_recorded_home_trial(driver,geometry,zeros,home_raw,*,supported=False,
                             record=lambda event:None,cancelled=lambda:False,pulses_per_step=1,batch_slow_joints=False,fast_travel=False,tick_s=None,tracking_limit=16,native=False,smooth_motion=False,continuous=False):
-    if type(pulses_per_step) is not int or pulses_per_step not in (1,2,4):
-        raise ValueError('pulse step must be 1, 2 or 4')
+    if type(pulses_per_step) is not int or pulses_per_step not in ALLOWED_STEPS:
+        raise ValueError('pulse step must be 1, 2, 4, 5, 6, 7 or 8')
     if not supported or driver.state!='hold_only' or not driver.hold_confirmed:
         raise ValueError('supported confirmed hold required for HOME trial')
     if type(continuous) is not bool or continuous and (not fast_travel or native or batch_slow_joints):

@@ -150,7 +150,7 @@ def test_only_preparation_refusal_can_use_legacy_lift(error, retries):
         run_pick_to_carry_trial=trial, driver=None, geometry=None, zeros={},
         args=SimpleNamespace(held_rate=150, min_contact_z_mm=10), is_cancelled=lambda: False,
         post_pick_rise=lambda *a, **kw: calls.append('legacy'), hover=None, fresh_xyz=None,
-        contact=START, place_job=PLAN, lift_plan=PLAN)
+        contact=START, place_job=PLAN, lift_plan=PLAN, tick_pulses=lambda rate: 2, track_limit=lambda rate: 32)
     code = compile(ast.Module(body=[merge, fallback], type_ignores=[]), 'lift_orchestration', 'exec')
     if retries:
         exec(code, env)

@@ -35,8 +35,9 @@ WINDOW_PX = 12
 
 def _fractions(hsv_patch):
     h, s, v = hsv_patch[:, 0], hsv_patch[:, 1], hsv_patch[:, 2]
-    return dict(red_cube=float((((h < 10) | (h > 170)) & (s > 110) & (v > 60)).mean()),
-                tape_measure=float(((h >= 15) & (h <= 38) & (s > 100) & (v > 100)).mean()),
+    # 빨강: 판지(색상 8~11)와 겹치지 않게 좁히고, 그늘진 정육면체(밝기 50~70)도 빨강으로 센다. 줄자: 진한 노랑(물체 분류와 같은 채도 기준)
+    return dict(red_cube=float((((h <= 6) | (h >= 170)) & (s > 110) & (v > 35)).mean()),
+                tape_measure=float(((h >= 10) & (h <= 30) & (s >= 170) & (v > 60)).mean()),
                 white_box=float(((s < 50) & (v > 160)).mean()))
 
 

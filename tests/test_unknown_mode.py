@@ -370,3 +370,54 @@ class PickWhichUnknownTests(unittest.TestCase):
     def test_which_out_of_range_refuses(self):
         with self.assertRaisesRegex(ValueError, 'unknown not found'):
             self.baseline(which=4, of=3)
+
+
+class StrayCableInBaselineTests(unittest.TestCase):
+    """기준 사진에 찍혔다가 사라진 로봇팔·케이블(높이 약 300mm)이 '기존 물체 이동·제거'로 집기를 막던 문제(2026-10-28, 실제 Pi 프레임)."""
+
+    DATA = ROOT / 'tests/data/unknown_20261028'
+
+    def frames(self):
+        import cv2
+        return (cv2.imread(str(self.DATA / 'failed_frame_rgb.png')), np.load(self.DATA / 'failed_frame_depth.npy'),
+                np.load(self.DATA / 'baseline_depth.npy'))
+
+    def test_cable_in_baseline_does_not_count_as_a_removed_object(self):
+        rgb, depth, base = self.frames()
+        with patch('perception.unknown_objects.reachable', return_value=True):
+            found = locate_unknowns(rgb, depth, base, ROOT, model={})
+        self.assertEqual(sum(1 for t in found if t['new_object']), 1)          # 갈색 새 물체 하나
+
+    def test_a_real_object_removed_from_baseline_still_refuses(self):
+        rgb, depth, base = self.frames()
+        base = base.copy()
+        base[200:240, 100:140] -= 60                                            # 기준보다 책상 쪽이 멀어짐 = 기준의 물체(60mm)가 사라진 것처럼
+        depth = depth.copy(); depth[200:240, 100:140] = base[200:240, 100:140] + 60
+        with self.assertRaisesRegex(ValueError, '이동|제거|배경'):
+            locate_unknowns(rgb, depth, base, ROOT, model={})
+
+
+class TrayFloorNotCountedTests(unittest.TestCase):
+    """트레이를 못 찾은 사진에서 3번 칸 바닥 골판지(높이 약 11.7mm)가 새 물체로 세져 'unknown count changed: expected 1, now 2'로 집기가 멈췄다(2026-10-28, 실제 Pi 프레임)."""
+
+    DATA = ROOT / 'tests/data/unknown_20261028b'
+
+    def frames(self):
+        import cv2
+        return cv2.imread(str(self.DATA / 'desk_rgb.png')), np.load(self.DATA / 'desk_depth.npy')
+
+    def test_only_the_real_object_is_counted_and_pickable_by_number(self):
+        from perception.unknown_objects import desk_baseline
+        rgb, depth = self.frames()
+        _, desk = desk_baseline(rgb, depth, ROOT)                      # tray_slots 없음 = 트레이를 못 찾은 사진
+        self.assertEqual([round(d['top_mm']) for d in desk], [28])      # 칸 바닥(11.7mm)은 세지 않는다
+        _, erased = desk_baseline(rgb, depth, ROOT, which=1, of=1)      # 안내한 개수(1)와 같다
+        self.assertEqual(len(erased), 1)
+
+    def test_describe_scene_counts_the_same_one_object(self):
+        import arm_api
+        rgb, depth = self.frames()
+        scene = arm_api.describe_scene(rgb, depth)
+        unknown = [o for o in scene['objects'] if o['label'] == 'unknown']
+        self.assertEqual(len(unknown), 1)
+        self.assertEqual((round(unknown[0]['height_mm']), unknown[0]['color']), (28, '갈색'))

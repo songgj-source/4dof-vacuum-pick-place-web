@@ -61,11 +61,12 @@ def assign(reach, slot_radius_mm, free, seed_text=''):
     digest = hashlib.md5(('|'.join(map(str, keys)) + '/' + ','.join(map(str, free)) + '/' + seed_text).encode()).hexdigest()
     rng = random.Random(int(digest[:12], 16))
     slots = {}
-    if free:
-        far = max(free, key=lambda n: slot_radius_mm[n])
+    # 가장 먼 '닿는' 빈 칸: 어떤 물체도 닿지 못하는 칸(예: 수직으로만 놓는 새 물체의 1번 칸)은 건너뛴다
+    reachable_free = [n for n in free if any(reach[k] is not None and reach[k] >= slot_radius_mm[n] for k in keys)]
+    if reachable_free:
+        far = max(reachable_free, key=lambda n: slot_radius_mm[n])
         able = [k for k in keys if reach[k] is not None and reach[k] >= slot_radius_mm[far]]
-        if able:
-            slots[max(able, key=lambda k: (reach[k], -keys.index(k)))] = far
+        slots[max(able, key=lambda k: (reach[k], -keys.index(k)))] = far
     rest_keys = [k for k in keys if k not in slots]
     rest_slots = [n for n in free if n not in slots.values()]
     rng.shuffle(rest_keys)

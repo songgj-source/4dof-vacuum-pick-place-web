@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>자비스</title>
 <style>
-  /* 모서리 규칙: 카드 18px, 버튼·입력·메뉴 항목 12px, 상태 칩·정지 버튼·예시 문장은 완전한 둥근 모양 */
+  /* 모서리 규칙: 카드 18px, 메뉴 타일·항목 14px, 버튼·입력·아이콘 칩 12px, 상태 칩·정지 버튼·예시 문장은 완전한 둥근 모양 */
   :root {
     --bg: #eef1f2; --surface: #ffffff; --surface-2: #f5f7f8; --ink: #14181c; --sub: #56606b; --faint: #7d8792;
     --line: #e0e5e8; --line-2: #d2d9dd; --accent: #0f766e; --accent-ink: #ffffff; --accent-soft: #e3f1ef; --accent-line: #b9dcd7;
@@ -92,35 +92,64 @@
   .ghost { padding: 6px 11px; font-size: 13px; color: var(--sub); background: transparent; border-color: var(--line); }
   .ghost[aria-pressed="true"] { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
 
-  /* 메뉴 */
-  ol.menu { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
+  /* 메뉴: 큰 타일 둘(자주 쓰는 작업) + '더 보기' 목록. 아이콘은 Phosphor(Regular), 색은 강조색 하나, 항목 모서리 14px */
+  ol.menu { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
   ol.menu > li { border-radius: 14px; }
-  /* 번호 칸·화살표는 양옆에 고정하고, 제목·설명은 세로 가운데로 쌓는다(설명이 없는 항목도 가운데) */
-  .item { position: relative; width: 100%; min-height: 64px; display: grid; align-content: center; text-align: left;
-          padding: 11px 40px 11px 67px; background: var(--surface-2); border-color: transparent; border-radius: 14px; font-weight: 600; }
-  .item:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent-line); }
-  .item i { position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
-            font-style: normal; font-family: var(--mono); font-weight: 700; font-size: 15px; width: 42px; height: 42px; border-radius: 12px;
-            display: grid; place-items: center; background: var(--surface); color: var(--accent); border: 1px solid var(--line);
-            transition: background-color .18s ease, color .18s ease, border-color .18s ease; }
-  .item:hover:not(:disabled) i { border-color: var(--accent-line); }
-  .item small { display: block; color: var(--sub); font-size: 13px; font-weight: 400; margin-top: 1px; }
+  .item { position: relative; width: 100%; text-align: left; font-weight: 600; border-radius: 14px; background: var(--surface-2);
+          border: 1px solid var(--line); color: var(--ink);
+          transition: transform .25s var(--ease), box-shadow .25s var(--ease), background-color .18s ease, border-color .18s ease; }
+  .item .ico { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 12px;
+               background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-line);
+               transition: background-color .18s ease, color .18s ease, border-color .18s ease, transform .25s var(--ease); }
+  .item .ico svg { width: 24px; height: 24px; display: block; }
+  .item .txt { display: grid; gap: 1px; min-width: 0; }
+  .item .txt b { font-weight: 650; font-size: 15.5px; letter-spacing: -.005em; }
+  .item small { display: block; color: var(--sub); font-size: 13px; font-weight: 400; line-height: 1.4; }
   .item .api { font-size: 11.5px; color: var(--faint); font-weight: 400; margin-top: 2px; }
-  /* 펼치는 항목: 오른쪽 화살표, 펼치면 아래로 */
-  .item[data-open]::after { content: ""; position: absolute; right: 20px; top: calc(50% - 6px); width: 8px; height: 8px;
-                            border-right: 2px solid var(--faint); border-bottom: 2px solid var(--faint); transform: rotate(-45deg);
-                            transition: transform .22s var(--ease), border-color .18s ease; }
+  .item:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent-line); }
+  .item:hover:not(:disabled) .ico { background: var(--surface); transform: scale(1.05); }
+  /* 큰 타일: 아이콘을 위에, 글을 아래에 */
+  .quick { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 10px; margin-top: 14px; }
+  .item.tile { display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; gap: 18px; min-height: 128px; padding: 16px; }
+  .item.tile:hover:not(:disabled) { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
+  .item.tile.hero { background: linear-gradient(150deg, color-mix(in srgb, var(--accent) 92%, #fff), var(--accent) 45%, color-mix(in srgb, var(--accent) 80%, #0b3b37));
+                    color: var(--accent-ink); border-color: transparent; font-size: 16px;
+                    box-shadow: inset 0 1px 0 rgb(255 255 255 / .22), 0 10px 24px color-mix(in srgb, var(--accent) 28%, transparent); }
+  .item.tile.hero .txt b { font-size: 17px; }
+  .item.tile.hero small, .item.tile.hero .api { color: color-mix(in srgb, var(--accent-ink) 80%, transparent); }
+  .item.tile.hero .ico { background: color-mix(in srgb, #fff 20%, transparent); color: var(--accent-ink); border-color: color-mix(in srgb, #fff 32%, transparent); }
+  .item.tile.hero:hover:not(:disabled) { background: linear-gradient(150deg, color-mix(in srgb, var(--accent) 92%, #fff), var(--accent) 45%, color-mix(in srgb, var(--accent) 80%, #0b3b37));
+                                         border-color: transparent; filter: brightness(1.05); }
+  .item.tile.hero:hover:not(:disabled) .ico { background: color-mix(in srgb, #fff 28%, transparent); }
+  /* 더 보기 */
+  details.more { margin-top: 14px; }
+  details.more > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; color: var(--sub); font-size: 13.5px; font-weight: 600;
+                           padding: 8px 6px; border-radius: 10px; user-select: none; transition: color .18s ease; }
+  details.more > summary::-webkit-details-marker { display: none; }
+  details.more > summary:hover { color: var(--accent); }
+  .chev { display: grid; place-items: center; flex: none; color: var(--faint); transition: transform .25s var(--ease), color .18s ease; }
+  .chev svg { width: 16px; height: 16px; display: block; }
+  details.more[open] > summary .chev { transform: rotate(90deg); color: var(--accent); }
+  .item.row { display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 10px 14px 10px 12px; }
+  .item.row .ico { width: 38px; height: 38px; }
+  .item.row .ico svg { width: 21px; height: 21px; }
+  .item.row .txt { flex: 1; }
+  .item.row .api { display: none; }
+  html.dev .item.row .api { display: block; position: absolute; right: 40px; top: 6px; }
+  .item.row .chev { margin-left: auto; }
   li:has(> .sub:not([hidden])) > .item { background: var(--accent-soft); border-color: var(--accent-line); border-radius: 14px 14px 0 0; }
-  li:has(> .sub:not([hidden])) > .item::after { transform: rotate(45deg); border-color: var(--accent); }
-  li:has(> .sub:not([hidden])) > .item i { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-  /* 주 작업(책상 정리하기)은 강조색 큰 버튼 */
-  .item.hero { background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 78%, #0b3b37)); color: var(--accent-ink);
-               padding: 16px 18px 16px 70px; min-height: 76px; box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 26%, transparent); font-size: 16px; }
-  .item.hero:hover:not(:disabled) { background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 78%, #0b3b37));
-                                    border-color: transparent; filter: brightness(1.06); }
-  .item.hero i { left: 14px; background: color-mix(in srgb, #fff 18%, transparent); color: var(--accent-ink); border-color: color-mix(in srgb, #fff 30%, transparent); }
-  .item.hero small, .item.hero .api { color: color-mix(in srgb, var(--accent-ink) 78%, transparent); }
-  .sub { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 12px 12px 12px 67px; background: var(--surface-2);
+  li:has(> .sub:not([hidden])) > .item .chev { transform: rotate(90deg); color: var(--accent); }
+  li:has(> .sub:not([hidden])) > .item .ico { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  @media (max-width: 480px) { .quick { grid-template-columns: 1fr; } .item.tile { min-height: 104px; } }
+  /* 더 보기가 열리고 닫힐 때 높이가 부드럽게 변한다(지원하는 브라우저만, 동작 줄이기 설정이면 즉시) */
+  @media (prefers-reduced-motion: no-preference) {
+    @supports (interpolate-size: allow-keywords) {
+      details.more { interpolate-size: allow-keywords; }
+      details.more::details-content { height: 0; overflow: clip; transition: height .32s var(--ease), content-visibility .32s allow-discrete; }
+      details.more[open]::details-content { height: auto; }
+    }
+  }
+  .sub { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 12px 14px 14px 62px; background: var(--surface-2);
          border: 1px solid var(--accent-line); border-top: 0; border-radius: 0 0 14px 14px; }
   .sub[hidden] { display: none; }
   select { padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--surface); min-width: 140px; }
@@ -133,7 +162,7 @@
   .reglist li button { padding: 6px 12px; font-size: 13px; color: var(--bad); }
   .reglist li button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--bad) 40%, transparent); background: var(--bad-soft); }
   .reglist li.empty { color: var(--faint); border-style: dashed; background: transparent; }
-  @media (max-width: 900px) { .sub { padding-left: 12px; } .sub select { flex: 1; } .item { padding-left: 63px; } .item i { width: 40px; height: 40px; } }
+  @media (max-width: 900px) { .sub { padding-left: 14px; } .sub select { flex: 1; } }
 
   /* 진행 상태 */
   .status-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -260,11 +289,30 @@
     @keyframes pop { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
     @keyframes drop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
   }
+  /* 탭: 자비스(팔) / 주행. 주행 화면(map_web)은 같은 페이지 안에 넣는다(2026-10-29 사용자: 웹을 하나로) */
+  .tabs { display: flex; gap: 4px; padding: 4px; margin-left: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; flex: none; }
+  .tabs button { border: 0; background: transparent; padding: 7px 18px; border-radius: 10px; font-weight: 650; color: var(--sub); position: relative; }
+  .tabs button:hover:not(:disabled) { background: transparent; color: var(--ink); }
+  .tabs button[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+  .tabs .live::after { content: ""; position: absolute; top: 6px; right: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+                       box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+  .drive-wrap { display: flex; flex-direction: column; height: calc(100dvh - 69px); min-height: 420px; }
+  .drive-bar { display: flex; align-items: center; gap: 10px; padding: 8px 20px; font-size: 13px; color: var(--sub); border-bottom: 1px solid var(--line); background: var(--surface); }
+  .drive-bar a { color: var(--accent); text-decoration: none; padding: 4px 8px; border-radius: 8px; }
+  .drive-bar a:hover { background: var(--accent-soft); }
+  #drive-frame { flex: 1; width: 100%; border: 0; background: #16181d; }
+  .drive-off { margin: 28px auto; max-width: 560px; padding: 22px 24px; border-radius: 18px; background: var(--warn-soft); color: var(--warn); line-height: 1.6; }
+  .drive-off code { background: color-mix(in srgb, var(--warn) 12%, transparent); padding: 1px 6px; border-radius: 6px; }
+  @media (max-width: 900px) { .tabs button { padding: 7px 12px; } .drive-bar { padding: 8px 14px; } }
 </style>
 </head>
 <body>
 <header><div class="bar">
   <div class="brand"><span class="mark" aria-hidden="true">J</span><span class="name"><b>자비스</b><span>SO-101 진공흡착 로봇팔 · 물체 분류</span></span></div>
+  <nav class="tabs" role="tablist" aria-label="화면">
+    <button type="button" id="tab-arm" role="tab" aria-selected="true" aria-controls="view-arm">자비스</button>
+    <button type="button" id="tab-drive" role="tab" aria-selected="false" aria-controls="view-drive" title="차를 직접 몰고 지도·라벨을 봅니다">주행</button>
+  </nav>
   <span id="state" class="pill">연결 중</span>
   <span id="home" class="pill" hidden></span>
   <span id="base" class="pill" hidden title="팀 주행 서버(map_web)에서 읽은 차 위치"></span>
@@ -275,7 +323,7 @@
   <button id="stop" title="실행 중인 동작을 즉시 멈춥니다">정지</button>
 </div></header>
 
-<main>
+<main id="view-arm">
     <div class="col">
     <section class="card chat">
       <div class="card-head"><div><h2>말로 시키기</h2><p>입력하거나 말하면 바로 실행합니다</p></div><button id="look" title="위 카메라로 다시 찍고 상황을 알려 줍니다">다시 보기</button></div>
@@ -304,10 +352,15 @@
     </section>
 
     <section class="card">
-      <div class="card-head"><div><h2>메뉴</h2><p>누르면 확인 창이 뜬 뒤 실행합니다</p></div><button type="button" id="api-toggle" class="ghost" aria-pressed="false" title="각 메뉴가 부르는 REST 주소를 보여 줍니다">API 주소</button></div>
-      <ol class="menu">
-        <li><button class="item hero" data-run="all"><i>1</i>책상 정리하기<small id="tidy-order">정육면체 → 흰 상자 → 줄자 → 등록 물체 순서</small><code class="api">POST /api/menu/4</code></button></li>
-        <li><button class="item" data-open="pick5"><i>2</i>물체와 칸을 골라서 넣기<code class="api">POST /api/menu/5</code></button>
+      <div class="card-head"><div><h2>메뉴</h2><p>누르면 확인한 뒤 실행합니다</p></div><button type="button" id="api-toggle" class="ghost" aria-pressed="false" title="각 메뉴가 부르는 REST 주소를 보여 줍니다">API 주소</button></div>
+      <div class="quick">
+        <button class="item tile hero" data-run="all"><span class="ico"><svg aria-hidden="true" focusable="false" viewBox="0 0 256 256" fill="currentColor"><path d="M235.5,216.81c-22.56-11-35.5-34.58-35.5-64.8V134.73a15.94,15.94,0,0,0-10.09-14.87L165,110a8,8,0,0,1-4.48-10.34l21.32-53a28,28,0,0,0-16.1-37,28.14,28.14,0,0,0-35.82,16,.61.61,0,0,0,0,.12L108.9,79a8,8,0,0,1-10.37,4.49L73.11,73.14A15.89,15.89,0,0,0,55.74,76.8C34.68,98.45,24,123.75,24,152a111.45,111.45,0,0,0,31.18,77.53A8,8,0,0,0,61,232H232a8,8,0,0,0,3.5-15.19ZM67.14,88l25.41,10.3a24,24,0,0,0,31.23-13.45l21-53c2.56-6.11,9.47-9.27,15.43-7a12,12,0,0,1,6.88,15.92L145.69,93.76a24,24,0,0,0,13.43,31.14L184,134.73V152c0,.33,0,.66,0,1L55.77,101.71A108.84,108.84,0,0,1,67.14,88Zm48,128a87.53,87.53,0,0,1-24.34-42,8,8,0,0,0-15.49,4,105.16,105.16,0,0,0,18.36,38H64.44A95.54,95.54,0,0,1,40,152a85.9,85.9,0,0,1,7.73-36.29l137.8,55.12c3,18,10.56,33.48,21.89,45.16Z"/></svg></span><span class="txt"><b>책상 정리</b><small id="tidy-order">책상 위 물체를 칸에 넣습니다</small></span><code class="api">POST /api/menu/4</code></button>
+        <button class="item tile" data-run="home"><span class="ico"><svg aria-hidden="true" focusable="false" viewBox="0 0 256 256" fill="currentColor"><path d="M240,208H224V136l2.34,2.34A8,8,0,0,0,237.66,127L139.31,28.68a16,16,0,0,0-22.62,0L18.34,127a8,8,0,0,0,11.32,11.31L32,136v72H16a8,8,0,0,0,0,16H240a8,8,0,0,0,0-16ZM48,120l80-80,80,80v88H160V152a8,8,0,0,0-8-8H104a8,8,0,0,0-8,8v56H48Zm96,88H112V160h32Z"/></svg></span><span class="txt"><b>HOME 복귀</b><small>팔을 접어 처음 자세로</small></span><code class="api">POST /api/menu/6</code></button>
+      </div>
+      <details class="more" id="more">
+        <summary><span class="chev"><svg aria-hidden="true" focusable="false" viewBox="0 0 256 256" fill="currentColor"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg></span>더 보기</summary>
+        <ol class="menu">
+        <li><button class="item row" data-open="pick5"><span class="ico"><svg aria-hidden="true" focusable="false" viewBox="0 0 256 256" fill="currentColor"><path d="M188,80a27.79,27.79,0,0,0-13.36,3.4,28,28,0,0,0-46.64-11A28,28,0,0,0,80,92v20H68a28,28,0,0,0-28,28v12a88,88,0,0,0,176,0V108A28,28,0,0,0,188,80Zm12,72a72,72,0,0,1-144,0V140a12,12,0,0,1,12-12H80v24a8,8,0,0,0,16,0V92a12,12,0,0,1,24,0v28a8,8,0,0,0,16,0V92a12,12,0,0,1,24,0v28a8,8,0,0,0,16,0V108a12,12,0,0,1,24,0Z"/></svg></span><span class="txt"><b>물체와 칸 골라 넣기</b></span><span class="chev"><svg aria-hidden="true" focusable="false" viewBox="0 0 256 256" fill="currentColor"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg></span><code class="api">POST /api/menu/5</code></button>
           <div class="sub" id="pick5" hidden>
             <select id="obj" aria-label="물체">
               <option value="" selected disabled>물체 선택</option>
@@ -316,13 +369,17 @@
             <select id="slot" aria-label="칸"><option value="" selected disabled>칸 선택</option><option value="1">1번 칸</option><option value="2">2번 칸</option><option value="3">3번 칸</option></select>
             <button id="custom" class="primary">넣기</button>
           </div></li>
-        <li><button class="item" data-run="home"><i>3</i>HOME으로 복귀<code class="api">POST /api/menu/6</code></button></li>
-        <li><button class="item" data-open="pick7"><i>4</i>unknown 집기<small>책상의 등록 안 된 물체 하나를 바로 찍어 집기</small><code class="api">POST /api/menu/7</code></button>
+        <li><button class="item row" data-open="pick7"><span class="ico"><svg aria-hidden="true" focusable="false" viewBox="0 0 256 256" fill="currentColor"><path d="M223.68,66.15,135.68,18h0a15.88,15.88,0,0,0-15.36,0l-88,48.17a16,16,0,0,0-8.32,14v95.64a16,16,0,0,0,8.32,14l88,48.17a15.88,15.88,0,0,0,15.36,0l88-48.17a16,16,0,0,0,8.32-14V80.18A16,16,0,0,0,223.68,66.15ZM128,32h0l80.34,44L128,120,47.66,76ZM40,90l80,43.78v85.79L40,175.82Zm96,129.57V133.82L216,90v85.78Z"/></svg></span><span class="txt"><b>새 물체 하나 넣기</b><small>책상 위 등록 안 된 물체 하나를 칸에 넣습니다</small></span><span class="chev"><svg aria-hidden="true" focusable="false" viewBox="0 0 256 256" fill="currentColor"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg></span><code class="api">POST /api/menu/7</code></button>
           <div class="sub" id="pick7" hidden>
             <select id="uslot" aria-label="놓을 칸"><option value="" selected disabled>놓을 칸 선택</option><option value="1">1번 칸</option><option value="2">2번 칸</option><option value="3">3번 칸</option></select>
             <button id="unknown" class="primary">시작</button>
           </div></li>
-        <li><button class="item" data-open="reg"><i>5</i>물체 등록·삭제<small>책상에 물체 하나를 두고 사진으로 색·크기·높이 저장</small><code class="api">POST /api/objects</code></button>
+        <li><button class="item row" data-open="drive8"><span class="ico"><svg aria-hidden="true" focusable="false" viewBox="0 0 256 256" fill="currentColor"><path d="M200,224H150.54A266.56,266.56,0,0,0,174,200.25c27.45-31.57,42-64.85,42-96.25a88,88,0,0,0-176,0c0,31.4,14.51,64.68,42,96.25A266.56,266.56,0,0,0,105.46,224H56a8,8,0,0,0,0,16H200a8,8,0,0,0,0-16ZM56,104a72,72,0,0,1,144,0c0,57.23-55.47,105-72,118C111.47,209,56,161.23,56,104Zm112,0a40,40,0,1,0-40,40A40,40,0,0,0,168,104Zm-64,0a24,24,0,1,1,24,24A24,24,0,0,1,104,104Z"/></svg></span><span class="txt"><b>장소로 이동</b><small>지도에 저장한 장소로 갑니다</small></span><span class="chev"><svg aria-hidden="true" focusable="false" viewBox="0 0 256 256" fill="currentColor"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg></span><code class="api">POST /robot_arm drive</code></button>
+          <div class="sub" id="drive8" hidden>
+            <select id="place" aria-label="장소"><option value="" selected disabled>장소 불러오는 중…</option></select>
+            <button id="drive-go" class="primary">이동</button>
+          </div></li>
+        <li><button class="item row" data-open="reg"><span class="ico"><svg aria-hidden="true" focusable="false" viewBox="0 0 256 256" fill="currentColor"><path d="M243.31,136,144,36.69A15.86,15.86,0,0,0,132.69,32H40a8,8,0,0,0-8,8v92.69A15.86,15.86,0,0,0,36.69,144L136,243.31a16,16,0,0,0,22.63,0l84.68-84.68a16,16,0,0,0,0-22.63Zm-96,96L48,132.69V48h84.69L232,147.31ZM96,84A12,12,0,1,1,84,72,12,12,0,0,1,96,84Z"/></svg></span><span class="txt"><b>물체 등록·삭제</b><small>이름·칸을 정해 저장합니다</small></span><span class="chev"><svg aria-hidden="true" focusable="false" viewBox="0 0 256 256" fill="currentColor"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></svg></span><code class="api">POST /api/objects</code></button>
           <div class="sub" id="reg" hidden>
             <input id="reg-name" maxlength="20" placeholder="물체 이름 (예: 파란 컵)" autocomplete="off" aria-label="물체 이름">
             <select id="reg-slot" aria-label="넣을 칸"><option value="" selected disabled>넣을 칸</option><option value="1">1번 칸</option><option value="2">2번 칸</option><option value="3">3번 칸</option></select>
@@ -331,12 +388,8 @@
             <p class="hint">책상(트레이 밖)에 등록할 물체 하나만 두고 누르세요. 로봇은 움직이지 않습니다. 높이 20~45mm, 가로·세로 20~85mm. 높이를 비우면 사진으로 잽니다(약 ±3mm).</p>
             <ul class="reglist" id="reg-list"><li class="empty">불러오는 중…</li></ul>
           </div></li>
-        <li><button class="item" data-open="drive8"><i>6</i>장소로 이동<small>팀 주행 지도의 장소, 라벨 자리·방향에 정확히</small><code class="api">POST /robot_arm drive</code></button>
-          <div class="sub" id="drive8" hidden>
-            <select id="place" aria-label="장소"><option value="" selected disabled>장소 불러오는 중…</option></select>
-            <button id="drive-go" class="primary">이동</button>
-          </div></li>
-      </ol>
+        </ol>
+      </details>
     </section>
     </div>
 
@@ -354,6 +407,14 @@
 
 </main>
 
+<section id="view-drive" class="drive-wrap" role="tabpanel" aria-labelledby="tab-drive" hidden>
+  <div class="drive-bar"><span id="drive-note">주행 화면: 차를 직접 몰고 지도 위 위치·장소 라벨을 봅니다.</span><span class="spacer"></span>
+    <a id="drive-open" href="#" target="_blank" rel="noopener" title="주행 화면만 새 창으로 엽니다">새 창으로 열기</a></div>
+  <iframe id="drive-frame" title="주행 화면" src="about:blank" hidden></iframe>
+  <div id="drive-off" class="drive-off" hidden><b>주행 서버에 연결하지 못했습니다.</b><br>주행 스택이 꺼져 있을 수 있습니다. 노트북에서 <code>bash pi/start_all.sh</code>로 켜거나,
+    매핑 중이라면 매핑 화면이 이미 켜져 있는지 확인하세요. 켠 뒤 이 탭을 다시 눌러 주세요.</div>
+</section>
+
 <dialog id="confirm"><p id="confirm-text"></p>
   <div class="row" style="justify-content:flex-end"><button value="no" id="confirm-no">취소</button><button class="primary" id="confirm-yes">실행</button></div>
 </dialog>
@@ -370,10 +431,11 @@ const REASONS = {
   object_not_found: '물체를 찾지 못했습니다.', slot_too_small: '칸에 들어갈 여유가 부족합니다.', unreachable: '팔이 닿지 않는 위치입니다.', path_blocked: '운반 경로에 다른 물체가 있어 부딪힐 수 있습니다.',
   tray_not_found: '트레이를 찾지 못했습니다.', tray_moved: '트레이 위치가 바뀌었습니다.', torque_off: '서보 토크가 꺼져 있습니다. 팔을 받치고 토크를 켜 주세요.',
   arm_state_unknown: '서보가 응답하지 않습니다. 서보 전원(어댑터 전원)과 서보 선을 확인하세요.', base_moving: '차가 움직이는 중이라 팔을 움직이지 않았습니다.', arm_not_folded: '팔이 HOME으로 접혀 있지 않아 주행하지 않았습니다. 먼저 HOME으로 복귀하세요.', label_not_found: '지도에 그 장소가 없습니다.', base_unavailable: '주행 서버(map_web)에 연결할 수 없습니다.', wall_failed: '도착했지만 벽에 맞춰 붙지 못했습니다.', drive_failed: '목적지로 가지 못했습니다.', device_absent: '장치 연결을 확인하세요.', cancelled: '정지했습니다.',
-  busy: '다른 작업을 실행 중입니다.', camera_busy: '카메라 창이 켜져 있습니다.', object_moved: '물체 위치·크기가 바뀌었습니다.',
+  busy: '지금 다른 작업을 하고 있습니다.', camera_busy: '카메라 창이 켜져 있습니다.', object_moved: '물체 위치·크기가 바뀌었습니다.',
   unauthorized: '토큰이 필요합니다. 오른쪽 위 설정에서 입력하세요.',
   multiple_new_objects: '새 물체는 하나씩 놓아 주세요.', not_held: '물체가 집히지 않았습니다.',
-  register_failed: '등록하지 못했습니다.', camera_error: '카메라로 찍지 못했습니다.'
+  register_failed: '등록하지 못했습니다.', camera_error: '카메라로 찍지 못했습니다.',
+  nothing_to_resume: '이어서 할 작업이 없습니다.', tray_unknown: '트레이를 찾지 못해 칸 상태를 알 수 없습니다.', cancelled: '중지했습니다.'
 };
 const $ = (id) => document.getElementById(id);
 let token = ''; try { token = localStorage.getItem('armToken') || ''; } catch (e) {}
@@ -387,11 +449,13 @@ async function api(method, path, body) {
   return { status: r.status, data };
 }
 function describe(cmd) {
+  if (cmd.action === 'resume') return '정지한 작업의 남은 부분을 다시 시작합니다(HOME에서, 아니면 먼저 복귀).';
   if (cmd.action === 'drive' && cmd.then === 'inspect') return `${cmd.label}으로 이동한 뒤 사진을 찍고 보이는 물체를 정리합니다.`;
   if (cmd.action === 'drive' && cmd.then === 'tidy') return `${cmd.label}으로 이동한 뒤 책상을 정리합니다.`;
+  if (cmd.action === 'drive' && (cmd.mode === 'wall' || cmd.mode === 'precise_wall' || (!cmd.mode && cmd.label === '책상'))) return `${cmd.label} 위치에 맞춰 선 뒤 앞 벽에 붙습니다(벽 근접).`;
   if (cmd.action === 'drive') return `${cmd.label}으로 이동합니다(라벨을 만든 자리와 방향에 맞춰 섭니다).`;
   if (cmd.action === 'return_home') return 'HOME으로 복귀합니다.';
-  if (cmd.action === 'pick_all' && cmd.objects) return `${cmd.objects.map((o) => NAMES[o]).concat(cmd.include_new ? ['새 물체(남는 빈 칸에)'] : []).join(', ')}를 차례로 넣습니다(책상 정리).`;
+  if (cmd.action === 'pick_all' && cmd.objects) return '책상 정리를 시작합니다.';
   if (cmd.action === 'pick_all') return `책상을 정리합니다(${tidyOrder()} 순서, 책상에 없는 것은 건너뜀).`;
   if (cmd.object === 'unknown') return `책상의 등록 안 된 물체 하나를 ${cmd.slot}번 칸에 넣습니다(집을 물체 하나만 두세요).`;
   const slot = cmd.slot || DEFAULT_SLOT[cmd.object];
@@ -418,6 +482,7 @@ async function run(cmd, { askFirst = true } = {}) {
   if (cmd.menu === 4 && cmd.objects) { body.objects = cmd.objects; if (cmd.include_new) body.include_new = true; }
   // 주행은 메뉴 번호가 없다: POST /robot_arm {action: 'drive', label}
   const { status, data } = cmd.action === 'drive' ? await api('POST', '/robot_arm', { action: 'drive', label: cmd.label, ...(cmd.then ? { then: cmd.then } : {}) })
+                         : cmd.action === 'resume' ? await api('POST', '/resume', {})
                                                   : await api('POST', '/api/menu/' + cmd.menu, body);
   if (status !== 202) { say('sys', '실행하지 못했습니다: ' + (REASONS[data.reason_code] || data.reason || status)); return false; }
   watched = data.task_id; lastShown = null; say('sys', describe(cmd).replace('합니다.', '하는 중'));
@@ -458,7 +523,7 @@ async function loadObjects() {
   for (const key of Object.keys(NAMES)) if (key.startsWith('custom_')) { delete NAMES[key]; delete DEFAULT_SLOT[key]; }
   for (const o of rows) { NAMES[o.label] = o.name; DEFAULT_SLOT[o.label] = o.slot; }
   OBJECT_ORDER = rows.map((o) => o.label);
-  $('tidy-order').textContent = tidyOrder() + ' 순서';
+  $('tidy-order').textContent = '책상 위 물체를 칸에 넣습니다';
   const sel = $('obj'), keep = sel.value;
   sel.innerHTML = '<option value="" selected disabled>물체 선택</option>';
   for (const o of rows) { const opt = document.createElement('option'); opt.value = o.label; opt.textContent = o.name + (o.registered ? ' (등록)' : ''); sel.appendChild(opt); }
@@ -557,6 +622,7 @@ function bubble(cls, text) {
   $('log').appendChild(d); $('log').scrollTop = $('log').scrollHeight; return d;
 }
 function toRun(p) {          // 제안을 메뉴 번호 실행으로 바꾼다(버튼과 같은 길)
+  if (p.action === 'resume') return { action: 'resume' };
   if (p.action === 'drive') return p.then ? { action: 'drive', label: p.label, then: p.then } : { action: 'drive', label: p.label };
   if (p.action === 'return_home') return RUN.home;
   if (p.action === 'pick_all') return p.objects ? { ...RUN.all, objects: p.objects, ...(p.include_new ? { include_new: true } : {}) } : RUN.all;
@@ -751,7 +817,8 @@ document.addEventListener('keydown', (e) => {      // 입력칸 밖에서 스페
     e.preventDefault(); if (!$('mic').disabled) $('mic').click();
   }
 });
-$('stop').onclick = async () => { const { data } = await api('POST', '/stop', {}); say('sys', data.stopped ? '정지 요청을 보냈습니다.' : '실행 중인 동작이 없습니다.'); poll(); };
+$('stop').onclick = async () => { if (tab === 'drive') { try { fetch(driveUrl() + 'api/drive/stop', { method: 'POST', mode: 'no-cors' }); } catch (e) {} }      // 주행 탭에서는 직접 모는 차도 세운다
+  const { data } = await api('POST', '/stop', {}); say('sys', data.stopped ? '정지 요청을 보냈습니다.' : '실행 중인 동작이 없습니다.'); poll(); };
 $('settings').onclick = () => { $('token-in').value = token; $('token').showModal(); };
 $('token-save').onclick = () => { token = $('token-in').value.trim(); try { localStorage.setItem('armToken', token); } catch (e) {} $('token').close(); poll(); };
 
@@ -798,18 +865,36 @@ function actionSummary(task, p) {
     if (phase.startsWith('fine_') || phase === 'drive_wall') return ['align', `${place} 앞에서 위치와 방향을 맞춥니다.`];
     if (phase === 'drive_settle') return ['stop', '도착했습니다. 차가 완전히 멈췄는지 확인합니다.'];
     if (phase === 'tidy_look') return ['photo', '차가 멈췄습니다. 책상 사진을 찍습니다.'];
-    if (phase === 'tidy_found' || phase === 'tidy_empty') return ['found', p.label];
+    if (['tidy_found', 'tidy_empty', 'arrival_report'].includes(phase)) return ['found', p.label];      // 도착 사진으로 본 상황 설명
+    if (phase === 'tidy_verify') return ['verify' + p.at_s, p.label];      // 확인이 여러 번이면 번마다 보여 준다
+    if (phase === 'tidy_more') return ['more' + p.at_s, p.label];
+    if (phase === 'pick_retry') return ['retry' + p.at_s, p.label];
     if (phase === 'plan') return ['plan', '집을 물체의 위치를 확인합니다.'];
     const item = task.item || (task.params || {}).object;
     if (item) return ['item:' + item, `${NAMES[item] || '물체'}를 정리합니다.`];
     return null;
   }
+  if (phase === 'tidy_verify') return ['verify' + p.at_s, p.label];    // 정리 뒤 사진으로 확인한 결과(여러 번이면 번마다)
+  if (phase === 'tidy_more') return ['more' + p.at_s, p.label];        // 덜 됐으면 마저 정리
+  if (phase === 'pick_retry') return ['retry' + p.at_s, p.label];      // 집기 실패: HOME으로 돌아가 다시 시도
   if (phase === 'unknown_wait') return ['wait', '새 물체 하나를 작업 영역에 놓고 손을 빼 주세요.'];
+  if (phase === 'home_after_stop') return ['stopping', '작업을 중지합니다.'];          // 정지 뒤 HOME 복귀 단계: 사용자에게는 '중지'로만 알린다
   if (task.skill === 'return_home' || phase.includes('home')) return ['home', '팔을 HOME으로 복귀합니다.'];
   if (phase === 'plan') return ['plan', '집을 물체의 위치를 확인합니다.'];
   const item = task.item || (task.params || {}).object;
   if (item) return ['item:' + item, `${NAMES[item] || '물체'}를 정리합니다.`];
   return null;
+}
+async function attachLatestPhoto(msg) {     // 도착해서 찍은 사진(서버가 마지막으로 찍은 것)을 상황 설명 말풍선에 붙인다
+  try {
+    const headers = {}; if (token) headers.Authorization = 'Bearer ' + token;
+    const r = await fetch('/api/image/latest.jpg', { headers, cache: 'no-store' });
+    if (!r.ok) return;
+    const img = document.createElement('img'); img.className = 'snap'; img.alt = '도착 후 찍은 사진';
+    img.src = URL.createObjectURL(await r.blob()); img.onclick = () => img.classList.toggle('big');
+    msg.classList.add('has-photo'); msg.prepend(img);
+    $('log').scrollTop = $('log').scrollHeight;
+  } catch (e) {}
 }
 function announce(task) {
   if (task.state === 'running' || task.id === watched) seenRunning.add(task.id);
@@ -820,7 +905,8 @@ function announce(task) {
     const summary = actionSummary(task, p);
     if (!summary || t.seen.has(summary[0])) continue;
     t.seen.add(summary[0]);
-    bubble('bot', summary[1]); speak(summary[1], false);
+    const msg = bubble('bot', summary[1]); speak(summary[1], false);
+    if (summary[0] === 'found' || summary[0].startsWith('verify')) attachLatestPhoto(msg);
   }
   if (task.state !== 'running' && task.result && !t.done) {
     t.done = true;
@@ -828,12 +914,14 @@ function announce(task) {
     if (r.awaiting_choice) return;  // 질문은 render에서 한 번만 표시한다.
     const line = r.ok ? (task.skill === 'drive' ? (['inspect', 'tidy'].includes(task.params.then) ? '책상 정리를 마쳤습니다.' : '목적지에 도착했습니다.')
       : task.skill === 'return_home' ? 'HOME으로 돌아왔습니다.' : '작업을 마쳤습니다.')
-      : r.reason_code === 'cancelled' ? '멈췄습니다.' : '멈췄습니다. ' + (r.reason || REASONS[r.reason_code] || '원인을 확인해 주세요.');
-    bubble(r.ok ? 'bot' : 'bot err', line); speak(line, false);
+      : r.reason_code === 'cancelled' ? (r.home_after_stop ? (r.home_after_stop.ok ? 'HOME으로 돌아왔습니다.' : '정지 후 HOME 복귀에 실패했습니다: ' + (r.home_after_stop.reason || '원인을 확인해 주세요.')) : '작업을 중지했습니다.')
+      : '멈췄습니다. ' + (r.reason || REASONS[r.reason_code] || '원인을 확인해 주세요.');
+    bubble(r.ok || (r.reason_code === 'cancelled' && !(r.home_after_stop && !r.home_after_stop.ok)) ? 'bot' : 'bot err', line); speak(line, false);
   }
 }
 function render(task, s) {
   announce(task);
+  $('tab-drive').classList.toggle('live', task.skill === 'drive' && task.state === 'running');      // 이동 중이면 주행 탭에 점
   if (task.result && task.result.awaiting_choice) showDeskQuestion(task);
   const label = task.skill === 'drive' ? `${task.params.label} 이동${['inspect', 'tidy'].includes(task.params.then) ? ' 후 정리' : ''}`
               : task.skill === 'return_home' ? 'HOME 복귀' : task.skill === 'pick_all' ? (task.params && task.params.objects ? '책상 정리 (' + task.params.objects.map((o) => NAMES[o]).concat(task.params.include_new ? ['새 물체'] : []).join(', ') + ')' : '책상 정리하기')
@@ -915,6 +1003,29 @@ $('log-copy').onclick = async () => {
     try { document.execCommand('copy'); done(); } catch (err) { /* 선택만 남는다 */ } area.remove();
   }
 };
+// ---------- 탭: 자비스 / 주행 ----------
+// 주행 화면(map_web, 8082)을 같은 페이지의 탭으로 보여 준다. 들어갈 때만 불러오고 나가면 내린다(0.2초마다 갱신하는 무거운 화면이라 안 볼 때는 멈춘다).
+const DRIVE_PORT = 8082;
+const driveUrl = () => `${location.protocol}//${location.hostname}:${DRIVE_PORT}/`;
+let tab = 'arm';
+async function showTab(name, remember = true) {
+  tab = name === 'drive' ? 'drive' : 'arm';
+  const drive = tab === 'drive', frame = $('drive-frame');
+  $('view-arm').hidden = drive; $('view-drive').hidden = !drive;
+  $('tab-arm').setAttribute('aria-selected', String(!drive)); $('tab-drive').setAttribute('aria-selected', String(drive));
+  if (remember) { try { localStorage.setItem('armTab', tab); } catch (e) {} }
+  try { history.replaceState(null, '', drive ? '#drive' : location.pathname + location.search); } catch (e) {}
+  if (!drive) { frame.src = 'about:blank'; frame.hidden = true; return; }
+  $('drive-open').href = driveUrl(); $('drive-off').hidden = true;
+  try {
+    await fetch(driveUrl() + 'api/drive', { mode: 'no-cors', cache: 'no-store' });      // 연결이 되는지만 본다(응답 내용은 못 읽는다)
+    if (tab !== 'drive') return;                                                         // 기다리는 사이 다른 탭으로 갔다
+    frame.hidden = false; if (frame.getAttribute('src') !== driveUrl()) frame.src = driveUrl();
+  } catch (e) { if (tab === 'drive') { frame.hidden = true; frame.src = 'about:blank'; $('drive-off').hidden = false; } }
+}
+$('tab-arm').onclick = () => showTab('arm'); $('tab-drive').onclick = () => showTab('drive');
+addEventListener('hashchange', () => showTab(location.hash === '#drive' ? 'drive' : 'arm', false));
+try { if (location.hash === '#drive' || (location.hash !== '#arm' && localStorage.getItem('armTab') === 'drive')) showTab('drive', false); } catch (e) { if (location.hash === '#drive') showTab('drive', false); }
 setInterval(pollLogs, 2000); pollLogs();
 setInterval(poll, 1000); poll();
 

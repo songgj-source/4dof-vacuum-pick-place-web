@@ -27,12 +27,20 @@ class BoxNotFound(ValueError):
     pass
 
 
-def red_candidates(bgr, hue_max=None):
+def red_candidates(bgr, hue_max=None, hue_min_high=None, sat_min=None):
     """hue_max: 빨강 색상(OpenCV 0~179)의 위쪽 끝(기본 RED_LOW의 4). 조명에 따라 정육면체 색이 5~6으로 치우치면(2026-10-26 Pi 보정 p2: 중앙값 6)
     기본값으로는 못 찾는다. 더 넓히면 빨간 전선·트레이가 섞이므로 필요한 곳에서만 쓴다(보정 스크립트 6)."""
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     low = RED_LOW if hue_max is None else (RED_LOW[0], (hue_max, *RED_LOW[1][1:]))
-    mask = cv2.inRange(hsv, *low) | cv2.inRange(hsv, *RED_HIGH)
+    high = RED_HIGH
+    # 조명이 바뀌면 정육면체 색상이 170 밑으로(169, 마젠타 쪽) 채도가 90 밑으로 치우친다(2026-10-29 Pi 재보정 q2: 색상 169, 채도 74).
+    # 보정 스크립트처럼 화면에 상자 하나만 있는 곳에서만 hue_min_high·sat_min으로 넓힌다. 기본값은 그대로다.
+    if hue_min_high is not None:
+        high = ((hue_min_high, high[0][1], high[0][2]), high[1])
+    if sat_min is not None:
+        low = ((low[0][0], sat_min, low[0][2]), low[1])
+        high = ((high[0][0], sat_min, high[0][2]), high[1])
+    mask = cv2.inRange(hsv, *low) | cv2.inRange(hsv, *high)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     count, _, stats, _ = cv2.connectedComponentsWithStats(mask)
@@ -41,9 +49,9 @@ def red_candidates(bgr, hue_max=None):
     return sorted(found, key=lambda item: -item[1])
 
 
-def detect_box(bgr, hue_max=None):
+def detect_box(bgr, hue_max=None, hue_min_high=None, sat_min=None):
     """가장 큰 빨간 덩어리의 bbox와 윗면 중심 픽셀을 돌려준다. 모호하면 거부."""
-    found = red_candidates(bgr, hue_max)
+    found = red_candidates(bgr, hue_max, hue_min_high, sat_min)
     if not found:
         raise BoxNotFound('red box not found in image')
     (x, y, w, h), area = found[0]

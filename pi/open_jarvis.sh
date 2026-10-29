@@ -4,7 +4,7 @@
 # (평소 쓰는 Chrome 프로필·설정은 건드리지 않는다. 전용 프로필: ~/.config/jarvis-chrome).
 #   bash pi/open_jarvis.sh                 # 기본 http://192.168.0.31:8000
 #   ARM_URL=http://주소:8000 bash pi/open_jarvis.sh
-#   bash pi/open_jarvis.sh http://192.168.0.31:8082   # 덧붙인 주소는 같은 창의 탭으로 연다(주행 화면 등)
+#   (주행 화면은 자비스 화면의 '주행' 탭에 들어 있다. 덧붙인 주소 탭으로 열면 응답 없음으로 멈춘 적이 있어 start_all.sh는 쓰지 않는다)
 set -euo pipefail
 URL="${ARM_URL:-http://192.168.0.31:8000}"
 CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"

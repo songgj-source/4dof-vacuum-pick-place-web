@@ -8,6 +8,7 @@ vacuum, change calibration, or enable the normal trajectory execution gate.
 import math
 from robot.planar_kinematics import NAMES,finite_vector
 from motion import guard_mode
+from motion.tick_pulses import ALLOWED_STEPS
 
 
 def _hold_offset(driver,name):
@@ -79,16 +80,16 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
     if lift is not None and (gap is not None or not .005<=lift<=guard_mode.length(2*LIFT_MAX_M if continuous_lift else LIFT_MAX_M)):
         raise ValueError('small lift only, without a descent gap')
     if continuous_lift and (lift is None or len(via)!=1 or box_top_m is not None or fast_travel or native
-                            or batch_slow_joints or tail is not None or not quick_ticks or pulses_per_step!=2
-                            or via_pulses!=2 or tick_s is None or target[2]>.080):
+                            or batch_slow_joints or tail is not None or not quick_ticks or pulses_per_step<2 or pulses_per_step not in ALLOWED_STEPS
+                            or via_pulses!=pulses_per_step or tick_s is None or target[2]>.080):
         raise ValueError('continuous lift needs two bounded low vertical segments at the held rate')
-    if type(pulses_per_step) is not int or pulses_per_step not in (1,2,4):
-        raise ValueError('pulse step must be 1, 2 or 4')
-    # 접촉 주변과 상승에서는 틱당 최대 2펄스만 허용한다. 호출자가 속도를 설정한다.
-    if pulses_per_step not in (1,2) and (gap is not None or lift is not None):
+    if type(pulses_per_step) is not int or pulses_per_step not in ALLOWED_STEPS:
+        raise ValueError('pulse step must be 1, 2, 4, 5, 6, 7 or 8')
+    # 접촉 주변과 상승에서는 틱당 최대 8펄스만 허용한다(2026-10-28 사용자 지시: 저속 동작 300·500펄스/초 = 4·7펄스 x 13.3~14ms 틱). 호출자가 속도를 설정한다.
+    if pulses_per_step not in ALLOWED_STEPS and (gap is not None or lift is not None):
         raise ValueError('fast mode is forbidden near contact or during lift')
     box_top=None if box_top_m is None else finite_vector((box_top_m,),1,'box top')[0]
-    if via and not continuous_lift and (box_top is None or not (fast_travel or quick_ticks) or via_pulses not in (1,2,4) or gap is not None or lift is not None):
+    if via and not continuous_lift and (box_top is None or not (fast_travel or quick_ticks) or via_pulses not in ALLOWED_STEPS or gap is not None or lift is not None):
         raise ValueError('via points need a box plane, the fixed-rate profile and no gap/lift')
     if tail is not None and (not (fast_travel or quick_ticks) or len(tail)!=2 or tail[0]<1 or not 0<tail[1]<=40):
         raise ValueError('invalid slow tail')

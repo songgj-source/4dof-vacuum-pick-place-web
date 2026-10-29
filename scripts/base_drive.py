@@ -21,12 +21,21 @@ import urllib.request
 BASE_URL = os.environ.get('ARM_BASE_URL', 'http://127.0.0.1:8082').rstrip('/')
 NAV_MOVING = ('backing', 'sending', 'active', 'canceling')
 NAV_FAILED = ('failed', 'aborted', 'canceled', 'rejected', 'unavailable')
+
+
+def nav_failed_text(place, nav, status):
+    """이동 실패 문장. Nav2가 경로를 못 찾고 복구도 안 되면(failed/aborted) 제자리에서 돌지 않고 끝나므로, 벽·장애물에 너무 붙어 있을 수 있다고 알린다."""
+    detail = nav.get('message') or status
+    hint = ' 로봇이 벽·장애물에 너무 붙어 있을 수 있습니다. 조금 떼어 놓고 다시 시키세요.' if status in ('failed', 'aborted') else ''
+    return f'{place}으로 가지 못했습니다: {detail}.{hint}' if not str(detail).endswith('.') else f'{place}으로 가지 못했습니다: {detail}{hint}'
 DRIVE_TIMEOUT_S = 240.
+WALL_TIMEOUT_S = 100.             # 벽 근접 최대 시간(map_web wall_timeout_s 90초보다 조금 길게)
 GAP_LIMITS = (0.02, 0.5)         # map_web /api/wall/config의 gap 허용 범위(m)
-MODES = ('precise', 'wall')
+MODES = ('precise', 'wall', 'precise_wall')
 # 마무리 정렬: Nav2는 장애물 옆 라벨(책상 앞 등)을 비용이 낮은 곳으로 옮겨 가고(최대 1.5 m) 방향도 ±0.25 rad까지 도착으로 친다.
 XY_TOL = 0.03                    # 라벨 위치 허용 오차(m)
 YAW_TOL_DEG = 2.0                # 라벨 방향 허용 오차(°)
+XY_FINAL_FACTOR = 2.0            # 마지막 확인은 위치 허용 오차의 이 배수까지 받는다(2026-10-29: AMCL 위치 신뢰도가 ±13cm라 3cm를 맞추는 중에도 잡음이 5cm쯤 나온다. 4.6cm가 4.5cm 기준에 1mm 차이로 실패)
 FINE_MAX_M = 0.6                 # 이보다 멀면 마무리 정렬을 하지 않는다(Nav2가 엉뚱한 곳에 섰다)
 FINE_SPEED = (0.03, 0.06)        # 직진 속도 범위(m/s): 남은 거리에 비례
 TURN_SPEED = (0.10, 0.35)        # 회전 속도 범위(rad/s)
@@ -92,10 +101,13 @@ def base_state(url=None):
 
 
 def find_label(name, labels):
-    """말한 장소 이름 → 라벨 하나. 정확히 같은 이름이 먼저, 없으면 이름이 들어 있는 것. 없거나 여럿이면 BaseError."""
+    """정확한 이름 → 공백을 뺀 같은 이름 → 부분 이름 순으로 찾는다. 여럿이면 거부한다."""
     name = (name or '').strip()
-    exact = [label for label in labels if label.get('name') == name]
-    part = exact or [label for label in labels if name and (name in label.get('name', '') or label.get('name', '') in name)]
+    key = ''.join(name.split())
+    named = [(label, ''.join((label.get('name') or '').split())) for label in labels]
+    exact = [label for label, value in named if key and label.get('name') == name]
+    normalized = [label for label, value in named if key and value == key]
+    part = exact or normalized or [label for label, value in named if key and value and (key in value or value in key)]
     if len(part) == 1:
         return part[0]
     known = ', '.join(label.get('name', '') for label in labels) or '없음'
@@ -141,8 +153,7 @@ def goto_label_wall(name, gap=None, url=None, on_phase=None, stopped=lambda: Fal
             distance = nav.get('distance')
             phase('drive_active', f"{label['name']}으로 이동 중" + (f' (남은 {distance:.1f} m)' if isinstance(distance, (int, float)) else ''))
         elif status in NAV_FAILED:
-            return dict(ok=False, reason=f"{label['name']}으로 가지 못했습니다: {nav.get('message') or status}",
-                        reason_code='drive_failed', label=label['name'])
+            return dict(ok=False, reason=nav_failed_text(label['name'], nav, status), reason_code='drive_failed', label=label['name'])
         elif status == 'succeeded':
             then = nav.get('then_state')
             if then in (None, 'pending'):
@@ -352,7 +363,7 @@ def fine_align(label, url=None, on_phase=None, stopped=lambda: False, sleep=time
         off = math.hypot(target[0] - pose[0], target[1] - pose[1])
         yaw_off = abs(math.degrees(_wrap(label['yaw'] - pose[2])))
         note = f"{label['name']} 라벨 위치 오차 {off * 100:.1f} cm, 방향 {yaw_off:.1f}°"
-        if off > XY_TOL * 1.5 or yaw_off > YAW_TOL_DEG * 1.5:
+        if off > XY_TOL * XY_FINAL_FACTOR or yaw_off > YAW_TOL_DEG * 1.5:
             return dict(ok=False, reason=f'라벨에 정확히 맞추지 못했습니다: {note}', reason_code='drive_imprecise', note=note)
         return dict(ok=True, reason=None, reason_code=None, note=note)
     finally:
@@ -385,8 +396,7 @@ def goto_label_precise(name, url=None, on_phase=None, stopped=lambda: False, tim
             distance = nav.get('distance')
             phase('drive_active', f"{label['name']}으로 이동 중" + (f' (남은 {distance:.1f} m)' if isinstance(distance, (int, float)) else ''))
         elif status in NAV_FAILED:
-            return dict(ok=False, reason=f"{label['name']}으로 가지 못했습니다: {nav.get('message') or status}",
-                        reason_code='drive_failed', label=label['name'])
+            return dict(ok=False, reason=nav_failed_text(label['name'], nav, status), reason_code='drive_failed', label=label['name'])
         elif status == 'succeeded':
             result = fine_align(label, url, on_phase, stopped, sleep)
             return dict(result, label=label['name'])
@@ -394,8 +404,51 @@ def goto_label_precise(name, url=None, on_phase=None, stopped=lambda: False, tim
     return dict(ok=False, reason=f"{label['name']}으로 {timeout_s:.0f}초 안에 도착하지 못해 멈췄습니다.", reason_code='drive_failed', label=label['name'])
 
 
+def wall_approach(label, gap=None, url=None, on_phase=None, stopped=lambda: False, timeout_s=WALL_TIMEOUT_S, sleep=time.sleep):
+    """지금 자리에서 앞 벽과 수직으로 맞추고 gap(m) 앞까지 붙는다(map_web /api/wall/start). 돌려주는 것: dict(ok, reason, reason_code, note)."""
+    phase = on_phase or (lambda raw, text: None)
+    if gap is not None:
+        if not GAP_LIMITS[0] <= float(gap) <= GAP_LIMITS[1]:
+            raise BaseError(f'gap은 {GAP_LIMITS[0]}~{GAP_LIMITS[1]} m여야 합니다.', 'bad_request')
+        _call('POST', '/api/wall/config', {'gap': float(gap)}, url=url)
+    phase('drive_wall', '벽과 수직으로 맞춰 앞으로 붙는 중')
+    try:
+        _call('POST', '/api/wall/start', {}, url=url)
+    except BaseError as exc:
+        if '이미 목표 거리 안' in str(exc):
+            return dict(ok=True, reason=None, reason_code=None, note='이미 벽 앞')
+        return dict(ok=False, reason=f"{label['name']}에 섰지만 벽에 맞춰 붙지 못했습니다: {exc}", reason_code='wall_failed')
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if stopped():
+            cancel(url)
+            return dict(ok=False, reason='cancelled', reason_code='cancelled')
+        sleep(.5)
+        wall = _call('GET', '/api/wall', url=url)
+        if wall.get('state') == 'done':
+            return dict(ok=True, reason=None, reason_code=None, note=wall.get('message'))
+        if wall.get('state') in ('failed', 'stopped'):
+            return dict(ok=False, reason=f"{label['name']}에 섰지만 벽에 붙다가 멈췄습니다: {wall.get('message') or wall.get('state')}", reason_code='wall_failed')
+    cancel(url)
+    return dict(ok=False, reason=f"{label['name']}에서 벽에 붙는 데 {timeout_s:.0f}초가 넘어 멈췄습니다.", reason_code='wall_failed')
+
+
+def goto_label_precise_wall(name, gap=None, url=None, on_phase=None, stopped=lambda: False, timeout_s=DRIVE_TIMEOUT_S, sleep=time.sleep):
+    """라벨 위치에 먼저 정밀하게 선 뒤(Nav2 → 마무리 정렬 ±3cm 목표) 그 자리에서 앞 벽과 수직으로 맞추고 gap까지 붙는다.
+    벽 근접(wall)만 쓰면 Nav2 도착 허용 오차(라벨 기본 xy 13cm) 안에서 벽 정렬로 넘어가 라벨과 옆으로 어긋난 채 서 있었다(2026-10-29)."""
+    result = goto_label_precise(name, url=url, on_phase=on_phase, stopped=stopped, timeout_s=timeout_s, sleep=sleep)
+    if not result.get('ok'):
+        return result                                       # 라벨 위치에 못 섰으면(정밀도 실패·취소 등) 벽에 붙지 않는다
+    label = dict(name=result.get('label') or name)
+    walled = wall_approach(label, gap=gap, url=url, on_phase=on_phase, stopped=stopped, sleep=sleep)
+    note = ' / '.join(part for part in (result.get('note'), walled.get('note')) if part) or None
+    return dict(walled, label=label['name'], note=note) if not walled.get('ok') else dict(result, note=note)
+
+
 def drive_to(name, mode='precise', gap=None, url=None, on_phase=None, stopped=lambda: False, timeout_s=DRIVE_TIMEOUT_S, sleep=time.sleep):
     """precise(기본): 라벨의 정확한 위치·방향으로. wall: 라벨로 간 뒤 앞 벽과 수직으로 gap까지 붙는다."""
+    if mode == 'precise_wall':
+        return goto_label_precise_wall(name, gap=gap, url=url, on_phase=on_phase, stopped=stopped, timeout_s=timeout_s, sleep=sleep)
     if mode == 'wall':
         return goto_label_wall(name, gap=gap, url=url, on_phase=on_phase, stopped=stopped, timeout_s=timeout_s, sleep=sleep)
     if mode != 'precise':

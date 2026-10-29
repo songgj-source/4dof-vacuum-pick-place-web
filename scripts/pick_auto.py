@@ -8,7 +8,7 @@ validated and the camera estimate has about 1 cm error; general ROS execution
 stays blocked. Physical task success requires observed evidence.
 """
 from pathlib import Path
-import argparse,json,sys,time,math,signal,subprocess,hashlib
+import argparse,json,os,sys,time,math,signal,subprocess,hashlib
 from datetime import datetime,timezone
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'src'))
 WRIST_CAMERA=None   # 아래 import 뒤에 정한다(ARM_WRIST_CAMERA / config/devices.json / 기본값)
@@ -16,6 +16,7 @@ from hardware.servo_mapping import MappingProfile
 from hardware.servo_transport import ServoTransport
 from hardware.servo_driver import ServoDriver
 from robot.planar_kinematics import PlanarGeometry,NAMES
+from motion.tick_pulses import tick_pulses
 from motion.hover_trial import run_hover_trial,TRAVEL_PERIOD_S,TRAVEL_PULSES_PER_STEP,TRAVEL_GOAL_SPEED,TRAVEL_GOAL_ACCELERATION,TRAVEL_ACCEL,LIFT_MAX_M
 from motion.home_trial import run_recorded_home_trial
 from motion import guard_mode
@@ -25,7 +26,8 @@ from sorting.place_plan import OBSTACLE_MARGIN_MM
 from sorting.carry_path import polar_path
 from sorting.place_job import load_place_job,build_plan
 from sorting.place_followup import should_return_home,should_return_home_after_failed_pick,should_return_home_after_release_failure,placed_despite_retreat_error,run_home_return,NOT_HELD_EXIT_CODE,CHAIN_REFUSED_EXIT_CODE
-from motion.hold_check import check_hold,hold_decision
+from motion.hold_check import check_hold,hold_decision,STREAM_MODES
+from motion.wrist_stream import WristStream
 from motion.pick_to_carry import build_lift_transition, run_pick_to_carry_trial, LiftPathRefused
 from motion.place_exit import run_place_exit_trial
 from robot.robot_model import load_planar_model
@@ -39,7 +41,11 @@ from optional.wrist_centering.wrist_hover_center import run_center_once
 from camera.wrist_contact_rgb import record_observation,outcome_context,camera_worker,unknown as unknown_contact_rgb
 
 BASE=ROOT/'output/ik_resume_20261012'
-SLOW_RATE_PPS=150.   # 천천히 움직이는 동작의 속도(펄스/초), 2026-10-23 사용자 요청: 100→150
+SLOW_RATE_PPS=600.   # 천천히 움직이는 동작의 속도(펄스/초), 2026-10-23 사용자 요청: 100→150, 2026-10-28: 150→300→500→600
+def track_limit(rate):
+    """추종 가드(펄스): 속도에 따라 뒤처지는 폭이 커진다. 300까지는 32(실측 17~29), 그 위는 64(2026-10-28, 500은 실물 미측정)."""
+    return 64 if rate>300. else 32
+CONTACT_RATE_PPS=150.   # 접촉(contact)·탐침(probe)·재중심(recenter)·rise는 느린 채로 둔다: 흡착이 붙을 시간이 필요하다(2026-10-12 들어올림 2배 때 떨어짐, 2026-10-28 사용자 지시는 접촉 제외)
 # 세 물체 연속 정리(2026-10-21 사용자): 앞 물체를 놓은 트레이 위에서 HOME을 거치지 않고 다음 물체로 간다.
 CHAIN_START_Z=(.070,.135)      # 놓기가 끝나는 운반 높이(70~130mm). 이 밖이면 기존 HOME 리셋
 CHAIN_START_R=(.14,.32)        # HOME 복귀 시작 구간과 같은 반경(먼 칸은 놓은 뒤 이 안으로 물러나 선다)
@@ -53,7 +59,7 @@ PUMP=devices.get('pump_port')      # ARM_PUMP_PORT / config/devices.json / 기�
 WRIST_CAMERA=Path(devices.get('wrist_camera'))
 
 
-def post_pick_rise(hover, fresh_xyz, contact, *, placing):
+def post_pick_rise(hover, fresh_xyz, contact, *, placing, via_pulses=2):
     """After suction, stream two checked lift segments to 70 mm for a place job."""
     if placing:
         start=tuple(fresh_xyz())
@@ -63,7 +69,7 @@ def post_pick_rise(hover, fresh_xyz, contact, *, placing):
         if .010<=rise<=2*LIFT_MAX_M:
             midpoint=(start[0],start[1],start[2]+rise/2)
             hover('lift_to_clear',(start[0],start[1],.070),lift_m=rise,via=(midpoint,),
-                  via_pulses=2,continuous_lift=True)
+                  via_pulses=via_pulses,continuous_lift=True)
             return 'lift_to_clear'
     hover('lift20',(*contact[:2],contact[2]+.020),lift_m=.020)
     return 'lift20'
@@ -90,7 +96,7 @@ def main(argv=None):
     parser.add_argument('--no-contact-rgb-log',action='store_true',help='disable passive before-suction RGB observation; verdicts never block motion')
     parser.add_argument('--contact-rgb-reference',type=Path,default=BASE/'pickup_twoaxis_p64_trial/before_suction_wrist.png',help='historical contact-view reference for observational RGB comparison')
     rate=parser.add_mutually_exclusive_group()
-    rate.add_argument('--travel-rate',type=float,help='candidate clear-space path rate, 50-400 pulses/s (default 400, 2026-10-27; was 300); contact/lift unchanged')
+    rate.add_argument('--travel-rate',type=float,help='candidate clear-space path rate, 50-600 pulses/s (default 600, 2026-10-28; was 400, 300 before 2026-10-27); pulses per tick follow the rate so the tick stays about 13.4 ms; contact/lift unchanged')
     rate.add_argument('--approach-speed',type=float,help='legacy multiplier relative to50 pulses/s, 1-6; use --travel-rate instead')
     parser.add_argument('--pitch-p',type=int,choices=[32,48,64],default=64,help='temporary shoulder/elbow P gain for contact/lift (default64)')
     parser.add_argument('--travel-p',type=int,choices=[32,48,64],default=32,help='temporary P gain for HOME/approach (default 32). At 48 the approach shook in about 3 of 4 runs at one target (shoulder rms 5, base 3, measured 2026-10-16); at 32 it never shook (0.6-1.1) but the elbow stops a few mm short, so a failed 5 mm arrival check at P<48 is corrected once with a slow move by the measured error (up to 20 mm). The follow error reaches about 36: use --approach-tracking-limit 100. contact/lift use --pitch-p')
@@ -107,16 +113,16 @@ def main(argv=None):
     parser.add_argument('--place-json',type=Path,help='after lifting, carry the object to the tray slot in the job file and release it there (vacuum stays on in this process); needs --manual-target-mm; slot number is the commanded one, else the default rule red_cube=1 white_box=2 tape_measure=3')
     parser.add_argument('--place-empty-run',action='store_true',help='with --place-json: test run of the same carry path from the 70 mm hover over the target with NO suction and NO release (no object)')
     parser.add_argument('--place-max-tilt-deg',type=float,default=60.,help='place only: the tool may tilt forward from straight down by up to this many degrees (0 = stay vertical; max 60); only the smallest tilt that works is used (slots beyond 0.30 m need about 43) to lift the held object clear of the tray rim without dragging it low')
-    parser.add_argument('--place-rate',type=float,default=150.,help='place only: clear-space carry speed in pulses/s, 50-400 (default 150 with 2 pulses/tick = the 13.3 ms tick that keeps the arm steady; at 300 the wrist follow error reached 33 and tripped the 32-pulse guard on the carry). Applies to horizontal carry moves and vertical rises above 70 mm; lifting off the table, lowering into the slot and tool tilt changes stay slow')
+    parser.add_argument('--place-rate',type=float,default=150.,help='place only: clear-space carry speed in pulses/s, 50-600 (default 150 with 2 pulses/tick = the 13.3 ms tick that keeps the arm steady; at 300 the wrist follow error reached 33 and tripped the 32-pulse guard on the carry). Applies to horizontal carry moves and vertical rises above 70 mm; lifting off the table, lowering into the slot and tool tilt changes stay slow')
     parser.add_argument('--no-return-home',action='store_true',help='place only: do not return to HOME automatically after a completed place')
     parser.add_argument('--skip-home-after-place',action='store_true',help='place only: after a completed place stay above the tray with the tool vertical (the next object follows with --start-above-tray); failed picks/releases still return HOME')
     parser.add_argument('--start-above-tray',action='store_true',help='start from where the previous --skip-home-after-place cycle ended (above the tray, tool vertical) and go straight to the object without HOME; other start poses use the existing HOME reset')
-    parser.add_argument('--home-rate',type=float,default=150.,help='place only: automatic HOME return speed in pulses/s, 50-300 (default 150, the speed that passes the return_home.py 16-pulse follow-error guard: at 200 and 300 the shoulder lags 17 and the guard stops the return (measured 2026-10-15))')
-    parser.add_argument('--held-rate',type=float,default=150.,help='pulses/s while the object hangs on the cup: post-pick rise, lifts/lowers in place and the table return, 0 = old slow profile (26-33), else 40-150 (default 150)')
+    parser.add_argument('--home-rate',type=float,default=150.,help='place only: automatic HOME return speed in pulses/s, 50-600 (default 150, the speed that passes the return_home.py 16-pulse follow-error guard: at 200 and 300 the shoulder lags 17 and the guard stops the return (measured 2026-10-15))')
+    parser.add_argument('--held-rate',type=float,default=600.,help='pulses/s while the object hangs on the cup: post-pick rise, lifts/lowers in place and the table return, 0 = old slow profile (26-33), else 40-600 (default 600, 2026-10-28; was 150)')
     parser.add_argument('--approach-feedforward-mm',type=float,nargs=2,default=[3.5,3.0],metavar=('RADIAL','UP'),help='send the approach/approach_b hover this far outward and up (P32 stops short the same way: 2026-10-20, 15 runs); 0 0 disables, each 0-6 mm')
-    parser.add_argument('--descent-rate',type=float,default=150.,help='pulses/s while lowering from above (pick descent; place lower uses --held-rate), 13-150 (default 150)')
-    parser.add_argument('--place-pulses-per-step',type=int,choices=[2,4],default=2,help='place carry: pulses per tick (tick = pulses/--place-rate). Past records show the arm shakes unless the tick is about 13.4 ms; 2 pulses at 150 pulses/s gives that tick at a lower speed than 4 at 300')
-    parser.add_argument('--hold-check',choices=['enforce','record','off'],default='off',help='optional diagnostic after the post-pick rise: compare a wrist photo with the contact photo; enforce = stop if it appears unheld, record = log only, off = no photo check (default)')
+    parser.add_argument('--descent-rate',type=float,default=600.,help='pulses/s while lowering from above (pick descent; place lower uses --held-rate), 13-600 (default 600, 2026-10-28; was 150)')
+    parser.add_argument('--place-pulses-per-step',type=int,choices=range(2,9),default=2,help='place carry: pulses per tick (tick = pulses/--place-rate). Past records show the arm shakes unless the tick is about 13.4 ms; 2 pulses at 150 pulses/s gives that tick at a lower speed than 4 at 300')
+    parser.add_argument('--hold-check',choices=['enforce','record','off','stream','stream-record'],default=os.environ.get('ARM_HOLD_CHECK') or 'stream',help='after the post-pick lift, compare a wrist photo with the contact photo. stream (default, 2026-10-28) / stream-record: the wrist camera is opened during the 0.8 s suction wait and frames come from that open stream, so nothing slows down and the continuous lift-to-carry stays on; stream stops if it appears unheld, stream-record only logs. enforce / record: legacy, reopen the camera per photo (about 1 s each) and disable the continuous lift. off = no photo check. Env ARM_HOLD_CHECK sets the default')
     parser.add_argument('--min-contact-z-mm',type=float,default=10.,help='lowest cup height for contact/lift moves, 5-30 mm (default 10). The old 30 mm floor was removed on user instruction so low objects (white box top 24 mm) can be picked; this minimum only keeps the cup off the table')
     parser.add_argument('--place-max-s',type=float,default=DEFAULT_MAX_CARRY_S,help='stop (without releasing) if the place sequence takes longer than this many seconds')
     args=parser.parse_args(argv)
@@ -126,15 +132,15 @@ def main(argv=None):
         parser.error('hover-center conflicts with manual probe')
     if args.hover_center and args.center_cup:
         parser.error('hover-center cannot use contact centering')
-    travel_rate=args.travel_rate if args.travel_rate is not None else 50*args.approach_speed if args.approach_speed is not None else 400.
-    if not math.isfinite(travel_rate) or not 50<=travel_rate<=400:parser.error('travel rate must be finite and within50-400 pulses/s')
-    approach_pulses=TRAVEL_PULSES_PER_STEP
+    travel_rate=args.travel_rate if args.travel_rate is not None else 50*args.approach_speed if args.approach_speed is not None else 600.
+    if not math.isfinite(travel_rate) or not 50<=travel_rate<=600:parser.error('travel rate must be finite and within50-600 pulses/s')
+    approach_pulses=tick_pulses(travel_rate)       # 틱이 통신 한계(약 13.4ms) 밑으로 짧아 밀리지 않게 속도에 맞춘다(500→7, 600→8펄스)
     approach_period=approach_pulses/travel_rate
     approach_limit=32 if args.fast_space else 16
     if not math.isfinite(args.pick_tilt_deg) or not 0.<=args.pick_tilt_deg<=10.:parser.error('--pick-tilt-deg must be 0-10')   # 2026-10-27 사용자: 15도면 흡착이 안 된다
-    if not math.isfinite(args.descent_rate) or not 13.<=args.descent_rate<=150.:parser.error('--descent-rate must be 13-150 pulses/s')
+    if not math.isfinite(args.descent_rate) or not 13.<=args.descent_rate<=600.:parser.error('--descent-rate must be 13-600 pulses/s')
     if not all(math.isfinite(v) and 0.<=v<=6. for v in args.approach_feedforward_mm):parser.error('--approach-feedforward-mm must be 0-6 mm each')
-    if not math.isfinite(args.held_rate) or not (args.held_rate==0 or 40.<=args.held_rate<=150.):parser.error('--held-rate must be 0 or 40-150 pulses/s')
+    if not math.isfinite(args.held_rate) or not (args.held_rate==0 or 40.<=args.held_rate<=600.):parser.error('--held-rate must be 0 or 40-600 pulses/s')
     if not math.isfinite(args.min_contact_z_mm) or not 5.<=args.min_contact_z_mm<=30.:parser.error('--min-contact-z-mm must be 5-30 mm')
     if not math.isfinite(args.radial_offset_mm) or abs(args.radial_offset_mm)>10:parser.error('radial offset must be finite within -10 to10 mm')
     if not math.isfinite(args.contact_offset_mm) or not -5<=args.contact_offset_mm<=0:
@@ -204,8 +210,8 @@ def main(argv=None):
         for flag,value in (('--contact-photo-only',args.contact_photo_only),('--hover-photo-only',args.hover_photo_only),('--center-cup',args.center_cup),('--depth-measurement',args.depth_measurement),('--hover-center',args.hover_center)):
             if value:parser.error(f'place conflicts with {flag}')
         if not math.isfinite(args.place_max_s) or not 1.<=args.place_max_s<=1800.:parser.error('--place-max-s must be 1-1800 seconds')
-        if not math.isfinite(args.place_rate) or not 50.<=args.place_rate<=400.:parser.error('--place-rate must be 50-400 pulses/s')
-        if not math.isfinite(args.home_rate) or not 50.<=args.home_rate<=300.:parser.error('--home-rate must be 50-300 pulses/s')
+        if not math.isfinite(args.place_rate) or not 50.<=args.place_rate<=600.:parser.error('--place-rate must be 50-600 pulses/s')
+        if not math.isfinite(args.home_rate) or not 50.<=args.home_rate<=600.:parser.error('--home-rate must be 50-600 pulses/s')
         if not math.isfinite(args.place_max_tilt_deg) or not 0.<=args.place_max_tilt_deg<=60.:parser.error('--place-max-tilt-deg must be 0-60 degrees')
         try:
             place_job=load_place_job(args.place_json)
@@ -263,7 +269,7 @@ def main(argv=None):
     def stop_signal(*_):cancelled[0]=True
     signal.signal(signal.SIGINT,stop_signal);signal.signal(signal.SIGTERM,stop_signal)
     def is_cancelled():return cancelled[0] or (out/'stop').exists()
-    driver=pump=gains=None
+    driver=pump=gains=None;wrist_stream=[None]
     recorder=[None]
     def capture(label,astra=True,wrist=True):
         import cv2
@@ -402,24 +408,26 @@ def main(argv=None):
                         kwargs.update(quick_ticks=True,tick_s=1./args.descent_rate)
                     if args.held_rate and ('lift_m' in kwargs or 'measured_gap_m' in kwargs) and name.startswith(('lift20','lift_to_clear','place','return')):
                         # 흡착한 채 움직일 때의 속도는 --held-rate를 적용한다.
-                        kwargs.update(quick_ticks=True,pulses_per_step=2,tick_s=2./args.held_rate,tracking_limit=max(kwargs.get('tracking_limit',16),32))
+                        held_pps=tick_pulses(args.held_rate);kwargs.update(quick_ticks=True,pulses_per_step=held_pps,tick_s=held_pps/args.held_rate,tracking_limit=max(kwargs.get('tracking_limit',16),track_limit(args.held_rate)))   # 150 이하 2펄스, 300 4, 500 7펄스(틱 약 13.3~14ms)
+                        if kwargs.get('via'):kwargs['via_pulses']=held_pps
                         if name.startswith('place'):kwargs.pop('tail',None)
                         elif name.startswith('return'):kwargs['tail']=(14,13.)
                     if not kwargs.get('fast_travel'):
                         # 기본 저속 동작은 150펄스/초. 명시한 하강·흡착 운반 속도는 유지한다.
                         kwargs.pop('tail',None)
                         pps=kwargs.get('pulses_per_step',1)
-                        # 틱당 2펄스. 낮은 상자 위 호버만 hover_trial의 1펄스 규칙을 유지한다.
-                        if pps==1 and not (kwargs.get('box_top_m') is not None and target[2]<.080):pps=2
                         held_move=('lift_m' in kwargs or 'measured_gap_m' in kwargs) and name.startswith(('lift20','lift_to_clear','place','return'))
                         rate=(args.held_rate if held_move and args.held_rate else
                               args.descent_rate if name.startswith('descent') or name.startswith('place_lower') else
+                              CONTACT_RATE_PPS if name.startswith(('contact','probe','recenter','rise')) else
                               SLOW_RATE_PPS)
+                        # 틱이 통신 한계(약 13.4ms) 밑으로 짧아지지 않게 속도에 맞춰 틱당 펄스를 정한다(150 이하 2, 300 4). 낮은 상자 위 호버만 hover_trial의 1펄스 규칙을 유지한다.
+                        if pps==1 and not (kwargs.get('box_top_m') is not None and target[2]<.080):pps=tick_pulses(rate)
                         if held_move and not args.held_rate:
                             pass  # explicit legacy slow profile
                         elif not kwargs.get('quick_ticks') or pps!=kwargs.get('pulses_per_step',1) or pps/kwargs.get('tick_s',1.)<rate:
                             kwargs.update(quick_ticks=True,pulses_per_step=pps,tick_s=pps/rate)
-                        kwargs['tracking_limit']=max(kwargs.get('tracking_limit',16),32)
+                        kwargs['tracking_limit']=max(kwargs.get('tracking_limit',16),track_limit(rate))
                     def move(record,goal,**extra):
                         return run_hover_trial(driver,geometry,zeros,goal,math.hypot(*goal[:2]),supported=True,record=record,cancelled=is_cancelled,batch_slow_joints=args.batch_base,smooth_motion=True,**{**kwargs,**extra})
                     try:
@@ -473,10 +481,10 @@ def main(argv=None):
                     def exit_path(transition):
                         # 놓은 뒤 물러나기→빠지기→세우기를 한 번에(사용자 지시 2026-10-26). 칸 안은 place_rate의 절반, 벽 위는 place_rate.
                         # 준비 단계 거부(ExitPathRefused)는 run_place가 받아 예전처럼 단계별로 간다
-                        rate=max(13.,min(150.,args.place_rate/2.))
+                        rate=max(13.,min(600.,args.place_rate/2.))
                         return stage('place_exit',transition['target'],lambda record:run_place_exit_trial(
                             driver,geometry,zeros,transition,supported=True,rate=rate,
-                            min_contact_z=args.min_contact_z_mm/1000.,tracking_limit=32,record=record,cancelled=is_cancelled))
+                            min_contact_z=args.min_contact_z_mm/1000.,tracking_limit=track_limit(rate*2),record=record,cancelled=is_cancelled))
                     report=run_place(plan_now,hover=hover,fresh_xyz=fresh_xyz,release=release,cancelled=is_cancelled,empty_run=empty,skip_final_untilt=not (args.no_return_home or args.skip_home_after_place),
                                      max_carry_s=args.place_max_s,record=lambda event:result.setdefault('place_steps',[]).append(event),exit_path=exit_path)
                     result['place']=report;save()
@@ -654,7 +662,7 @@ def main(argv=None):
                     if abs(contact[2]-known[2])>guard_mode.length(.003):raise ValueError('contact candidate differs from confirmed plane')
                     result['contact_candidate_xyz']=contact
                     if not args.center_cup:
-                        if args.evidence_photos or (place_job is not None and args.hold_check!='off'):capture('before_suction',astra=False)
+                        if args.evidence_photos or (place_job is not None and args.hold_check in ('enforce','record')):capture('before_suction',astra=False)
                         save();break
                     capture('before_suction'+tag,astra=False)
                     centroid=red_centroid(cv2.imread(str(out/('before_suction'+tag+'_wrist.png'))))
@@ -695,14 +703,19 @@ def main(argv=None):
                     except Exception as exc:
                         result['contact_rgb']=unknown_contact_rgb('observation error: '+str(exc))
                 if is_cancelled():raise InterruptedError('cancelled before suction')
+                # 집힘 확인(stream): 흡착을 기다리는 0.8초 동안 손목 카메라를 열어 두고, 들어올린 직후 그 스트림의 최신 사진과 비교한다(동작이 느려지지 않는다)
+                if place_job is not None and args.hold_check in STREAM_MODES and wrist_stream[0] is None:
+                    try:wrist_stream[0]=WristStream(WRIST_CAMERA).start()
+                    except BaseException as exc:result['hold_check_stream_error']=str(exc)
                 command('suction');driver.sleep(.8)
                 # 흡착이 붙으며 컵이 눌려 팔이 목표에서 6~7펄스 밀려 서면 lift20 출발 검사("hold is not settled")가 막는다(2026-10-19 실물).
                 # 움직임이 끝난 뒤 지금 자리를 새 목표로 다시 인계한다(이동 없음, 5mm·가드는 그대로).
                 driver=ServoDriver(bus,profile);driver.hold_existing_torque(supported=True,attempts=4,settle_s=.4,takeover_attempts=4)
-                lift_place_plan=None
+                lift_place_plan=None;lift_tilted=False
+                hold_reference=wrist_stream[0].latest(timeout=.5)[0] if wrist_stream[0] is not None else None      # 들어올리기 직전(흡착 중) 사진
                 # Plan from the measured pickup pose before lifting. Only an
                 # unchanged vertical raise/tilt prefix can become one stream.
-                if place_job is not None and args.held_rate and not args.pick_tilt_deg and args.hold_check=='off':
+                if place_job is not None and args.held_rate and not args.pick_tilt_deg and args.hold_check in ('off',*STREAM_MODES):
                     lift_start=fresh_xyz()
                     if math.hypot(lift_start[0]-contact[0],lift_start[1]-contact[1])>guard_mode.length(.003):
                         raise ValueError('post-pick lift start moved more than 3 mm sideways')
@@ -724,24 +737,34 @@ def main(argv=None):
                         try:
                             stage('lift_to_carry',transition['target'],lambda record:run_pick_to_carry_trial(
                                 driver,geometry,zeros,transition,supported=True,rate=args.held_rate,
-                                min_contact_z=args.min_contact_z_mm/1000.,tracking_limit=32,record=record,cancelled=is_cancelled))
+                                min_contact_z=args.min_contact_z_mm/1000.,tracking_limit=track_limit(args.held_rate),record=record,cancelled=is_cancelled))
                         except LiftPathRefused as exc:
                             # This exception is emitted only before execution.
                             result['lift_to_carry_fallback']=str(exc)
                         else:
                             lift_place_plan=transition['remaining_plan']
+                            lift_tilted=abs(transition['pitch_rad']+math.pi/2)>1e-6      # 기울여 올라갔으면 카메라 각도가 달라 사진을 비교할 수 없다
                             result['lift_to_carry']=dict(target=transition['target'],pitch_rad=transition['pitch_rad'],
                                 tilt_start_z=transition['tilt_start_z'],waypoints=transition['waypoints'],intermediate_holds=0,source_plan=lift_plan,physically_validated=False)
                     save()
                 if lift_place_plan is None:
-                    post_pick_rise(hover,fresh_xyz,contact,placing=place_job is not None and bool(args.held_rate))
-                result['time_to_lift_s']=time.monotonic()-cycle_start
+                    post_pick_rise(hover,fresh_xyz,contact,placing=place_job is not None and bool(args.held_rate),via_pulses=tick_pulses(args.held_rate) if args.held_rate else 2)
+                result['time_to_lift_s']=time.monotonic()-cycle_start;lift_done=time.monotonic()
                 lifted=fresh_xyz();result['lifted_candidate_xyz']=lifted;result['candidate_lift_m']=lifted[2]-contact[2]
                 if args.evidence_photos:capture('lifted')
                 save()
-                if place_job is not None and args.hold_check!='off':
-                    capture('lifted_check',astra=False)
-                    verdict=check_hold(cv2.imread(str(out/'before_suction_wrist.png')),cv2.imread(str(out/'lifted_check_wrist.png')))
+                if place_job is not None and args.hold_check in ('enforce','record',*STREAM_MODES):
+                    if args.hold_check in STREAM_MODES:
+                        stream=wrist_stream[0];lifted_frame=stream.latest(after=lift_done,timeout=.5)[0] if stream is not None else None
+                        if stream is not None:stream.stop();wrist_stream[0]=None      # 카메라를 놓는다(뒤 단계가 열 수 있게)
+                        if lift_tilted:verdict=dict(held=None,reason='wrist tilted for the carry: photos are not comparable',metrics={})
+                        elif hold_reference is None or lifted_frame is None:verdict=dict(held=None,reason='wrist stream gave no photo: '+str(stream.error if stream is not None else result.get('hold_check_stream_error')),metrics={})
+                        else:
+                            cv2.imwrite(str(out/'before_suction_wrist.png'),hold_reference);cv2.imwrite(str(out/'lifted_check_wrist.png'),lifted_frame)
+                            verdict=check_hold(hold_reference,lifted_frame)
+                    else:
+                        capture('lifted_check',astra=False)
+                        verdict=check_hold(cv2.imread(str(out/'before_suction_wrist.png')),cv2.imread(str(out/'lifted_check_wrist.png')))
                     result['hold_check']=dict(verdict,mode=args.hold_check);save()
                     print(json.dumps(dict(hold_check=dict(held=verdict['held'],reason=verdict['reason'],mode=args.hold_check)),ensure_ascii=False,default=float),flush=True)
                     if hold_decision(verdict['held'],args.hold_check)=='abort':
@@ -763,6 +786,9 @@ def main(argv=None):
             if driver is not None:
                 try:driver.hold(attempts=4,settle_s=.4);result['final_hold_confirmed']=driver.hold_confirmed   # 멀리 뻗은 자세는 3~6펄스 밀려 선다: 보상 hold(2026-10-19 칸 2에서 최종 hold 실패로 HOME 복귀가 건너뛰어졌다)
                 except BaseException as exc:result['final_hold_error']=str(exc)
+            if wrist_stream[0] is not None:
+                try:wrist_stream[0].stop();wrist_stream[0]=None
+                except BaseException as exc:result['wrist_stream_stop_error']=str(exc)
             if pump is not None:
                 try:pump.close();result['pump_stop_sent_on_close']=True
                 except BaseException as exc:result['pump_close_error']=str(exc)

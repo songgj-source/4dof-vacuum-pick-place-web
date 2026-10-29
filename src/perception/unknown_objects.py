@@ -14,6 +14,8 @@ from robot.robot_model import load_planar_model, reachable
 MIN_HEIGHT_MM, MAX_HEIGHT_MM = 20., 45.
 MAX_FOOTPRINT_MM = 120.
 HEIGHT_UNCERTAINTY_MM = 3.
+MIN_COUNTED_TOP_MM = 16.        # 새 물체로 세는 덩어리의 최소 윗면 높이(지원 물체는 20mm 이상, 깊이 오차 여유). 트레이 칸 바닥(약 11mm)은 세지 않는다
+EXISTING_MAX_HEIGHT_MM = 120.   # 이보다 높게 찍힌 기준 장면의 것은 기존 물체 이동·제거 검사에서 뺀다(로봇팔·케이블)
 MIN_PATCH_DIAMETER_MM = 20.  # 초기 지원 범위. 실제 컵 크기에 대한 물리 검증은 별도.
 # 깊이로 잰 윗면 높이는 ±3mm 오차가 있어 가끔 컵이 닿기 전에 멈춰 흡착이 안 된다(사용자 2026-10-21).
 # 그래서 측정한 윗면보다 더 내려가 흡착한 뒤 들어 올린다(스프링 컵이 눌리며 밀착). 10-20 성공은 보정 0에서였다.
@@ -68,7 +70,9 @@ def locate_unknowns(bgr, depth, baseline_depth, root, *, locator=None, model=Non
     # 검사는 원래 높이값으로 수행해 실제 요철이나 깊이 누락은 숨기지 않는다.
     smooth_height = cv2.medianBlur(height.astype(np.float32), 5)
     baseline_height = table_height_mm(baseline_depth)
-    removed = good & (baseline_height > 8.) & (delta < -8.)
+    # 기준 장면에서 EXISTING_MAX_HEIGHT_MM보다 솟은 것은 책상 물체가 아니라 로봇팔·케이블이다(지원 물체는 45mm 이하). 팔이 막 멈춘 뒤 찍은 기준에
+    # 화면 아래 가장자리의 케이블(높이 약 300mm)이 찍혔다가 사라져 '기존 물체가 이동·제거'로 중단됐다(2026-10-28, 124px). 그런 것은 이 검사에서 뺀다.
+    removed = good & (baseline_height > 8.) & (baseline_height < EXISTING_MAX_HEIGHT_MM) & (delta < -8.)
     # Astra의 경계·반사 잡음은 떨어진 픽셀로 나타난다. 전체 합계로
     # 판단하면 정지 장면도 이동으로 오인하므로 공간적으로 이어진 영역을 본다.
     coherent = cv2.morphologyEx(removed.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
@@ -187,7 +191,7 @@ def desk_baseline(bgr, depth, root, *, tray_slots=None, locator=None, which=None
     from tray.occupancy import slot_containing
     _validate(bgr, depth)
     locator = locator or default_locator(root)
-    found = [(item, geometry) for item, geometry in desk_blobs([i for i in classify_objects(bgr, depth) if i['label'] == 'unknown'], locator)
+    found = [(item, geometry) for item, geometry in desk_blobs([i for i in classify_objects(bgr, depth) if i['label'] == 'unknown'], locator, min_top_mm=MIN_COUNTED_TOP_MM)
              if not tray_slots or slot_containing(geometry['xy'], tray_slots, radius_mm=70.) is None]
     found = sorted(found, key=lambda pair: pair[0]['bbox_px'][0])       # 왼쪽 → 오른쪽(사진 기준)
     if of is not None and len(found) != of:

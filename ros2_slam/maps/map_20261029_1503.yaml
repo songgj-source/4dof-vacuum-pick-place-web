@@ -1,7 +1,7 @@
-image: remap_20261023_1156.pgm
+image: map_20261029_1503.pgm
 mode: trinary
 resolution: 0.050
-origin: [-4.551, -2.005, 0]
+origin: [-5.116, -7.193, 0]
 negate: 0
 occupied_thresh: 0.65
 free_thresh: 0.196

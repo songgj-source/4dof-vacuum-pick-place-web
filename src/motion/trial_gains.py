@@ -107,3 +107,25 @@ class TemporaryPitchGains:
         except BaseException as exc:
             if original is not None:original.add_note(str(exc))
             else:raise
+
+
+def restore_baseline_gains(bus,output,*,motors=(1,2,3),execute=False,sleep=time.sleep):
+    """임시 게인(P·D·I)이 서보에 남았을 때 기준값(BASELINE)으로 되돌린다. 게인은 서보에 저장되는 값이라, 임시 게인을 쓰던 프로세스가
+    복구 없이 끊기면(2026-10-28 return_home이 들어올리기 도중 끊김: 어깨 P48·I1, 팔꿈치 P48) 다음 복귀가 'gain baseline changed'로 계속 막힌다.
+    execute=False면 읽기만 한다. 쓸 때는 정상 경로(TemporaryPitchGains)와 같은 순서로 쓰고 읽어서 확인한다(잠금 해제 → P·D·I → 잠금 → 읽기 확인).
+    startup·잠금은 기준과 달라도 건드리지 않고 알린다. 돌려주는 것: {모터: dict(current, baseline_ok, changed, verified)}."""
+    gains=TemporaryPitchGains(bus,output,sleep=sleep)
+    report={}
+    for motor in motors:
+        current=gains._settings(motor)
+        row=dict(current=current,baseline_ok=current==BASELINE,changed=False,verified=current==BASELINE)
+        differs=[n for n in ('p','d','i') if current[n]!=BASELINE[n]]
+        if execute and differs:
+            gains._write(motor,55,0)
+            for name,address in (('p',21),('d',22),('i',23)):
+                if name in differs:gains._write(motor,address,BASELINE[name])
+            gains._write(motor,55,BASELINE['lock'])
+            after=gains._settings(motor)
+            row.update(changed=True,after=after,verified=all(after[n]==BASELINE[n] for n in ('p','d','i')))
+        report[str(motor)]=row
+    return report

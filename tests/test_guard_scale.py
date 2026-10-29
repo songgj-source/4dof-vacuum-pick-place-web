@@ -67,4 +67,4 @@ def test_pick_to_carry_stay_above_check_follows_the_scale():
 def test_pick_to_carry_servo_speed_follows_the_path_rate():
     # 서보 속도 레지스터 40은 관절을 초당 약 40펄스에 묶어 물체를 든 어깨가 경로를 못 따라갔다(2026-10-26 Pi)
     src = (ROOT / 'src/motion/pick_to_carry.py').read_text()
-    assert 'servo_speed = max(40, int(math.ceil(rate)))' in src and 'speed=servo_speed, period_s=2 / rate' in src
+    assert 'servo_speed = max(40, int(math.ceil(rate)))' in src and 'speed=servo_speed, period_s=pps / rate' in src

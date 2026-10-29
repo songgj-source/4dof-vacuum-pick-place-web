@@ -20,6 +20,9 @@ LABELS = [dict(id='59ef557c', name='책상', x=-3.58, y=0.315, yaw=-3.1, cost=82
           dict(id='95e3077c', name='밥먹는곳', x=1.0, y=-1.0, yaw=0.0, cost=99)]
 
 
+REAL_SLEEP = time.sleep
+
+
 class FakeMapWeb:
     """GET /api/state가 steps(nav, wall)를 차례로 돌려준다. 받은 POST를 posts에 남긴다."""
 
@@ -268,11 +271,11 @@ class ArmDriveTests(unittest.TestCase):
         with patch.object(arm_api.menu, 'live_view_running', return_value=False):
             status, body = arm.start('drive', params)
             self.assertEqual(status, 202, body)
-            for _ in range(200):
+            for _ in range(500):
                 task = arm.task(body['task_id'])
                 if task['state'] != 'running':
                     return task
-                time.sleep(.01)
+                REAL_SLEEP(.01)         # 시험이 arm_api.time.sleep을 가짜로 바꿔도(같은 time 모듈) 작업 스레드를 실제로 기다린다
         self.fail('주행 작업이 끝나지 않았습니다')
 
     def test_drives_when_the_arm_is_folded(self):
@@ -282,7 +285,7 @@ class ArmDriveTests(unittest.TestCase):
         self.assertEqual((task['state'], calls), ('done', [('책상', 0.05)]))
         self.assertEqual(task['phases'][0]['phase'], 'drive_active')
         self.assertIsNone(arm.arm_home)                                        # 주행은 팔 자세를 바꾸지 않는다
-        self.assertEqual(self.modes, ['precise'])                              # 기본은 라벨 자리 그대로
+        self.assertEqual(self.modes, ['precise_wall'])                                 # 책상 라벨은 기본이 벽 근접(2026-10-29). 다른 라벨은 라벨 자리 그대로
 
     def test_refuses_with_the_arm_stretched_out_or_unknown(self):
         arm, calls = self.arm(dict(self.HOME, shoulder=(1, 3210)))
@@ -377,3 +380,98 @@ class ChatDriveTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DeskWallApproachTests(unittest.TestCase):
+    """책상 라벨은 기본이 벽 근접(2026-10-29 사용자 요청), 다른 라벨·직접 지정한 모드는 그대로."""
+
+    def test_default_mode_per_label(self):
+        self.assertEqual(arm_api.default_drive_mode('책상'), 'precise_wall')
+        self.assertEqual(arm_api.default_drive_mode(' 책상 '), 'precise_wall')
+        self.assertEqual(arm_api.default_drive_mode('시작위치'), 'precise')
+
+    def test_server_uses_wall_for_the_desk_unless_a_mode_is_given(self):
+        modes = []
+        arm = arm_api.Arm(run=lambda *a, **k: (0, {}, 0.), read_state=lambda: 'ok', base_check=lambda: None,
+                          read_pose=lambda: {n: (1, v) for n, v in arm_api.menu.HOME_RAW.items()},
+                          drive=lambda label, mode='precise', gap=None, **kw: modes.append((label, mode)) or {'ok': True})
+        with patch.object(arm_api.menu, 'live_view_running', return_value=False):
+            for params in ({'label': '책상'}, {'label': '시작위치'}, {'label': '책상', 'mode': 'precise'}, {'label': '책상', 'then': 'tidy'}):
+                status, body = arm.start('drive', params)
+                self.assertEqual(status, 202, body)
+                for _ in range(500):
+                    if arm.task(body['task_id'])['state'] != 'running':
+                        break
+                    REAL_SLEEP(.01)
+        self.assertEqual(modes[:3], [('책상', 'precise_wall'), ('시작위치', 'precise'), ('책상', 'precise')])
+        self.assertEqual(modes[3], ('책상', 'precise_wall'))                         # 가서 정리해줘도 벽 근접으로 도착한다
+
+
+class FinalAcceptanceTests(unittest.TestCase):
+    """마지막 확인은 위치 허용 오차(3cm)의 2배(6cm)까지 받는다(2026-10-29: 4.6cm가 4.5cm 기준에 1mm 차이로 실패했다)."""
+    LABEL = dict(id='x', name='시작위치', x=1.0, y=0.5, yaw=0.0)
+
+    def run_fine(self, off_m):
+        pose = (1.0 + off_m, 0.5, 0.0)                              # 라벨에서 x로 off_m 어긋나 서 있다(회전·이동은 그대로 둔다)
+        with patch.object(base_drive, '_call', return_value={}), patch.object(base_drive, '_settle_amcl'), \
+             patch.object(base_drive, '_pose_and_scan', return_value=(pose, [])), patch.object(base_drive, '_turn_to', return_value=None), \
+             patch.object(base_drive, '_move_to', return_value=None), patch.object(base_drive, '_stop'):
+            return base_drive.fine_align(self.LABEL, url='http://x', sleep=lambda s: None)
+
+    def test_error_just_over_the_old_limit_is_accepted_but_a_large_one_is_not(self):
+        accepted = self.run_fine(0.046)                              # 사용자 기록: 위치 오차 4.6 cm, 방향 0.0°
+        self.assertTrue(accepted['ok'], accepted)
+        self.assertIn('위치 오차 4.6 cm', accepted['note'])
+        rejected = self.run_fine(0.065)
+        self.assertFalse(rejected['ok'])
+        self.assertEqual(rejected['reason_code'], 'drive_imprecise')
+        self.assertEqual(base_drive.XY_FINAL_FACTOR * base_drive.XY_TOL, 0.06)
+
+
+class PreciseThenWallTests(unittest.TestCase):
+    """책상: 라벨 위치에 먼저 정밀하게 선 뒤 그 자리에서 벽 근접(2026-10-29 사용자: 라벨과의 오차 해결)."""
+
+    def run_mode(self, precise, wall_replies, gap=None):
+        calls = []
+        replies = iter(wall_replies)
+
+        def fake_call(method, path, body=None, url=None, timeout_s=5.):
+            calls.append((method, path, body))
+            reply = next(replies) if path in ('/api/wall/start', '/api/wall') else {}
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        with patch.object(base_drive, 'goto_label_precise', return_value=precise) as goto, patch.object(base_drive, '_call', side_effect=fake_call):
+            result = base_drive.drive_to('책상', mode='precise_wall', gap=gap, sleep=lambda s: None)
+        return result, calls, goto
+
+    def test_wall_approach_starts_only_after_the_label_pose_is_reached(self):
+        result, calls, goto = self.run_mode(dict(ok=True, label='책상', note='책상 라벨 위치 오차 2.1 cm, 방향 0.4°'),
+                                            [{}, dict(state='running'), dict(state='done', message='벽까지 0.11 m')], gap=0.12)
+        self.assertTrue(result['ok'], result)
+        self.assertEqual([c[1] for c in calls[:2]], ['/api/wall/config', '/api/wall/start'])      # 정밀 도착 뒤에 설정·시작
+        self.assertEqual(calls[0][2], {'gap': 0.12})
+        self.assertIn('위치 오차 2.1 cm', result['note'])
+        self.assertIn('벽까지 0.11 m', result['note'])
+        goto.assert_called_once()
+
+    def test_wall_approach_is_skipped_when_the_label_pose_was_not_reached(self):
+        for failure in (dict(ok=False, reason_code='drive_imprecise', reason='라벨에 정확히 맞추지 못했습니다'), dict(ok=False, reason_code='cancelled', reason='cancelled')):
+            result, calls, _ = self.run_mode(failure, [])
+            self.assertFalse(result['ok'])
+            self.assertEqual(result['reason_code'], failure['reason_code'])
+            self.assertFalse(any(c[1] == '/api/wall/start' for c in calls))              # 벽에 붙지 않는다
+
+    def test_already_at_the_wall_counts_as_done_and_wall_failures_are_reported(self):
+        result, _, _ = self.run_mode(dict(ok=True, label='책상'), [base_drive.BaseError('이미 목표 거리 안입니다 (벽까지 0.30 m, 목표 0.26 m)', 'base_refused')])
+        self.assertTrue(result['ok'])
+        self.assertIn('이미 벽 앞', result['note'])
+        result, _, _ = self.run_mode(dict(ok=True, label='책상'), [{}, dict(state='failed', message='벽을 1초 넘게 놓침')])
+        self.assertEqual((result['ok'], result['reason_code']), (False, 'wall_failed'))
+        self.assertIn('벽을 1초 넘게 놓침', result['reason'])
+        result, _, _ = self.run_mode(dict(ok=True, label='책상'), [base_drive.BaseError('정면에 벽이 없습니다', 'base_refused')])
+        self.assertEqual((result['ok'], result['reason_code']), (False, 'wall_failed'))
+
+    def test_new_mode_is_accepted_by_the_server_validation(self):
+        self.assertIn('precise_wall', base_drive.MODES)

@@ -10,8 +10,11 @@
 import argparse,json,subprocess,sys,time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'src'))
-OUT=ROOT/'카메라 보정';POINTS=OUT/'재보정_점.jsonl'
+import os
+OUT=ROOT/'카메라 보정';POINTS=OUT/os.environ.get('ARM_CALIB_POINTS','재보정_점.jsonl')      # ARM_CALIB_POINTS=파일명으로 새 점 묶음을 따로 모은다(2026-10-29)
 PY=sys.executable
+HUE_MIN_HIGH=164   # 색상 169로 치우친 조명(2026-10-29 Pi q2)에서도 찾도록 아래쪽 끝을 넓힌다(기본 170)
+SAT_MIN=60         # 채도 74까지(기본 90). 화면에 상자 하나뿐인 보정 사진에서만 쓴다
 HUE_MAX=6      # 상자 색 판정의 위쪽 끝(기본 4). Pi에서 조명이 조금 달라 정육면체 색상이 6이 되면 기본값으로는 못 찾았다(2026-10-26 p2)
 
 
@@ -25,8 +28,19 @@ def last_json(text,key):
 
 
 def run(args):
-    r=subprocess.run([PY,*map(str,args)],cwd=ROOT,text=True,capture_output=True)
+    r=subprocess.run([PY,*map(str,args)],cwd=ROOT,text=True,capture_output=True,env=pump_env())
     return r.returncode,r.stdout+r.stderr
+
+
+def pump_env():
+    """서버가 쓰던 설정(pi/arm-api.env)의 ARM_PUMP_PORT 등을 이 프로세스에도 준다. 없으면 pick_auto가 펌프 포트를 못 찾고 움직이기 전에 멈춘다."""
+    env=dict(os.environ);file=ROOT/'pi'/'arm-api.env'
+    if file.exists():
+        for line in file.read_text().splitlines():
+            line=line.strip()
+            if line.startswith('ARM_') and '=' in line and not line.startswith('#'):
+                key,value=line.split('=',1);env.setdefault(key,value.strip().strip('\'"'))
+    return env
 
 
 def hover(x_mm,y_mm,z_mm,label='x'):
@@ -61,7 +75,7 @@ def record(label,x,y):
         bgr=bgr.copy()
     finally:cam.close()
     cv2.imwrite(str(OUT/('재보정_'+label+'.png')),bgr)
-    box=detect_box(bgr,hue_max=HUE_MAX)
+    box=detect_box(bgr,hue_max=HUE_MAX,hue_min_high=HUE_MIN_HIGH,sat_min=SAT_MIN)
     row=dict(label=label,pixel=[float(v) for v in box['pixel']],bbox=[int(v) for v in box['bbox']],area_px=int(box['area_px']),
              arm_fk_xy_m=[x,y],time=time.strftime('%Y-%m-%dT%H:%M:%S'))
     with POINTS.open('a') as f:f.write(json.dumps(row,ensure_ascii=False)+'\n')

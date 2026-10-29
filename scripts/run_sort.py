@@ -20,10 +20,51 @@ from motion.graceful_child import run_until_clean_exit
 from sorting.sort_runner import run_sort
 
 
+def plan_many(args):
+    """물체 여러 개를 plan_sort.py 한 번으로 계획하고 물체마다 계획 파일을 쓴다(사진·트레이·물체 검출은 한 번).
+    출력: {ok, plans: {물체: {ok, plan_file, unregistered_left} | {ok: false, reason}}}. plan_sort가 통째로 실패하면 ok=false로 끝낸다(호출한 쪽이 물체별 계획으로 다시 한다)."""
+    if args.plan_out_dir is None:
+        print(json.dumps(dict(ok=False, attempts=[], reason='planning failed: --objects needs --plan-out-dir'), ensure_ascii=False))
+        return 1
+    cmd = [sys.executable, str(ROOT / 'scripts/plan_sort.py'), '--objects', args.objects]
+    if args.tray_frame:
+        cmd += ['--tray-frame', *args.tray_frame]
+    if args.tray_fallback_live:
+        cmd.append('--tray-fallback-live')
+    if args.tray_numbering:
+        cmd += ['--tray-numbering', args.tray_numbering]
+    if args.pick_radial_offset_mm is not None:
+        cmd += ['--pick-radial-offset-mm', str(args.pick_radial_offset_mm)]
+    for flag, on in (('--accept-uncertain-tray', args.accept_uncertain_tray), ('--acknowledge-unverified-suction', args.acknowledge_unverified_suction),
+                     ('--empty-run', args.empty_run)):
+        if on:
+            cmd.append(flag)
+    done = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True)
+    if done.returncode != 0:
+        tail = [line for line in done.stderr.strip().splitlines() if line.strip()]
+        print(json.dumps(dict(ok=False, attempts=[], reason=f"planning failed: {tail[-1] if tail else f'plan_sort exited with {done.returncode}'}"), ensure_ascii=False))
+        return 1
+    entries = json.JSONDecoder().raw_decode(done.stdout[done.stdout.index('{'):])[0]['plans']      # 카메라 라이브러리가 stdout 끝에 경고 한 줄을 붙일 수 있다
+    args.plan_out_dir.mkdir(parents=True, exist_ok=True)
+    plans = {}
+    for entry in entries:
+        if not entry['ok']:
+            plans[entry['label']] = dict(ok=False, reason=f"planning failed: plan_sort.py: error: {entry['reason']}")
+            continue
+        path = args.plan_out_dir / f"{args.plan_prefix}{entry['label']}.json"
+        path.write_text(json.dumps(entry['plan'], ensure_ascii=False, default=float))
+        plans[entry['label']] = dict(ok=True, plan_file=str(path), unregistered_left=entry['plan'].get('unregistered_left', 0))
+    print(json.dumps(dict(ok=True, attempts=[], reason=None, plans=plans), ensure_ascii=False))
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--command')
     parser.add_argument('--object')
+    parser.add_argument('--objects', help='물체 여러 개(쉼표)를 한 번에 계획한다. --plan-out-dir 필요. 사진·트레이·물체 검출을 한 번만 한다(2026-10-29)')
+    parser.add_argument('--plan-out-dir', type=Path, help='--objects: 물체마다 <plan-prefix><물체>.json으로 계획을 저장할 폴더')
+    parser.add_argument('--plan-prefix', default='', help='--objects: 계획 파일 이름 앞에 붙일 말')
     parser.add_argument('--slot', type=int)
     parser.add_argument('--attempts', type=int, default=3, help='집기 시도 횟수(1-5, 기본 3)')
     parser.add_argument('--execute', action='store_true')
@@ -44,6 +85,8 @@ def main(argv=None):
         parser.error('--execute requires --supported')
     if not 1 <= args.attempts <= 5:
         parser.error('--attempts must be 1-5')
+    if args.objects:
+        return plan_many(args)
     plan_cmd = [sys.executable, str(ROOT / 'scripts/plan_sort.py')]
     for flag, value in (('--command', args.command), ('--object', args.object), ('--pick-radial-offset-mm', args.pick_radial_offset_mm)):
         if value is not None:

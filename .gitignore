@@ -19,3 +19,4 @@ config/devices.json
 pi/arm-api.env
 drive_data/
 output/esp32_repair/
+.pytest_cache/
