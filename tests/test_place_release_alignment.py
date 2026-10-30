@@ -19,7 +19,7 @@ PLAN = dict(start=START, executed=False, legs=[
 ])
 
 
-def simulate(*, carry_error=(.0013622, .0030053), alignment_works=True, start=START,
+def simulate(*, carry_error=(.0013622, .0045), alignment_works=True, start=START,
              lower_error=(-.0004, .0025, -.0017)):
     pose, moves, released = [tuple(start)], [], []
     plan = {**PLAN, 'start': start}
@@ -87,7 +87,7 @@ def test_no_horizontal_alignment_near_the_drop_surface():
     plan = dict(start=start, executed=False, legs=[dict(name='lower', target=DROP)])
     with pytest.raises(ValueError, match='pre-lower alignment refused'):
         run_place(plan, hover=lambda *a, **k: moves.append(a),
-                  fresh_xyz=lambda: (start[0], start[1] + .0035, start[2]),
+                  fresh_xyz=lambda: (start[0], start[1] + .0045, start[2]),
                   release=lambda p: released.append(p), cancelled=lambda: False)
     assert not moves and not released
 

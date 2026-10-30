@@ -609,8 +609,10 @@ function showScene(data, msg) {
   (data.in_tray || []).forEach((o) => {
     const c = document.createElement('span'); c.className = 'chip far'; c.textContent = `${o.label === 'unknown' ? '등록 안 된 물체' : o.name} · ${o.slot}번 칸 안`; chips.appendChild(c);
   });
+  const legend = document.createElement('small'); legend.className = 'snap-time';
+  legend.textContent = '초록 띠: 집을 수 있는 거리(16~27.8cm) · 파란 선: 놓을 수 있는 한계(37.5cm, 점선 39.2cm는 정육면체) · 점 옆 숫자: 로봇까지 cm(빨강은 안 닿음, *는 윗면 중심에서 비껴 집음) · 칸 번호:거리';
   const time = document.createElement('small'); time.className = 'snap-time'; time.textContent = data.captured_at.replace('T', ' ') + ' 촬영';
-  box.append(img, chips, time);
+  box.append(img, chips, legend, time);
   if (!msg) msg = bubble('bot', '');
   msg.classList.add('has-photo'); msg.prepend(box);
   $('log').scrollTop = $('log').scrollHeight;

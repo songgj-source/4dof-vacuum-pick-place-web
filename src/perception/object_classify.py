@@ -205,6 +205,44 @@ def _blobs(raised, height=None):
     return blobs
 
 
+SPLIT_MIN_BLOB_PX = 3600       # 이보다 작은 덩어리는 한 물체다(한 물체는 3000px 안쪽). 줄자 하나의 흰 글씨·반사가 가짜 흰 상자를 만들었다(2026-10-30: 흰 상자 2개로 계획 거부)
+SPLIT_MIN_PART_PX = 350        # 붙은 물체를 색으로 나눌 때 한 물체가 되려면 이 색이 덩어리 안에 이만큼은 있어야 한다
+SPLIT_GROW_PX = 3               # 색 조각을 이만큼 부풀려 물체 몸통(어두운 옆면·글씨)까지 포함한다
+
+
+def _split_touching(blobs, masks, chromatic, vivid):
+    """서로 붙어 한 덩어리가 된 등록 물체들(줄자·흰 상자·정육면체)을 색별로 나눈다(2026-10-29: 세 물체가 붙어 있어 깊이로는 한 덩어리 → 전부 unknown이라
+    '흰 상자를 못 찾음'). 한 덩어리 안에 등록 색(빨강·진한 노랑·흰색)이 둘 이상, 각각 SPLIT_MIN_PART_PX 이상이면 색 조각마다 한 물체로 본다.
+    트레이 같은 큰 덩어리(MAX_OBJECT_PX 초과)와 색이 하나뿐인 덩어리는 그대로 둔다. 조각은 부풀려 서로 겹치는 픽셀은 버린다."""
+    colors = {'red_cube': masks['red_cube'], 'tape_measure': masks['tape_measure'] & vivid, 'white_box': masks['white_box']}
+    out = []
+    grow = np.ones((2 * SPLIT_GROW_PX + 1, 2 * SPLIT_GROW_PX + 1), np.uint8)
+    for blob in blobs:
+        ys, xs = np.nonzero(blob)
+        if not len(xs) or max(int(xs.max() - xs.min()) + 1, int(ys.max() - ys.min()) + 1) > MAX_OBJECT_PX or len(xs) < SPLIT_MIN_BLOB_PX:
+            out.append(blob)
+            continue
+        parts = {}
+        for name, mask in colors.items():
+            inside = (mask & blob).astype(np.uint8)
+            inside = cv2.morphologyEx(inside, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+            count, labels, stats, _ = cv2.connectedComponentsWithStats(inside)
+            pieces = [labels == i for i in range(1, count) if stats[i][4] >= SPLIT_MIN_PART_PX]
+            if pieces:
+                parts[name] = max(pieces, key=lambda piece: int(piece.sum()))          # 색마다 가장 큰 조각 하나
+        if len(parts) < 2:
+            out.append(blob)
+            continue
+        grown = {name: cv2.dilate(piece.astype(np.uint8), grow).astype(bool) & blob for name, piece in parts.items()}
+        for name, region in grown.items():
+            others = np.zeros_like(blob, bool)
+            for other, other_region in grown.items():
+                if other != name:
+                    others |= other_region
+            out.append(region & ~others)
+    return out
+
+
 def classify_objects(bgr, depth, intrinsics=None):
     _validate(bgr, depth)
     height = table_height_mm(depth, intrinsics)
@@ -214,7 +252,7 @@ def classify_objects(bgr, depth, intrinsics=None):
     vivid = _vivid_tape(hsv)
     registered = object_registry.load()
     found = []
-    for blob in _blobs(raised, height):
+    for blob in _split_touching(_blobs(raised, height), masks, chromatic, vivid):
         ys, xs = np.nonzero(blob)
         x, y = int(xs.min()), int(ys.min())
         w, h, area = int(xs.max()) - x + 1, int(ys.max()) - y + 1, int(blob.sum())

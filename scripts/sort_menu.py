@@ -48,7 +48,8 @@ def refresh_objects():
 refresh_objects()
 COMMON = ['--acknowledge-unverified-suction', '--accept-uncertain-tray', '--tray-numbering', 'far_from_base',
           '--attempts', '1', '--approach-tracking-limit', '100',
-          '--place-rate', '600', '--place-pulses-per-step', '8', '--home-rate', '600']   # 속도 우선(사용자 2026-10-19, 2026-10-28): 운반·후퇴·자동 HOME 복귀 600펄스/초, 틱당 8펄스(13.3ms = 통신 한계라 틱이 밀리지 않는다)
+          '--place-rate', '600', '--place-pulses-per-step', '8', '--home-rate', '600',
+          '--no-contact-rgb-log']       # 접촉 사진 기록(약 3.3초, 흡착 판단에는 안 쓰임)은 끈다(2026-10-29 사용자: 동작 시간 최소화). 집힘 확인은 손목 스트림이 따로 한다   # 속도 우선(사용자 2026-10-19, 2026-10-28): 운반·후퇴·자동 HOME 복귀 600펄스/초, 틱당 8펄스(13.3ms = 통신 한계라 틱이 밀리지 않는다)
 COLOR = sys.stdout.isatty() and not os.environ.get('NO_COLOR')
 
 

@@ -45,6 +45,7 @@ SLOW_RATE_PPS=600.   # 천천히 움직이는 동작의 속도(펄스/초), 2026
 def track_limit(rate):
     """추종 가드(펄스): 속도에 따라 뒤처지는 폭이 커진다. 300까지는 32(실측 17~29), 그 위는 64(2026-10-28, 500은 실물 미측정)."""
     return 64 if rate>300. else 32
+PLACE_LOWER_RATE_PPS=150.   # 물체를 든 채 칸 안으로 내리는 마지막 짧은 구간(약 175펄스)은 150으로: 600에서 'hover endpoint not reached'로 중단됐다(2026-10-29 Pi 1번 칸). 운반·들어올리기는 600 그대로
 CONTACT_RATE_PPS=150.   # 접촉(contact)·탐침(probe)·재중심(recenter)·rise는 느린 채로 둔다: 흡착이 붙을 시간이 필요하다(2026-10-12 들어올림 2배 때 떨어짐, 2026-10-28 사용자 지시는 접촉 제외)
 # 세 물체 연속 정리(2026-10-21 사용자): 앞 물체를 놓은 트레이 위에서 HOME을 거치지 않고 다음 물체로 간다.
 CHAIN_START_Z=(.070,.135)      # 놓기가 끝나는 운반 높이(70~130mm). 이 밖이면 기존 HOME 리셋
@@ -406,9 +407,10 @@ def main(argv=None):
                         kwargs['tick_s']=1./args.descent_rate
                     if name.startswith('place_lower'):
                         kwargs.update(quick_ticks=True,tick_s=1./args.descent_rate)
+                    held_rate=min(args.held_rate,PLACE_LOWER_RATE_PPS) if args.held_rate and name.startswith('place_lower') else args.held_rate
                     if args.held_rate and ('lift_m' in kwargs or 'measured_gap_m' in kwargs) and name.startswith(('lift20','lift_to_clear','place','return')):
-                        # 흡착한 채 움직일 때의 속도는 --held-rate를 적용한다.
-                        held_pps=tick_pulses(args.held_rate);kwargs.update(quick_ticks=True,pulses_per_step=held_pps,tick_s=held_pps/args.held_rate,tracking_limit=max(kwargs.get('tracking_limit',16),track_limit(args.held_rate)))   # 150 이하 2펄스, 300 4, 500 7펄스(틱 약 13.3~14ms)
+                        # 흡착한 채 움직일 때의 속도는 --held-rate를 적용한다(칸 안으로 내리기만 PLACE_LOWER_RATE_PPS).
+                        held_pps=tick_pulses(held_rate);kwargs.update(quick_ticks=True,pulses_per_step=held_pps,tick_s=held_pps/held_rate,tracking_limit=max(kwargs.get('tracking_limit',16),track_limit(held_rate)))   # 150 이하 2펄스, 300 4, 500 7펄스(틱 약 13.3~14ms)
                         if kwargs.get('via'):kwargs['via_pulses']=held_pps
                         if name.startswith('place'):kwargs.pop('tail',None)
                         elif name.startswith('return'):kwargs['tail']=(14,13.)
@@ -417,7 +419,7 @@ def main(argv=None):
                         kwargs.pop('tail',None)
                         pps=kwargs.get('pulses_per_step',1)
                         held_move=('lift_m' in kwargs or 'measured_gap_m' in kwargs) and name.startswith(('lift20','lift_to_clear','place','return'))
-                        rate=(args.held_rate if held_move and args.held_rate else
+                        rate=(held_rate if held_move and args.held_rate else
                               args.descent_rate if name.startswith('descent') or name.startswith('place_lower') else
                               CONTACT_RATE_PPS if name.startswith(('contact','probe','recenter','rise')) else
                               SLOW_RATE_PPS)

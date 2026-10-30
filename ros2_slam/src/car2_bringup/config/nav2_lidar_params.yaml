@@ -47,8 +47,11 @@ controller_server:
     # PoseProgressChecker: turning in place also counts as progress (SimpleProgressChecker only counted
     # 0.2 m of travel, so a slow final heading fix near the goal hit 'Failed to make progress' after 15 s
     # and ran the spin/wait recoveries -- ~10 s of hesitation at the goal)
-    progress_checker: {plugin: 'nav2_controller::PoseProgressChecker', required_movement_radius: 0.2,
-                       required_movement_angle: 0.2, movement_time_allowance: 15.0}
+    # 2026-10-29: 라벨 15cm 앞에서 남은 거리가 required_movement_radius(0.2m)보다 작아 '15초 안에 0.2m 이동 또는 0.2rad 회전'을 원리적으로 못 채웠다.
+    # 마무리 접근 중인데도 'Failed to make progress'가 15초마다 5번 나고 Goal failed → 벽 근접 단계로 못 넘어가고 라벨 옆 15cm에 섰다.
+    # 마무리 접근의 작은 이동도 진행으로 보게 낮추고, 정말 멈췄을 때만 25초 뒤 실패로 본다.
+    progress_checker: {plugin: 'nav2_controller::PoseProgressChecker', required_movement_radius: 0.04,
+                       required_movement_angle: 0.08, movement_time_allowance: 25.0}
     general_goal_checker: {stateful: true, plugin: 'nav2_controller::SimpleGoalChecker', xy_goal_tolerance: 0.05, yaw_goal_tolerance: 0.25}
     FollowPath:
       plugin: nav2_mppi_controller::MPPIController
@@ -81,15 +84,18 @@ controller_server:
         PreferForwardCritic]
       ConstraintCritic: {enabled: true, cost_power: 1, cost_weight: 4.0}
       GoalCritic: {enabled: true, cost_power: 1, cost_weight: 5.0, threshold_to_consider: 1.4}
-      GoalAngleCritic: {enabled: true, cost_power: 1, cost_weight: 3.0, threshold_to_consider: 0.5}
-      PreferForwardCritic: {enabled: true, cost_power: 1, cost_weight: 5.0, threshold_to_consider: 0.5}
+      # 2026-10-29: 라벨과 방향이 같은 채 옆으로 15cm 떨어지면 제어기가 속도 명령을 아예 내지 못하고 멈췄다(Failed to make progress, 차 정지).
+      # 라벨 0.5m 안에서 이 세 항목이 '목표 방향 그대로·앞으로만·경로 방향으로만'을 강하게 묶어 옆으로 가려는 90° 회전이 모두 막혔다.
+      # 마무리 직전(0.12m)에서만 묶고, 그 전에는 돌아서 갈 수 있게 한다.
+      GoalAngleCritic: {enabled: true, cost_power: 1, cost_weight: 3.0, threshold_to_consider: 0.12}
+      PreferForwardCritic: {enabled: true, cost_power: 1, cost_weight: 5.0, threshold_to_consider: 0.12}
       CostCritic: {enabled: true, cost_power: 1, cost_weight: 3.81, near_collision_cost: 253, critical_cost: 300.0, consider_footprint: false,
         collision_cost: 1000000.0, near_goal_distance: 1.0, trajectory_point_step: 2}
       PathAlignCritic: {enabled: true, cost_power: 1, cost_weight: 14.0, max_path_occupancy_ratio: 0.05, trajectory_point_step: 4,
         threshold_to_consider: 0.5, offset_from_furthest: 20, use_path_orientations: false}
       PathFollowCritic: {enabled: true, cost_power: 1, cost_weight: 5.0, offset_from_furthest: 5, threshold_to_consider: 1.4}
-      PathAngleCritic: {enabled: true, cost_power: 1, cost_weight: 2.0, offset_from_furthest: 4, threshold_to_consider: 0.5,
-        max_angle_to_furthest: 1.0, mode: 0}
+      PathAngleCritic: {enabled: true, cost_power: 1, cost_weight: 2.0, offset_from_furthest: 4, threshold_to_consider: 0.12,
+        max_angle_to_furthest: 1.7, mode: 0}
 local_costmap:
   local_costmap:
     ros__parameters:
@@ -102,7 +108,7 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.26
+      robot_radius: 0.23   # 2026-10-29 사용자: 차체(장애물 영역) 지름 46cm. 예전 0.26
       plugins: [obstacle_layer, inflation_layer]
       inflation_layer: {plugin: 'nav2_costmap_2d::InflationLayer', cost_scaling_factor: 3.0, inflation_radius: 0.33}
       static_layer: {plugin: 'nav2_costmap_2d::StaticLayer', map_subscribe_transient_local: true}
@@ -122,7 +128,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      robot_radius: 0.26
+      robot_radius: 0.23   # 2026-10-29 사용자: 차체(장애물 영역) 지름 46cm. 예전 0.26
       resolution: 0.05
       track_unknown_space: true
       plugins: [static_layer, obstacle_layer, inflation_layer]

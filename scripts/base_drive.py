@@ -329,7 +329,7 @@ def fine_align(label, url=None, on_phase=None, stopped=lambda: False, sleep=time
     """지금 위치에서 라벨의 x, y, 방향으로 천천히 맞춘다(map_web /api/drive). 돌려주는 것: dict(ok, reason, reason_code, note)."""
     phase = on_phase or (lambda raw, text: None)
     info = _call('GET', '/api/get_map_info', url=url)
-    robot = {'radius': 0.26, 'front': 0.16, 'back': 0.16, **(info.get('robot') or {})}      # map_web 값이 있으면 그것
+    robot = {'radius': 0.23, 'front': 0.16, 'back': 0.16, **(info.get('robot') or {})}      # map_web 값이 있으면 그것
     target = (label['x'], label['y'])
     try:
         for _ in range(3):                               # 회전·직진·방향 맞춤 뒤 남은 오차를 한두 번 더 줄인다

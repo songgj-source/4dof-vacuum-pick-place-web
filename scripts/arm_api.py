@@ -371,7 +371,11 @@ class Arm:
     def _remember_scene(self, bgr, scene):
         import base64
         import cv2
-        ok, jpeg = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        shown = bgr
+        if os.environ.get('ARM_REACH_OVERLAY', '1') != '0':
+            from perception import reach_overlay          # 사진 위에 집기·놓기 범위를 그린다(분류·이름 붙이기는 원본 사진으로 이미 끝났다)
+            shown = reach_overlay.annotate(bgr, menu.ROOT, scene)
+        ok, jpeg = cv2.imencode('.jpg', shown, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if not ok:
             raise OSError('JPEG 변환 실패')
         scene = dict(scene, ok=True, captured_at=time.strftime('%Y-%m-%dT%H:%M:%S'),
@@ -1193,7 +1197,8 @@ def describe_scene(bgr, depth):
         objects.append(dict(label=item['label'], name=NAMES.get(item['label'], item['label']),
                             pixel=[int(v) for v in item.get('top_center_px', item.get('center_px', (0, 0)))],
                             position_mm=[round(v * 1000) for v in xy] if xy is not None else None,
-                            pickable=bool(target and target['pickable'])))
+                            pickable=bool(target and target['pickable']),
+                            pick_offset_mm=round(float(target.get('pick_offset_mm') or 0.), 1) if target else 0.))      # 윗면 중심에서 비껴 집는 거리(0이면 중심)
         distance = math.hypot(*xy) if xy is not None else None
         objects[-1]['distance_mm'] = None if distance is None else round(distance * 1000)
         # 안 닿는 이유(안내 문구용): 로봇에서 너무 가깝다/멀다/거리는 맞는데 팔 자세가 안 된다

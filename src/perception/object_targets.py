@@ -25,6 +25,9 @@ ENVELOPE_M = (.16, .30)
 PICK_TILTS_DEG = (0., 5., 10.)   # 집을 때 컵 기울기 후보. 2026-10-27 사용자: 15도로 기울이니 흡착이 안 된다 → 최대 10도(예전 20도)
 PICK_REACH_MARGIN_M = .008
 LABELS = ('red_cube', 'white_box', 'tape_measure')     # 기본 물체(카탈로그에 꼭 있어야 한다). 등록 물체는 object_registry.labels()
+CUP_RADIUS_MM = 10.          # 흡착컵 반지름(손목 사진으로 잰 값: 정육면체 윗면 40mm가 270px일 때 컵 지름 약 130px = 19~20mm)
+CUP_EDGE_MARGIN_MM = 4.      # 컵 가장자리와 윗면 가장자리 사이에 남길 여유(위치 측정 오차 2~4mm 포함)
+SHIFT_STEP_MM = .5
 MIN_CONTACT_Z_M = .010        # 사용자 지시(2026-10-15)로 30mm 하한을 없앴다. 컵이 책상에 닿는 것만 막는 최소선(pick_auto --min-contact-z-mm)
 
 
@@ -70,6 +73,26 @@ def load_catalog(path):
         if own is not None and (isinstance(own, bool) or not isinstance(own, (int, float)) or not math.isfinite(own) or not 0 <= own <= 10):
             raise ValueError(f'{label}: extra_press_mm must be a finite number within 0..10')
     return data
+
+
+def max_pick_shift_mm(direction, entry, axis_info=None):
+    """윗면 중심에서 direction(로봇 xy 단위벡터) 방향으로 컵 중심을 옮겨도 컵이 윗면 안에 머무는 최대 거리(mm).
+    사각형 윗면: 컵 중심이 컵 반지름+여유만큼 줄인 안쪽 사각형 안에 있어야 한다. 방향(axis_info: footprint_axis)을 알면 그 방향으로,
+    모르면 짧은 변 기준(어느 방향이든 안전한 값). 윗면이 평평하지 않거나 크기를 모르면 0(옮기지 않는다)."""
+    foot = entry.get('footprint_mm') if isinstance(entry, dict) else None
+    if not foot or not entry.get('top_flat', True):
+        return 0.
+    shrink = CUP_RADIUS_MM + CUP_EDGE_MARGIN_MM
+    if axis_info:
+        axis, half = axis_info['axis_xy'], axis_info['half_mm']
+        inner = (half[0] - shrink, half[1] - shrink)
+        if min(inner) <= 0:
+            return 0.
+        along = abs(axis[0] * direction[0] + axis[1] * direction[1])
+        across = abs(-axis[1] * direction[0] + axis[0] * direction[1])
+        limits = [inner[0] / along if along > 1e-6 else math.inf, inner[1] / across if across > 1e-6 else math.inf]
+        return max(0., min(limits))
+    return max(0., min(foot) / 2. - shrink)
 
 
 def extra_press_mm(catalog, label):
@@ -184,33 +207,57 @@ def locate_targets(bgr, depth, root, catalog=None, model=None, locator=None, min
         entry = catalog['objects'][label]
         top_mm = float(entry['height_mm'])
         pixel = np.array(found['top_center_px']) - np.array(DEPTH_MINUS_TOP_CENTER_PX)    # 기록용(projection_pixel)
-        xy = top_center_xy(found, top_mm, locator)
+        center_xy = top_center_xy(found, top_mm, locator)
         contact_z = (top_mm + float(catalog['cup_contact_offset_mm']) - extra_press_mm(catalog, label)) / 1000.
-        radius = float(math.hypot(*xy))
-        problems = []
-        if not ENVELOPE_M[0] <= radius <= ENVELOPE_M[1]:
-            problems.append(f'radius {radius:.3f} m outside the {ENVELOPE_M[0]}-{ENVELOPE_M[1]} m pick envelope')
-        if contact_z < min_contact_z - 1e-9:
-            problems.append(f'contact height {contact_z * 1000:.1f} mm is below the {min_contact_z * 1000:.0f} mm floor of the motion code; this object cannot be picked')
-        inner = max(.12, radius - .040)
+        axis_info = footprint_axis(found, top_mm, locator, entry)
+
+        def check(point):
+            """이 점을 집을 수 있나: (반경, 문제 목록, 기울기)."""
+            radius = float(math.hypot(*point))
+            problems = []
+            if not ENVELOPE_M[0] <= radius <= ENVELOPE_M[1]:
+                problems.append(f'radius {radius:.3f} m outside the {ENVELOPE_M[0]}-{ENVELOPE_M[1]} m pick envelope')
+            if contact_z < min_contact_z - 1e-9:
+                problems.append(f'contact height {contact_z * 1000:.1f} mm is below the {min_contact_z * 1000:.0f} mm floor of the motion code; this object cannot be picked')
+            inner = max(.12, radius - .040)
+            x, y = float(point[0]), float(point[1])
+            # 수직으로 닿지 않는 먼 물체는 손목을 조금 기울여 집는다(사용자 지시 2026-10-15). 닿는 가장 작은 기울기를 고른다.
+            # 집기 보정(+5mm 바깥쪽)과 위치 오차를 위해 반경 8mm 여유를 두고 검사한다.
+            pick_tilt = None
+            first_fail = None
+            for tilt in PICK_TILTS_DEG:
+                pitch = -math.pi / 2 + math.radians(tilt)
+                grow = (radius + PICK_REACH_MARGIN_M) / radius
+                fails = [(name, p) for name, p in (('inner approach', (x * grow * inner / radius, y * grow * inner / radius, .120)),
+                                                   ('approach 70 mm', (x * grow, y * grow, .070)), ('contact', (x * grow, y * grow, contact_z)))
+                         if not reachable(model, p, pitch)]
+                if first_fail is None and fails:
+                    first_fail = fails[0]
+                if not fails:
+                    pick_tilt = tilt
+                    break
+            if pick_tilt is None:
+                problems.append(f'not reachable ({first_fail[0]}) even with {PICK_TILTS_DEG[-1]:g} deg tilt: {tuple(round(v, 3) for v in first_fail[1])}')
+            return radius, problems, pick_tilt
+
+        xy = center_xy
+        radius, problems, pick_tilt = check(xy)
+        shift_mm = 0.
+        if problems:
+            # 윗면 중심은 못 집어도 윗면의 다른 곳(컵이 윗면 안에 머무는 범위)이 닿으면 거기를 집는다(2026-10-30 사용자 요청).
+            # 너무 멀거나 안 닿으면 로봇 쪽으로, 너무 가까우면 바깥쪽으로, 필요한 만큼만 옮긴다.
+            direction = np.array(center_xy, float) / max(math.hypot(*center_xy), 1e-9)
+            sign = 1. if math.hypot(*center_xy) < ENVELOPE_M[0] else -1.
+            limit = max_pick_shift_mm(direction, entry, axis_info)
+            step = SHIFT_STEP_MM
+            while step <= limit + 1e-9:
+                candidate = np.array(center_xy, float) + sign * direction * step / 1000.
+                c_radius, c_problems, c_tilt = check(candidate)
+                if not c_problems:
+                    xy, radius, problems, pick_tilt, shift_mm = candidate, c_radius, c_problems, c_tilt, sign * step
+                    break
+                step += SHIFT_STEP_MM
         x, y = float(xy[0]), float(xy[1])
-        # 수직으로 닿지 않는 먼 물체는 손목을 조금 기울여 집는다(사용자 지시 2026-10-15). 닿는 가장 작은 기울기를 고른다.
-        # 집기 보정(+5mm 바깥쪽)과 위치 오차를 위해 반경 8mm 여유를 두고 검사한다.
-        pick_tilt = None
-        first_fail = None
-        for tilt in PICK_TILTS_DEG:
-            pitch = -math.pi / 2 + math.radians(tilt)
-            grow = (radius + PICK_REACH_MARGIN_M) / radius
-            fails = [(name, point) for name, point in (('inner approach', (x * grow * inner / radius, y * grow * inner / radius, .120)),
-                                                      ('approach 70 mm', (x * grow, y * grow, .070)), ('contact', (x * grow, y * grow, contact_z)))
-                     if not reachable(model, point, pitch)]
-            if first_fail is None and fails:
-                first_fail = fails[0]
-            if not fails:
-                pick_tilt = tilt
-                break
-        if pick_tilt is None:
-            problems.append(f'not reachable ({first_fail[0]}) even with {PICK_TILTS_DEG[-1]:g} deg tilt: {tuple(round(v, 3) for v in first_fail[1])}')
         pickable = not problems          # 기하(작업 거리·도달)만 본 값이다. 아래 권고는 별도다.
         if not entry.get('suction_verified'):
             problems.append('suction not verified for this object')
@@ -218,7 +265,7 @@ def locate_targets(bgr, depth, root, catalog=None, model=None, locator=None, min
             problems.append('top surface is not flat; vacuum seal is uncertain and the depth centre may be off')
         results.append(dict(label=label, name=found['name'], slot=slot_for(label),
                             target_xy=[x, y], contact_z=contact_z, radius_m=radius,
-                            footprint_axis=footprint_axis(found, top_mm, locator, entry),
+                            footprint_axis=axis_info, center_xy=[float(center_xy[0]), float(center_xy[1])], pick_offset_mm=shift_mm,
                             pickable=pickable, problems=problems, pick_tilt_deg=pick_tilt,
                             suction_verified=bool(entry.get('suction_verified')),
                             top_center_px=found['top_center_px'], projection_pixel=[float(v) for v in pixel],

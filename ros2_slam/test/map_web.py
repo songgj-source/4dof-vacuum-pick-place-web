@@ -1009,7 +1009,7 @@ class MapWeb(Node):
         self.odom_frame = self.declare_parameter('odom_frame', 'odom').value
         self.base_frame = self.declare_parameter('base_frame', 'base_link').value
         # half width / footprint circle (wheels at +-0.24 m): side clearance, map drawing
-        self.robot_radius = float(self.declare_parameter('robot_radius', 0.26).value)
+        self.robot_radius = float(self.declare_parameter('robot_radius', 0.23).value)      # 차체 지름 46cm(2026-10-29, 예전 0.26). Nav2 costmap robot_radius와 같게
         # center -> front of the body: where the approach features stop
         self.robot_front = float(self.declare_parameter('robot_front', 0.16).value)
         self.trail_max = int(self.declare_parameter('trail_max', 3000).value)

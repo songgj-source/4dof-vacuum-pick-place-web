@@ -50,3 +50,19 @@ def test_tray_slot_too_far_is_not_blamed_on_the_object():
     text = sort_menu.brief_message('tray slot radius 0.416 m outside the 0.16-0.41 m pick envelope (red_cube)')
     assert '놓을 칸이 로봇에서 너무 멉니다(41.6cm, 최대 41cm)' in text and '트레이를 로봇 쪽으로' in text and '정육면체' not in text
     assert '너무 멉니다(41.6cm, 최대 41cm). 로봇 쪽으로 옮기세요.' in sort_menu.brief_message('red_cube radius 0.416 m outside the 0.16-0.41 m pick envelope')
+
+
+def test_lowering_into_the_slot_stays_at_150_while_carry_keeps_600():
+    # 2026-10-29 Pi: place_lower를 600(틱당 8펄스)으로 내리다 'hover endpoint not reached'로 중단됐다. 칸 안으로 내리는 마지막 짧은 구간만 150으로 둔다
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / 'scripts/pick_auto.py').read_text().replace(' ', '')
+    assert 'PLACE_LOWER_RATE_PPS=150.' in src
+    assert "held_rate=min(args.held_rate,PLACE_LOWER_RATE_PPS)ifargs.held_rateandname.startswith('place_lower')elseargs.held_rate" in src
+    assert 'held_pps=tick_pulses(held_rate)' in src and 'rate=(held_rateifheld_moveandargs.held_rateelse' in src
+
+
+def test_menu_skips_the_record_only_contact_photo():
+    # 2026-10-29 Pi 기록: 하강 끝~흡착 명령 3.3초가 접촉 사진 기록(흡착 판단에 안 쓰임)이었다. 동작 시간 최소화를 위해 끈다
+    assert '--no-contact-rgb-log' in sort_menu.COMMON
+    assert '--no-contact-rgb-log' in sort_menu.unknown_command(2, execute=False)
+    assert '--no-contact-rgb-log' in sort_menu.sort_command('red_cube')

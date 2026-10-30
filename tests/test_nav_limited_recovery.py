@@ -25,7 +25,7 @@ def test_planner_tolerance_and_inflation_are_loosened():
     assert params['planner_server']['ros__parameters']['GridBased']['tolerance'] == .3
     for costmap in ('local_costmap', 'global_costmap'):
         inner = params[costmap][costmap]['ros__parameters']
-        assert inner['inflation_layer']['inflation_radius'] == .33 and inner['robot_radius'] == .26      # 몸 크기는 그대로
+        assert inner['inflation_layer']['inflation_radius'] == .33 and inner['robot_radius'] == .23      # 몸 크기는 그대로
 
 
 def test_setup_installs_the_behavior_tree():
@@ -69,3 +69,29 @@ def test_failed_drive_text_explains_wall_proximity():
     text = base_drive.nav_failed_text('책상', {'message': ''}, 'aborted')
     assert text.startswith('책상으로 가지 못했습니다: aborted.') and '벽·장애물에 너무 붙어' in text
     assert '벽·장애물' not in base_drive.nav_failed_text('책상', {'message': '취소됨'}, 'canceled')
+
+
+def test_progress_checker_accepts_the_small_moves_of_the_final_approach():
+    # 2026-10-29: 라벨 15cm 앞에서는 0.2m를 못 움직여 'Failed to make progress'로 Goal failed → 벽 근접에 못 넘어갔다
+    params = yaml.safe_load((BRINGUP / 'config/nav2_lidar_params.yaml').read_text())
+    checker = params['controller_server']['ros__parameters']['progress_checker']
+    assert checker['plugin'] == 'nav2_controller::PoseProgressChecker'
+    assert checker['required_movement_radius'] <= 0.05 and checker['required_movement_angle'] <= 0.1
+    assert 15 < checker['movement_time_allowance'] <= 40                       # 정말 멈췄을 때만 실패로 본다
+
+
+def test_near_goal_critics_allow_the_turn_needed_to_move_sideways():
+    # 2026-10-29: 라벨에서 옆 15cm: GoalAngle·PreferForward·PathAngle(0.5m, 1.0rad)이 돌아서 가는 것을 막아 속도 명령이 안 나왔다
+    mppi = yaml.safe_load((BRINGUP / 'config/nav2_lidar_params.yaml').read_text())['controller_server']['ros__parameters']['FollowPath']
+    for critic in ('GoalAngleCritic', 'PreferForwardCritic', 'PathAngleCritic'):
+        assert mppi[critic]['threshold_to_consider'] <= .15, critic
+    assert mppi['PathAngleCritic']['max_angle_to_furthest'] >= 1.57                # 90° 회전까지 허용
+
+
+def test_robot_radius_is_23cm_everywhere():
+    # 2026-10-29 사용자: 장애물 영역(차체) 지름 46cm → 반지름 0.23m. Nav2 지역·전역 비용지도, map_web, 마무리 정렬이 같은 값을 쓴다
+    params = yaml.safe_load((BRINGUP / 'config/nav2_lidar_params.yaml').read_text())
+    for costmap in ('local_costmap', 'global_costmap'):
+        assert params[costmap][costmap]['ros__parameters']['robot_radius'] == .23
+    assert "declare_parameter('robot_radius', 0.23)" in (ROOT / 'ros2_slam/test/map_web.py').read_text()
+    assert "'radius': 0.23" in (ROOT / 'scripts/base_drive.py').read_text()

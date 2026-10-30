@@ -25,6 +25,8 @@ def _hold_offset(driver,name):
 SLOW_JOINT_BATCH_PULSES=6
 # Clear-space travel (no contact/lift): faster servo speed register and a fixed command rate.
 TRAVEL_GOAL_SPEED=600
+PARKED_ERROR_PULSES=6
+ENDPOINT_IDLE_CHECKS=3   # 목표에서 떨어져(8~11펄스) 멈춘 채 변화가 없으면 이만큼 읽고 바로 넘어간다. 전엔 8번(약 0.7초)이었고 위치는 2번째 읽기부터 그대로였다(2026-10-30 Pi). 뒤의 5mm 자세 검사와 보상 hold는 그대로
 HELD_LEAD_S=.25   # 물체를 든 들기·놓은 뒤 빠져나오기의 앞당김(2026-10-27 Pi: 서보 지연 약 0.3초, 조금 덜 앞당긴다)
 TRAVEL_GOAL_ACCELERATION=20
 TRAVEL_PULSES_PER_STEP=4
@@ -369,7 +371,9 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
             stable=stable+1 if settled and still else 0
             # Parked off the 2-pulse contract (stiction): waiting longer will not change it.
             idle=idle+1 if still and not settled else 0
-            if idle>=guard_mode.pulses(8):raise ValueError('hover endpoint not reached')
+            # 목표에서 확실히 떨어져(PARKED_ERROR_PULSES 이상) 멈춘 경우만 짧게 기다린다. 가까운 꼬리(서보가 천천히 수렴하는 중)는 예전처럼 길게 본다
+            parked=max(abs(actual[n]-goal[n]) for n in NAMES)>=guard_mode.pulses(PARKED_ERROR_PULSES)
+            if idle>=guard_mode.pulses(ENDPOINT_IDLE_CHECKS if parked else 8):raise ValueError('hover endpoint not reached')
             if stable>=3:
                 end_stream()
                 driver.hold() # retain position, do not switch torque
