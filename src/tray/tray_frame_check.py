@@ -159,6 +159,42 @@ def register_tray(stored, live, depth=None, root=None, tolerance_px=3.):
                 reason=None if ok else f'tray moved too far or unevenly (rotation {rotation:.1f} deg, shift {shift:.0f} px, residual {residual:.1f} px)')
 
 
+EDGE_PAD_X_PX, EDGE_PAD_Y_PX = 62, 75      # 칸 중심들을 감싸는 상자에서 트레이 테두리까지의 여유
+EDGE_SEARCH_PX = 40
+EDGE_MIN_SCORE = .33
+EDGE_MIN_RATIO = 1.15                       # 가장 잘 맞는 자리가 두 번째로 잘 맞는 자리보다 이만큼 뚜렷해야 한다
+
+
+def edge_registration(stored, live, centers_px):
+    """칸이 물체로 꽉 차 바닥·모서리를 못 맞출 때를 위한 보조: 저장 사진에서 트레이 둘레(벽 윤곽)만 오려 지금 사진의 윤곽에서 찾는다.
+    칸 안 물체는 윤곽 안쪽을 바꿀 뿐 트레이 테두리는 그대로라 평행이동은 잡힌다(2026-11-02: 세 칸이 다 차서 모서리 맞춤이 실패했다).
+    돌아갔는지는 알 수 없어 평행이동만 구한다. 결과: dict(ok, matrix(2x3), shift_px, score, ratio). 뚜렷하게 맞지 않으면 ok=False."""
+    centers = np.array(centers_px, float)
+    x0, y0 = (centers.min(axis=0) - (EDGE_PAD_X_PX, EDGE_PAD_Y_PX)).astype(int)
+    x1, y1 = (centers.max(axis=0) + (EDGE_PAD_X_PX, EDGE_PAD_Y_PX)).astype(int)
+    height, width = live.shape[:2]
+    if x0 < 0 or y0 < 0 or x1 > width or y1 > height:
+        return dict(ok=False, reason='tray region outside the image')
+
+    def edges(image):
+        gray = cv2.GaussianBlur(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+        return cv2.dilate(cv2.Canny(gray, 40, 120), np.ones((3, 3), np.uint8))
+
+    template = edges(stored)[y0:y1, x0:x1]
+    xa, ya = max(0, x0 - EDGE_SEARCH_PX), max(0, y0 - EDGE_SEARCH_PX)
+    xb, yb = min(width, x1 + EDGE_SEARCH_PX), min(height, y1 + EDGE_SEARCH_PX)
+    result = cv2.matchTemplate(edges(live)[ya:yb, xa:xb], template, cv2.TM_CCORR_NORMED)
+    _, best, _, loc = cv2.minMaxLoc(result)
+    others = result.copy()
+    cv2.circle(others, loc, 12, 0, -1)
+    _, second, _, _ = cv2.minMaxLoc(others)
+    dx, dy = float(xa + loc[0] - x0), float(ya + loc[1] - y0)
+    ratio = float(best / second) if second > 0 else float('inf')
+    ok = bool(best >= EDGE_MIN_SCORE and ratio >= EDGE_MIN_RATIO)
+    return dict(ok=ok, matrix=[[1., 0., dx], [0., 1., dy]], shift_px=float(np.hypot(dx, dy)), score=float(best), ratio=ratio,
+                reason=None if ok else f'tray outline not clear (score {best:.2f}, ratio {ratio:.2f})')
+
+
 def move_slots(slots, registration, root):
     """저장 프레임에서 찾은 칸 중심(로봇 xy)을 측정한 이동만큼 옮긴다. 칸 바닥 높이는 그대로."""
     from tray.tray_detect import _color_pixel, _locator

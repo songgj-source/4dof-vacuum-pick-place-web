@@ -1123,6 +1123,7 @@ LAST_TRAY_MOVE_MM = 4.      # 이만큼 안 움직였으면 다시 저장하지 
 
 def _slots_from_reference(ref_bgr, ref_depth, ref_slots, bgr, depth, root):
     """기준 사진(칸 위치를 아는 사진)과 지금 사진을 맞춰 칸 위치를 구한다: 안 움직였으면 그대로, 밀렸으면 밀린 만큼 옮긴다. 못 구하면 None."""
+    import numpy as np
     from tray.tray_frame_check import tray_offset_px, register_tray, move_slots, GOOD_SCORE
     offset = tray_offset_px(ref_bgr, bgr, depth=ref_depth, root=root)
     if offset['ok']:
@@ -1136,6 +1137,18 @@ def _slots_from_reference(ref_bgr, ref_depth, ref_slots, bgr, depth, root):
     good = [i for i, (shift, score) in enumerate(zip(offset['offsets_px'], offset['scores'])) if shift <= 3. and score >= GOOD_SCORE]
     if good and all(i in good or score < GOOD_SCORE for i, score in enumerate(offset['scores'])):
         return ref_slots
+    # 세 칸이 다 차 모서리가 둘 이상 가려진 경우: 트레이 둘레 윤곽으로 이동을 잰다(돌았는지는 알 수 없어 평행이동만, 뚜렷할 때만)
+    try:
+        from tray.tray_frame_check import edge_registration
+        from tray.tray_detect import _color_pixel, _locator
+        locator = _locator(root)
+        centers = [_color_pixel(locator, np.array([s['x_mm'], s['y_mm']]) / 1000., s['floor_height_mm'] if s['floor_height_mm'] is not None else 12.)
+                   for s in ref_slots.values()]
+        edge = edge_registration(ref_bgr, bgr, centers)
+        if edge['ok']:
+            return ref_slots if edge['shift_px'] <= 3. else move_slots(ref_slots, edge, root)
+    except Exception:
+        pass
     return None
 
 

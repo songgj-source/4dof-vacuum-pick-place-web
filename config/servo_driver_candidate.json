@@ -90,7 +90,7 @@
       "model": 777,
       "min_limit": 0,
       "max_limit": 4091,
-      "homing": 2
+      "homing": 64
     },
     "elbow": {
       "model": 777,
