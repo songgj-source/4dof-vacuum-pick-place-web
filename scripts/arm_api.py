@@ -817,6 +817,7 @@ class Arm:
         가장 멀리 보낼 수 있는 물체(놓기 계획기로 잰 도달 반경이 가장 큰 것)를 가장 먼 빈 칸에, 나머지는 고정 시드 무작위로 넣는다.
         사진에서 왼쪽부터 번호를 붙이고, 번호가 큰 것부터 집어 앞 번호가 밀리지 않게 한다. 집을 때마다 HOME을 거친다(기존 새 물체 집기 경로)."""
         from perception import object_namer
+        from perception.unknown_objects import MAX_HEIGHT_MM as MAX_UNKNOWN_HEIGHT_MM
         from sorting import slot_assignment
         try:
             bgr, scene = self._steady_scene(grab_astra)
@@ -839,11 +840,17 @@ class Arm:
                 return dict(ok=False, reason_code='tray_unknown', done=0,
                             reason='트레이를 찾지 못해 어느 칸이 비었는지 알 수 없어 새 물체는 넣지 않았습니다. 트레이가 카메라에 잘 보이게 한 뒤 다시 시키세요.')
         near = [i for i, o in enumerate(news) if o.get('reachable', True)]             # 팔이 닿는 것만 넣는다. 번호(왼쪽부터)와 개수는 닿지 않는 것도 포함해 유지한다
-        far = [i for i in range(len(news)) if i not in near]
+        tall = [i for i in range(len(news)) if i not in near and news[i].get('too_tall')]
+        far = [i for i in range(len(news)) if i not in near and i not in tall]
+        if tall:
+            heights = ', '.join(f"{news[i].get('height_mm', 0) / 10:.1f}cm" for i in tall)
+            self._event(task_id, 'phase', ('new_tall', f"새 물체 {', '.join(str(i + 1) for i in tall)}번은 너무 높아({heights}, 최대 {MAX_UNKNOWN_HEIGHT_MM / 10:.1f}cm) 넣을 수 없어 남깁니다."))
         if far:
             self._event(task_id, 'phase', ('new_far', f"새 물체 {', '.join(str(i + 1) for i in far)}번은 팔이 닿지 않아(30cm 넘음) 남깁니다."))
+        tall_note = (f"새 물체 {len(tall)}개는 너무 높아(최대 {MAX_UNKNOWN_HEIGHT_MM / 10:.1f}cm) 넣을 수 없어 남겼습니다." if tall else '')
         if not near:
-            return dict(ok=True, note=f'새 물체 {len(far)}개는 팔이 닿지 않아 책상에 남겼습니다. 로봇 쪽으로 옮기면 넣을 수 있습니다.', done=0)
+            far_only = f'새 물체 {len(far)}개는 팔이 닿지 않아 책상에 남겼습니다. 로봇 쪽으로 옮기면 넣을 수 있습니다.' if far else ''
+            return dict(ok=True, note=' '.join(p for p in (tall_note, far_only) if p), done=0)
         local = self.plan_new_slots([news[i] for i in near], scene, taken, in_tray_slots)
         plan = dict(slots={near[k]: v for k, v in local['slots'].items()}, left=[near[k] for k in local['left']],
                     reach_mm={near[k]: v for k, v in local['reach_mm'].items()})
@@ -866,7 +873,7 @@ class Arm:
             done += 1
         left_note = (f"새 물체 {len(plan['left'])}개는 빈 칸이 없어 책상에 남겼습니다." if plan['left'] else '')
         far_note = (f'새 물체 {len(far)}개는 팔이 닿지 않아 남겼습니다(로봇 쪽으로 옮겨 주세요).' if far else '')
-        return dict(ok=True, note=' '.join(p for p in (f'새 물체 {done}개를 넣었습니다.', left_note, far_note) if p), done=done)
+        return dict(ok=True, note=' '.join(p for p in (f'새 물체 {done}개를 넣었습니다.', left_note, far_note, tall_note) if p), done=done)
 
     def plan_new_slots(self, news, scene, taken, in_tray_slots=None):
         """새 물체 목록(왼쪽부터)을 빈 칸에 배정한다: dict(slots={번호(0부터): 칸}, left=[번호], reach_mm={번호: 도달 mm}). 로봇은 움직이지 않는다."""
@@ -1223,7 +1230,7 @@ def describe_scene(bgr, depth):
     이미 트레이 칸에 들어 있는 물체는 objects에서 빼고 in_tray로 따로 알린다(정리 대상이 아니다). 로봇 밑동 근처나
     작업 범위 밖의 '등록 안 된 물체'(로봇 자신, 케이블 등)도 뺀다."""
     from perception import object_namer
-    from perception.unknown_objects import MIN_COUNTED_TOP_MM
+    from perception.unknown_objects import MIN_COUNTED_TOP_MM, MAX_HEIGHT_MM as MAX_UNKNOWN_HEIGHT_MM
     from perception.object_classify import classify_objects
     from perception.object_targets import locate_targets, load_catalog, default_locator, top_center_xy
     from perception.object_classify import table_height_mm
@@ -1281,7 +1288,10 @@ def describe_scene(bgr, depth):
             objects[-1]['guess'] = object_namer.name_object(bgr, item['bbox_px'], hints=object_namer.hints_for(item, depth))
             objects[-1]['color'] = object_namer.color_name(*item['color_hsv']) if item.get('color_hsv') else None      # 측정한 색 이름
             # 집을 수 있는 거리(16~30cm, 새 물체는 수직으로만). 먼 것은 안내 때 미리 빼야 정리 중간에 'unreachable'로 멈추지 않는다(2026-10-28, 36.4cm)
-            objects[-1]['reachable'] = bool(distance is not None and PICK_ENVELOPE_M[0] <= distance <= PICK_ENVELOPE_M[1])
+            in_range = bool(distance is not None and PICK_ENVELOPE_M[0] <= distance <= PICK_ENVELOPE_M[1])
+            # 새 물체는 높이 20~55mm만 집어 칸에 넣는다(unknown_objects). 더 높으면 거리가 맞아도 못 넣는다(2026-11-02: 높이 9.4cm 원통이 '빈 칸이 없어'로 남았다)
+            objects[-1]['too_tall'] = float(item.get('top_height_mm') or item.get('height_mm') or 0.) > MAX_UNKNOWN_HEIGHT_MM
+            objects[-1]['reachable'] = in_range and not objects[-1]['too_tall']
             objects[-1]['height_mm'] = round(float(item.get('top_height_mm') or item.get('height_mm') or 30.), 1)    # 칸 배정(가장 멀리 보낼 물체 계산)용
     if slots and locator is not None and catalog is not None:
         try:
@@ -1336,7 +1346,7 @@ COMMON_API = [
          description='get image: 위 카메라로 지금 장면을 한 장 찍는다(약 4초, 로봇은 안 움직임). 응답: image_jpeg_base64(사진), objects(보이는 물체·위치·집기 가능), available_menus(쓸 수 있어 보이는 메뉴 번호). 로봇 작업 중이면 409.'),
     dict(method='GET', path='/api/image/latest.jpg', body=None, description='마지막으로 찍은 사진(JPEG).'),
     dict(method='GET', path='/api/objects', body=None, description='넣을 수 있는 물체 목록: 기본 세 물체 + 등록 물체(label custom_N, 이름, 기본 칸, 높이·크기).'),
-    dict(method='POST', path='/api/objects', body={'name': '물체 이름(20자 이하)', 'slot': '1 | 2 | 3', 'height_mm': '(선택) 자로 잰 높이 20~45'},
+    dict(method='POST', path='/api/objects', body={'name': '물체 이름(20자 이하)', 'slot': '1 | 2 | 3', 'height_mm': '(선택) 자로 잰 높이 20~55'},
          description='물체 등록: 책상(트레이 밖)에 그 물체 하나만 두고 부른다. 위 카메라로 한 장 찍어 색·크기·높이를 저장한다(로봇은 안 움직임). '
                      '등록하면 바로 메뉴 4·5번 대상이 된다(흡착은 확인하지 않음). 물체가 하나가 아니거나 기본 물체와 헷갈리면 422.'),
     dict(method='POST', path='/api/objects/delete', body={'label': 'custom_N 또는 이름'}, description='등록 물체 삭제. 기본 세 물체는 지울 수 없다. 작업 중이면 409.'),

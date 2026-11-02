@@ -31,7 +31,7 @@ CONTAINED_WORDS = ('흰 상자', '하얀 상자', '흰상자', '하얀상자', '
                    'tape', 'white box', 'red cube', 'red box', 'unknown', '새 물체', '미등록 물체')
 MAX_REGISTERED = 3            # 책상 정리 한 번에 최대 6개(정리 시간·장애물 수 상한 8 안)
 NAME_MAX = 20
-HEIGHT_RANGE_MM = (20., 45.)  # unknown 자동 집기와 같은 범위(운반 높이 130mm·흡착 접근 범위 안)
+HEIGHT_RANGE_MM = (20., 55.)  # unknown 자동 집기(unknown_objects.MAX_HEIGHT_MM)와 같은 범위(운반 높이 130mm·흡착 접근 범위 안)
 FOOTPRINT_RANGE_MM = (20., 85.)   # 칸(92×100mm)에 들어가는 크기. 사진 사각형으로 재므로 비스듬히 놓으면 크게 잡힌다
 # 알아보기 허용치
 HEIGHT_TOL_MM = 6.            # 깊이 높이 오차(약 ±3mm)의 두 배

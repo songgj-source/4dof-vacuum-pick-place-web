@@ -90,7 +90,7 @@ class RegisterTests(RegistryBase):
             (dict(name='큰 줄자 케이스'), '기본 물체 이름'),
             (dict(name=''), '이름'),
             (dict(slot=4), '칸은'),
-            (dict(height_mm=80), '높이는 20~45'),
+            (dict(height_mm=80), '높이는 20~55'),
             (dict(frame=scene(color=(235, 235, 235), top_mm=24)), '흰 상자'),     # 흰 상자와 색·높이가 비슷
             (dict(frame=scene(color=(20, 20, 210), top_mm=40)), '빨간 정육면체'),
         ]

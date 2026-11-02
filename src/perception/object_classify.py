@@ -205,6 +205,10 @@ def _blobs(raised, height=None):
     return blobs
 
 
+# 기본 물체의 깊이 윗면 높이(mm): 실제 프레임 20여 장에서 잰 값. 흰 상자 21~31(중앙 23.5), 정육면체 39~41.5, 줄자 33~34.5(실제 30mm에 깊이 +3mm).
+BUILTIN_TOP_MM = {'white_box': 24., 'red_cube': 40., 'tape_measure': 33.}
+BUILTIN_TOP_TOL_MM = 8.
+
 SPLIT_MIN_BLOB_PX = 3600       # 이보다 작은 덩어리는 한 물체다(한 물체는 3000px 안쪽). 줄자 하나의 흰 글씨·반사가 가짜 흰 상자를 만들었다(2026-10-30: 흰 상자 2개로 계획 거부)
 SPLIT_MIN_PART_PX = 350        # 붙은 물체를 색으로 나눌 때 한 물체가 되려면 이 색이 덩어리 안에 이만큼은 있어야 한다
 SPLIT_GROW_PX = 3               # 색 조각을 이만큼 부풀려 물체 몸통(어두운 옆면·글씨)까지 포함한다
@@ -267,6 +271,10 @@ def classify_objects(bgr, depth, intrinsics=None):
         if mine:
             label = mine
         if max(w, h) > MAX_OBJECT_PX or blob_median < MIN_NAMED_HEIGHT_MM:
+            label = 'unknown'
+        # 기본 물체는 색만으로 이름을 붙이면 같은 색의 다른 물체(높이가 다른 흰 상자 등)를 그 물체로 착각해 카탈로그 높이로 집는다(2026-11-02).
+        # 깊이로 잰 윗면 높이가 그 물체의 높이와 BUILTIN_TOP_TOL_MM 넘게 다르면 새 물체로 본다(새 물체는 잰 높이로 집는다).
+        if label in BUILTIN_TOP_MM and abs(top_mm - BUILTIN_TOP_MM[label]) > BUILTIN_TOP_TOL_MM:
             label = 'unknown'
         # 윗면: 덩어리에서 가장 높은 쪽(상위 10% 높이에서 5mm 이내) 픽셀의 중심. 깊이 좌표 기준이다.
         blob_height = np.where(blob & (depth > 0), height, -np.inf)

@@ -156,7 +156,7 @@ def main(argv=None):
             if value:parser.error(f'manual target conflicts with {flag}')
         mx,my,mz=args.manual_target_mm
         if not all(math.isfinite(v) for v in (mx,my,mz)):parser.error('manual target must be finite')
-        if not 15.<=mz<=45. or mz<args.min_contact_z_mm:parser.error('manual contact z must be within 15-45 mm and not below --min-contact-z-mm')
+        if not 15.<=mz<=50. or mz<args.min_contact_z_mm:parser.error('manual contact z must be within 15-50 mm and not below --min-contact-z-mm')
         # 기울여 집으면 접촉이 약간 높게 끝났다(사용자 확인 2026-10-15). 기울여 집을 때만 접촉 높이를 3mm 더 낮춘다(최소 높이는 지킨다).
         if args.pick_tilt_deg:mz=max(mz-3.,args.min_contact_z_mm)
         manual=dict(target_xy=(mx/1000.,my/1000.),contact_z=mz/1000.,radius_m=math.hypot(mx,my)/1000.,
@@ -558,6 +558,8 @@ def main(argv=None):
                 print(json.dumps(dict(located=located),ensure_ascii=False,default=float),flush=True)
                 if is_cancelled():raise InterruptedError('cancelled after locating the box')
                 known=(*located['target_xy'],located['contact_z'])
+                # 접근 높이: 보통 70mm. 윗면이 높은 물체(접촉 40mm 넘음, 최대 50mm)는 접촉보다 30mm 위로 올려 윗면과 부딪히지 않게 한다(2026-11-02: 새 물체 한도 45→55mm)
+                approach_z=max(.070,known[2]+.030);approach_box_top=max(.040,known[2]+.005)
                 radius=math.hypot(*known[:2]);inner=max(.12,radius-.040)
                 # Stay on the same ray, 4 cm short of the box, until the low approach.
                 set_pitch(args.travel_p)
@@ -582,7 +584,7 @@ def main(argv=None):
                     if cur[2]<transit_z-.008 and not (low_start and cur[2]>=CHAIN_LOW_TRANSIT_Z):
                         result['chain_refused']=True      # 멈춰 선 채 운반 높이에 못 미침: HOME을 거쳐 다시 한다
                         raise ValueError('could not rise to the transit height above the tray')
-                    path=polar_path(tuple(cur),approach_via,.030)+[(*known[:2],.070)]
+                    path=polar_path(tuple(cur),approach_via,.030)+[(*known[:2],approach_z)]
                     result['chain_transit']=dict(start_xyz=list(cur),transit_z=transit_z,points=len(path),rise_on_the_way=low_start);save()
                     def transit(name,points):
                         # 한 번 이동 한도(1600펄스)를 넘으면 움직이기 전에 거부된다: 경로를 반으로 나눠 이어 간다(place의 move_path와 같다)
@@ -597,12 +599,12 @@ def main(argv=None):
                         if math.dist(fresh_xyz(),cur)<.003:result['chain_refused']=True
                         raise
                 else:
-                  try:hover('approach',(*known[:2],.070),box_top_m=.040,via=[approach_via],via_pulses=approach_pulses)
+                  try:hover('approach',(*known[:2],approach_z),box_top_m=approach_box_top,via=[approach_via],via_pulses=approach_pulses)
                   except ValueError as exc:
                     # 멀리 있는 물체: 한 번 이동 한도(1600펄스)를 넘으면 움직이기 전에 거부된다. 한도는 그대로 두고 경유점에서 둘로 나눠 이어 간다.
                     if str(exc)!='hover change exceeds trial envelope':raise
                     hover('approach',approach_via,box_top_m=.040)
-                    hover('approach_b',(*known[:2],.070),box_top_m=.040)
+                    hover('approach_b',(*known[:2],approach_z),box_top_m=approach_box_top)
                 if args.hover_photo_only:
                     driver.sleep(1.0)
                     hover_xyz=fresh_xyz();capture('hover70',astra=False)

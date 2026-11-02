@@ -48,3 +48,18 @@ def test_red_cube_in_shadow_is_still_a_red_cube():
     found = object_classify.classify_objects(cv2.imread(str(base / 'desk_rgb.png')), np.load(base / 'desk_depth_mm.npy'))
     small = sorted(o['label'] for o in found if max(o['bbox_px'][2:]) < 100)          # 트레이(약 110px 덩어리)는 뺀다
     assert small == ['red_cube', 'tape_measure', 'white_box']
+
+
+def _white_patch(height_mm):
+    bgr = np.full((480, 640, 3), (200, 200, 200), np.uint8)
+    depth = np.full((480, 640), 600, np.uint16)
+    bgr[250:310, 250:330] = 250
+    depth[250:310, 250:330] = 600 - int(height_mm)
+    return bgr, depth
+
+
+def test_white_object_is_a_white_box_only_when_the_height_matches():
+    # 2026-11-02: 색만 보고 높이가 다른 흰 상자도 '흰 상자'(카탈로그 높이 24mm)로 집으려 했다
+    labels = lambda h: [o['label'] for o in object_classify.classify_objects(*_white_patch(h))]
+    assert labels(24) == ['white_box'] and labels(28) == ['white_box']
+    assert labels(45) == ['unknown'] and labels(60) == ['unknown']

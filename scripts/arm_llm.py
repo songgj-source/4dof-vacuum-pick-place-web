@@ -66,6 +66,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from sorting.sort_job import parse_command          # noqa: E402
 import base_drive                                   # noqa: E402  팀 주행 서버(map_web)
 from perception import object_namer                # noqa: E402  새 물체 색·이름 라벨
+from perception.unknown_objects import MAX_HEIGHT_MM as MAX_UNKNOWN_HEIGHT_MM      # noqa: E402  새 물체로 넣을 수 있는 최대 높이
+MAX_UNKNOWN_CM = MAX_UNKNOWN_HEIGHT_MM / 10.
 
 _SYNONYMS = (('빨간 큐브', '빨간 정육면체'), ('빨간큐브', '빨간 정육면체'), ('큐브', '정육면체'), ('새로운 물체', '새 물체'),
              ('모르는 물체', '새 물체'), ('등록 안 된 물체', '새 물체'), ('새물체', '새 물체'))
@@ -192,6 +194,8 @@ def read_desk(scene):
 def reach_reason(o):
     """안 닿는 물체 하나의 이유: '너무 가깝습니다(12cm, 최소 16cm)' / '너무 멉니다(34cm, 최대 30cm)'. 거리를 모르거나 거리는 맞으면 ''."""
     cm = None if o.get('distance_mm') is None else round(o['distance_mm'] / 10)
+    if o.get('too_tall'):
+        return f"너무 높습니다({float(o.get('height_mm') or 0) / 10:.1f}cm, 최대 {MAX_UNKNOWN_CM:.1f}cm)"
     if o.get('range') == 'near':
         return f'너무 가깝습니다({cm}cm, 최소 16cm)'
     if o.get('range') == 'far':
@@ -215,7 +219,8 @@ def unreachable_note(scene):
         parts.append(f"{name}{josa(name, '은', '는')} {why}" if why else name)
     if not parts:
         return ''
-    return '닿지 않아 뺐습니다: ' + ', '.join(parts) + '.' + (' 로봇에서 16~30cm 안으로 옮겨 주세요.' if any('(' in x for x in parts) else '')
+    movable = any('(' in x and '너무 높습니다' not in x for x in parts)           # 거리 문제만 옮기면 풀린다(높이는 옮겨도 그대로)
+    return '닿지 않아 뺐습니다: ' + ', '.join(parts) + '.' + (' 로봇에서 16~30cm 안으로 옮겨 주세요.' if movable else '')
 
 
 def unknown_counts(scene):
@@ -227,7 +232,10 @@ def unknown_counts(scene):
 
 def far_unknown_note(scene):
     far = unknown_counts(scene)[1]
-    return f'새 물체 {far}개는 팔이 닿지 않아(30cm 넘음) 뺐습니다.' if far else ''
+    tall = sum(1 for o in scene.get('objects') or [] if o['label'] == 'unknown' and o.get('too_tall'))
+    far -= tall
+    parts = ([f'새 물체 {far}개는 팔이 닿지 않아(30cm 넘음) 뺐습니다.'] if far > 0 else []) + ([f'새 물체 {tall}개는 너무 높아(최대 {MAX_UNKNOWN_CM:.1f}cm) 뺐습니다.'] if tall else [])
+    return ' '.join(parts)
 
 
 def unknown_guess(scene):

@@ -11,7 +11,9 @@ from perception.box_target import BoxLocator
 from robot.robot_frame import BARE_TABLE_PLANE_Z
 from robot.robot_model import load_planar_model, reachable
 
-MIN_HEIGHT_MM, MAX_HEIGHT_MM = 20., 45.
+# 새 물체로 집어 칸에 넣을 수 있는 높이. 상한: 접촉 높이(윗면-5mm)가 pick_auto 접촉 한계 50mm 안이고, 든 채 트레이 벽을 넘는 높이가 놓기 상한 130mm 안이다
+# (2026-11-02: 45→55mm. 높이 55mm는 가장 가까운 칸에서 계획이 선다. 그보다 높은 물체는 상한 130mm와 HOME 복귀 구간 135mm를 실물로 다시 확인해야 한다).
+MIN_HEIGHT_MM, MAX_HEIGHT_MM = 20., 55.
 MAX_FOOTPRINT_MM = 120.
 HEIGHT_UNCERTAINTY_MM = 3.
 MIN_COUNTED_TOP_MM = 16.        # 새 물체로 세는 덩어리의 최소 윗면 높이(지원 물체는 20mm 이상, 깊이 오차 여유). 트레이 칸 바닥(약 11mm)은 세지 않는다
@@ -32,7 +34,7 @@ def validate_geometry(geometry):
     def finite(v):
         return not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
     if not finite(height) or not MIN_HEIGHT_MM <= height <= MAX_HEIGHT_MM:
-        raise ValueError('unknown 높이는 20~45mm 범위여야 합니다.')
+        raise ValueError(f'unknown 높이는 {MIN_HEIGHT_MM:.0f}~{MAX_HEIGHT_MM:.0f}mm 범위여야 합니다.')
     if not isinstance(size, (list, tuple)) or len(size) != 2 or any(not finite(v) or not 20 <= v <= MAX_FOOTPRINT_MM for v in size):
         raise ValueError('unknown 가로·세로 추정값은 20~120mm 범위여야 합니다.')
     if not finite(uncertainty) or not 0 <= uncertainty <= HEIGHT_UNCERTAINTY_MM or geometry.get('top_flat') is not True:
