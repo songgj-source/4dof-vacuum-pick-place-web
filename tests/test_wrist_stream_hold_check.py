@@ -2,6 +2,8 @@
 import threading
 import time
 
+from pathlib import Path
+
 import numpy as np
 
 from motion import hold_check
@@ -137,3 +139,26 @@ def test_colored_object_left_on_the_table_still_fails():
         left[240:, 270:460] = contact[240:, 270:460]                            # 컵·볼트는 카메라에 붙어 그대로
         left[440:] = contact[440:]
         assert hold_check.check_hold(contact, left)['held'] is False, trial
+
+
+def test_tilted_white_box_that_was_held_passes_by_label_features():
+    # 2026-11-02 Pi: 컵 위에서 기울고 밀린 흰 상자(윤곽 상관 0.25~0.28)를 '안 붙음'으로 멈췄다. 라벨 글씨가 같은 크기로 따라와 있다
+    import cv2
+    data = Path(__file__).resolve().parent / 'data/hold_white_20261102'
+    for trial in ('20261102T011702', '20261102T011745'):
+        contact = cv2.imread(str(data / f'{trial}_before_suction.png'))
+        lifted = cv2.imread(str(data / f'{trial}_lifted_check.png'))
+        verdict = hold_check.check_hold(contact, lifted)
+        assert verdict['held'] is True, (trial, verdict['reason'])
+        assert 0.95 <= verdict['metrics']['feature_scale'] <= 1.05
+
+
+def test_shrunken_tilted_white_box_still_fails():
+    import cv2
+    data = Path(__file__).resolve().parent / 'data/hold_white_20261102'
+    contact = cv2.imread(str(data / '20261102T011702_before_suction.png'))
+    matrix = np.float32([[.8, 0, .2 * 320], [0, .8, .2 * 240]])
+    left = cv2.warpAffine(contact, matrix, (640, 480), borderMode=cv2.BORDER_REPLICATE)
+    left[240:, 270:460] = contact[240:, 270:460]
+    left[440:] = contact[440:]
+    assert hold_check.check_hold(contact, left)['held'] is False

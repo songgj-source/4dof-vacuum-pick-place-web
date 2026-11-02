@@ -40,3 +40,11 @@ def test_tape_with_white_marks_is_not_split_into_a_fake_white_box():
     labels = sorted(o['label'] for o in found if o['label'] != 'unknown')
     assert labels == ['tape_measure', 'white_box']                                       # 각각 하나씩
     assert object_classify.SPLIT_MIN_BLOB_PX >= 3600
+
+
+def test_red_cube_in_shadow_is_still_a_red_cube():
+    # 2026-11-02 Pi: 그림자 속 정육면체(밝기 V 중앙값 31)가 색 픽셀 부족으로 '새 물체'가 되어 정리에서 빠졌다
+    base = Path(__file__).resolve().parent / 'data/dark_red_20261102'
+    found = object_classify.classify_objects(cv2.imread(str(base / 'desk_rgb.png')), np.load(base / 'desk_depth_mm.npy'))
+    small = sorted(o['label'] for o in found if max(o['bbox_px'][2:]) < 100)          # 트레이(약 110px 덩어리)는 뺀다
+    assert small == ['red_cube', 'tape_measure', 'white_box']

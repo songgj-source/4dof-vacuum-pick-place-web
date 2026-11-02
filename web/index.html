@@ -672,7 +672,7 @@ async function lookAround() {
     }
     offer(msg, data.proposal);
     chatHistory.push({ role: 'assistant', content: data.reply });
-    speak(data.speech || data.reply, false);
+    speak(brief(data.speech || data.reply), false);
   } catch (err) { wait.remove(); bubble('bot err', '서버에 연결하지 못했습니다.'); }
   finally { looking = false; }
 }
@@ -722,10 +722,44 @@ function koreanVoice() {
 if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => {
   const v = koreanVoice(); $('speak-on').parentElement.title = v ? '목소리: ' + v.name : '한국어 음성을 찾지 못했습니다(기본 음성으로 읽음)';
 };
+// 소리로 읽기 좋게 다듬는다(화면 글자는 그대로). 괄호·쌍점·단위 기호를 TTS가 어색하게 읽거나 건너뛰는 것을 풀어 쓴다.
+function spoken(text) {
+  return String(text)
+    .replace(/\*\*/g, '')
+    .replace(/([가-힣A-Za-z]+)\((\d+번 칸)\)/g, '$1 $2')              // 줄자(3번 칸) → 줄자 3번 칸
+    .replace(/\((?:[^()]*?)(?:같음|cm|mm|\d)[^()]*\)/g, (m) => /같음/.test(m) ? ', ' + (m.slice(1, -1).replace(/\s*같음$/, '').split(/,\s*/).length === 2 ? m.slice(1, -1).replace(/\s*같음$/, '').replace(/,\s*/, '나 ') : m.slice(1, -1).replace(/\s*같음$/, '')) + ' 같은 것' : '')   // (박스, 펜 같음) → , 박스, 펜 같은 것 / (12cm, 최소 16cm) 삭제
+    .replace(/\(([^()]*)\)/g, ' $1 ')
+    .replace(/(\d+)\s*~\s*(\d+)\s*cm/g, '$1에서 $2센티미터')
+    .replace(/(\d+(?:\.\d+)?)\s*cm/g, '$1센티미터')
+    .replace(/(\d+(?:\.\d+)?)\s*mm/g, '$1밀리미터')
+    .replace(/(\d+(?:\.\d+)?)\s*m(?![a-z가-힣])/g, '$1미터')
+    .replace(/(^|[\s(,])-(\d)/g, '$1마이너스 $2')
+    .replace(/(\d+(?:\.\d+)?)\s*°/g, '$1도')
+    .replace(/닿지 않아 뺐습니다\s*:\s*/g, '닿지 않아 뺐습니다. ')
+    .replace(/(책상 위|칸 안|책상에 남은 물체)\s*:\s*/g, (m, k) => (k === '책상에 남은 물체' ? k + '는 ' : k + '에는 '))
+    .replace(/정리 확인\s*:\s*/g, '정리 확인 결과, ')
+    .replace(/\s*[:：]\s*/g, ', ')
+    .replace(/\s*[·→]\s*/g, ', ')
+    .replace(/['"‘’“”`]/g, '')
+    .replace(/\s*,\s*,/g, ',').replace(/,\s*\./g, '.').replace(/\s{2,}/g, ' ')
+    .trim();
+}
+// 긴 상황 설명은 화면에만 자세히 보이고, 소리는 핵심 한두 문장만 읽는다(2026-10-30 사용자: 간단하게 말하기).
+function brief(text) {
+  const sentences = String(text).split(/(?<=[.!?])\s+/).filter(Boolean);
+  if (sentences.length && /^정리 확인/.test(sentences[0])) return sentences[0];                    // 정리 확인: 결과 한 문장
+  const out = [];
+  for (const sentence of sentences) {
+    if (/도착해 다시 찍었습니다|^책상 위:|^칸 안:|^사진마다|이미 칸에 있습니다|준비했습니다|라고 하면 시작|^로봇에서 16~30cm/.test(sentence)) continue;
+    out.push(/^닿지 않아 뺐습니다/.test(sentence) ? '닿지 않는 물체는 뺍니다.' : sentence);
+  }
+  const lines = out.length ? out : sentences.slice(0, 1);
+  return [...new Set(lines)].join(' ');
+}
 function speak(text, interrupt = true) {          // interrupt=false: 진행 알림은 앞 문장을 끊지 않고 이어서 말한다
   if (!$('speak-on').checked || !window.speechSynthesis) return;
   if (interrupt) speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(String(text).replace(/\*\*/g, '')); u.lang = 'ko-KR'; u.rate = 1.1;
+  const u = new SpeechSynthesisUtterance(spoken(text)); u.lang = 'ko-KR'; u.rate = 1.1;
   const voice = koreanVoice(); if (voice) u.voice = voice;
   u.onerror = (e) => {
     if (voice && !voice.localService && !remoteVoiceFailed && e.error !== 'interrupted' && e.error !== 'canceled') {
@@ -858,7 +892,7 @@ function showDeskQuestion(task) {
   }
   offer(msg, q.proposal);       // 선택지만 준비한다. 사용자 답변/클릭 전에는 실행하지 않는다.
   chatHistory.push({ role: 'assistant', content: q.reply });
-  speak(q.speech || q.reply, false);
+  speak(brief(q.speech || q.reply), false);
 }
 function actionSummary(task, p) {
   const phase = p.phase || '', place = (task.params || {}).label || '목적지';
@@ -907,7 +941,7 @@ function announce(task) {
     const summary = actionSummary(task, p);
     if (!summary || t.seen.has(summary[0])) continue;
     t.seen.add(summary[0]);
-    const msg = bubble('bot', summary[1]); speak(summary[1], false);
+    const msg = bubble('bot', summary[1]); speak(['found', 'verify'].some((k) => summary[0].startsWith(k)) ? brief(summary[1]) : summary[1], false);
     if (summary[0] === 'found' || summary[0].startsWith('verify')) attachLatestPhoto(msg);
   }
   if (task.state !== 'running' && task.result && !t.done) {

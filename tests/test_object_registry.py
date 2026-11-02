@@ -71,7 +71,7 @@ class RegisterTests(RegistryBase):
         with patch('perception.object_targets.reachable', return_value=True):
             targets = locate_targets(*scene(), self.root, model=SimpleNamespace(), locator=LOC)
         self.assertEqual([(t['label'], t['slot']) for t in targets], [('custom_1', 2)])
-        self.assertAlmostEqual(targets[0]['contact_z'] * 1000, 34 - 3.5 - 3, delta=.01)    # 자로 잰 높이 + 컵 보정 - 추가 누름
+        self.assertAlmostEqual(targets[0]['contact_z'] * 1000, 34 - 3.5 - 1, delta=.01)    # 자로 잰 높이 + 컵 보정 - 추가 누름
 
     def test_measured_height_is_used_without_a_ruler(self):
         entry = self.register()

@@ -18,6 +18,10 @@ TILT_RADIAL_MM_PER_DEG = -0.8
 # 사용자 요청(2026-10-15): 칸 안으로 너무 깊게 들어간다 → 놓는 높이를 2cm 올린다(물체는 해제 뒤 2cm 떨어진다).
 DROP_RAISE_MM = 20.
 # 사용자 요청(2026-10-15): 1번 칸으로 너무 멀리 간다 → 1번 칸 목표를 로봇 쪽(반경 방향 안쪽)으로 2cm 옮긴다.
+# 2026-11-02 사용자: 2번 칸에 계속 벽 끝에 놓인다. 같은 트레이 사진을 칸 윤곽과 겹쳐 보니 검출한 2번 칸 중심이 로봇에서 먼 쪽 칸막이 가장자리에 있었다
+# (실제 칸 가운데보다 약 28mm 멀다: 칸 바닥 방식의 위치 불확실 25mm + 트레이용 옛 카메라 변환). 트레이 길이 방향으로 로봇 쪽 25mm 옮긴다
+# (반경 방향으로 옮기면 옆으로도 밀린다). 아직 어긋나면 이 값을 조정한다. 번호: 칸 번호, 값: mm(+는 로봇에서 먼 쪽).
+SLOT_AXIS_OFFSET_MM = {2: -25.}
 SLOT_RADIAL_OFFSET_MM = {}   # 2026-10-21: 1번 칸 고정 -20mm 대신 place_plan이 기울기·물체 높이로 컵을 안쪽에 둔다(물체 높이 × sin 기울기)
 
 
@@ -73,6 +77,14 @@ def build_job(targets, tray, catalog, label, commanded_slot=None, *, acknowledge
     else:
         manual[0], manual[1], tangential = pick_correction.apply(manual[0], manual[1])
     slot_x, slot_y = slot['x_mm'], slot['y_mm']
+    axis_shift = SLOT_AXIS_OFFSET_MM.get(slot_number, 0.)
+    if axis_shift and len(tray.get('slots') or {}) >= 2:
+        from tray.tray_capacity import slot_axis_xy
+        axis = slot_axis_xy(tray['slots'])
+        if axis is not None:
+            if axis[0] * slot_x + axis[1] * slot_y < 0:      # 방향을 로봇에서 먼 쪽으로 맞춘다
+                axis = [-axis[0], -axis[1]]
+            slot_x, slot_y = slot_x + axis[0] * axis_shift, slot_y + axis[1] * axis_shift
     shift = SLOT_RADIAL_OFFSET_MM.get(slot_number, 0.)
     if shift:
         slot_radius = math.hypot(slot_x, slot_y)

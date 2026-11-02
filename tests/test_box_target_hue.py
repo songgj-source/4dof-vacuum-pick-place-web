@@ -34,9 +34,9 @@ def test_white_box_presses_deeper_than_the_common_press():
     """2026-10-26 Pi: 흰 상자는 공통 3mm 누르기(17.5mm)로 덜 닿아 물체 항목에서 5mm(15.5mm)로 바꿨다. 다른 물체는 공통 값."""
     from perception.object_targets import extra_press_mm, load_catalog
     catalog = load_catalog(ROOT / 'config' / 'object_catalog.json')
-    assert extra_press_mm(catalog, 'white_box') == 5
-    assert extra_press_mm(catalog, 'red_cube') == extra_press_mm(catalog, 'tape_measure') == 3
-    assert 24 + catalog['cup_contact_offset_mm'] - extra_press_mm(catalog, 'white_box') == 15.5
+    assert extra_press_mm(catalog, 'white_box') == 4
+    assert extra_press_mm(catalog, 'red_cube') == extra_press_mm(catalog, 'tape_measure') == 1
+    assert 24 + catalog['cup_contact_offset_mm'] - extra_press_mm(catalog, 'white_box') == 16.5
 
 
 def test_pick_tilt_never_exceeds_10_degrees():

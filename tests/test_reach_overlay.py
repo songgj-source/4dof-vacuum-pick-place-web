@@ -27,9 +27,10 @@ def test_overlay_draws_ranges_and_keeps_the_original_untouched():
     out = reach_overlay.annotate(bgr, ROOT)
     assert out.shape == bgr.shape and (bgr == original).all()        # 원본은 그대로, 복사본에 그린다
     assert (out != bgr).any()
-    green = ((out[..., 1] > 150) & (out[..., 0] < 120) & (out[..., 2] < 140)).sum()
-    blue = ((out[..., 0] > 200) & (out[..., 1] > 120) & (out[..., 2] < 90)).sum()
-    assert green > 300 and blue > 300                                  # 초록 띠·선, 파랑 놓기 선
+    changed = (out != bgr).any(axis=2).sum()
+    green = ((out[..., 1] > 190) & (out[..., 0] < 170) & (out[..., 2] < 170)).sum()
+    blue = ((out[..., 0] > 200) & (out[..., 1] > 110) & (out[..., 2] < 140)).sum()
+    assert changed > 8000 and green > 80 and blue > 80                 # 옅은 면 + 가는 초록 선, 파랑 놓기 선, 범례 카드
 
 
 def test_objects_and_slots_get_distance_labels():

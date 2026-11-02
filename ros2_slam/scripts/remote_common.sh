@@ -2,11 +2,11 @@
 # things on the robot (Raspberry Pi) from the laptop.
 #
 # Environment:
-#   ROBOT          ssh target (default user@192.168.0.31)
+#   ROBOT          ssh target (default user@192.168.0.115)
 #   REMOTE_WS      workspace on the robot (default ~/ros2_slam_robot, see deploy_to_robot.sh)
 #   ROS_DOMAIN_ID  used on the robot (default 42, must match the laptop)
 
-ROBOT="${ROBOT:-user@192.168.0.31}"
+ROBOT="${ROBOT:-user@192.168.0.115}"
 REMOTE_WS="${REMOTE_WS:-ros2_slam_robot}"
 DOMAIN="${ROS_DOMAIN_ID:-42}"
 

@@ -79,6 +79,40 @@ def structure_match(contact_bgr, lifted_bgr):
     return best, texture
 
 
+# 특징점 대응(SIFT)으로 접촉 사진 → 들어올린 사진의 닮음 변환(크기·회전·이동)을 구한다. 붙어 올라온 흰 상자는 컵 위에서 기울고 100px 가까이 밀려
+# 윤곽 상관이 0.25~0.28로 떨어지지만(2026-11-02 Pi 2건, 잘 집었는데 '안 붙음'으로 멈춤) 라벨 글씨·바코드가 같은 크기(0.995~1.002배)로 따라온다.
+# 책상에 남은 물체는 카메라가 물러나 작아진다(0.9배 이하). 모의 축소와 기존 잘 집은 3건(0.97~0.98배)으로 구분됨을 확인했다.
+FEATURE_MIN_INLIERS = 20
+FEATURE_HELD_SCALE = (.92, 1.15)
+FEATURE_LEFT_SCALE_BELOW = .88
+
+
+def feature_motion(contact_bgr, lifted_bgr):
+    """접촉 사진과 들어올린 사진의 닮음 변환. 컵·볼트와 화면 아래 검은 판은 뺀다. 돌려주는 것: dict(inliers, scale, rotation_deg) 또는 못 구하면 None."""
+    try:
+        gray = [cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) for img in (contact_bgr, lifted_bgr)]
+        mask = np.full(gray[0].shape, 255, np.uint8)
+        mask[CUP_MASK] = 0
+        mask[BOTTOM_IGNORE_Y:] = 0
+        sift = cv2.SIFT_create(nfeatures=1500, contrastThreshold=.02)
+        (ka, da), (kb, db) = (sift.detectAndCompute(g, mask) for g in gray)
+        if da is None or db is None or len(ka) < 8 or len(kb) < 8:
+            return None
+        pairs = [m for m in cv2.BFMatcher().knnMatch(da, db, k=2) if len(m) == 2]
+        good = [a for a, b in pairs if a.distance < .75 * b.distance]
+        if len(good) < 8:
+            return None
+        src = np.float32([ka[g.queryIdx].pt for g in good])
+        dst = np.float32([kb[g.trainIdx].pt for g in good])
+        matrix, inliers = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=6.)
+        if matrix is None or inliers is None:
+            return None
+        return dict(inliers=int(inliers.sum()), scale=float(np.hypot(matrix[0, 0], matrix[1, 0])),
+                    rotation_deg=float(np.degrees(np.arctan2(matrix[1, 0], matrix[0, 0]))))
+    except cv2.error:
+        return None
+
+
 def check_hold(contact_bgr, lifted_bgr):
     base = dict(usable_for_motion=False, physical_validated=False, scope='wrist photos, one lighting/table, provisional thresholds')
     if not (_valid(contact_bgr) and _valid(lifted_bgr)):
@@ -91,6 +125,12 @@ def check_hold(contact_bgr, lifted_bgr):
         # 색으로는 못 찾았다. '안 붙었다'는 증거가 아니므로 윤곽 일치도로 따로 판단하고, 그것도 판단할 수 없으면 막지 않는다.
         score, texture = structure_match(contact_bgr, lifted_bgr)
         metrics.update(structure_match=score, structure_texture=texture)
+        motion = feature_motion(contact_bgr, lifted_bgr) if score < STRUCTURE_TRUE_MIN else None      # 윤곽이 안 맞을 때만(비용)
+        if motion is not None:
+            metrics.update(feature_inliers=motion['inliers'], feature_scale=motion['scale'], feature_rotation_deg=motion['rotation_deg'])
+            if motion['inliers'] >= FEATURE_MIN_INLIERS and FEATURE_HELD_SCALE[0] <= motion['scale'] <= FEATURE_HELD_SCALE[1]:
+                return dict(base, held=True, metrics=metrics,
+                            reason=f"label/print features kept their size in the lifted photo (scale {motion['scale']:.2f}, {motion['inliers']} matches); tilted or shifted held object")
         if texture < STRUCTURE_MIN_TEXTURE:
             return dict(base, held=None, reason='object not visible at contact (low contrast, e.g. plain white); cannot verify', metrics=metrics)
         if score >= STRUCTURE_TRUE_MIN:

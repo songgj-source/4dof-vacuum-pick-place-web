@@ -3,7 +3,7 @@
 #
 #   bash pi/deploy_to_robot.sh                       # 올리기 + 설치(--no-service)
 #   bash pi/deploy_to_robot.sh --dry-run             # 접속·복사 없이 할 일만 출력
-#   ROBOT=user@192.168.0.31 ARM_SSH_KEY=~/.ssh/id_ed25519_workstation6 bash pi/deploy_to_robot.sh   (주소·키 지정)
+#   ROBOT=user@192.168.0.115 ARM_SSH_KEY=~/.ssh/id_ed25519_workstation6 bash pi/deploy_to_robot.sh   (주소·키 지정)
 #   설치 옵션을 Pi의 install.sh에 넘기려면 -- 뒤에: bash pi/deploy_to_robot.sh -- --no-apt --openni2 /opt/openni2-orbbec
 #
 # 복사하는 것: git이 관리하는(또는 새로 만든) 코드·설정·보정 파일과 내 주행 코드(ros2_slam/ 사본, Pi에서 빌드). 안 하는 것: output/ 실행 기록,
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ROBOT="${ROBOT:-user@192.168.0.31}"
+ROBOT="${ROBOT:-user@192.168.0.115}"
 REMOTE_DIR="${REMOTE_DIR:-4dof_ik_pi_test}"
 DRY=0
 INSTALL_ARGS=()

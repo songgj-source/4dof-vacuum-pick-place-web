@@ -6,13 +6,13 @@ set -euo pipefail
 # so the Pi's ~/dapier_project checkout stays clean for git pull.
 #
 # Usage: ./scripts/deploy_to_robot.sh [user@host] [remote_ws_dir]
-#   defaults: user@192.168.0.31  ~/ros2_slam_robot
+#   defaults: user@192.168.0.115  ~/ros2_slam_robot
 # Needs ssh access (you'll be asked for the password unless you have a key).
 # The first deploy also installs Orbbec's OpenNI2 runtime on the robot (sudo).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WS_DIR="$(dirname "$SCRIPT_DIR")"
-ROBOT="${1:-${ROBOT:-user@192.168.0.31}}"
+ROBOT="${1:-${ROBOT:-user@192.168.0.115}}"
 REMOTE_WS="${2:-ros2_slam_robot}"
 
 # One ssh connection shared by rsync + the build (one password prompt).

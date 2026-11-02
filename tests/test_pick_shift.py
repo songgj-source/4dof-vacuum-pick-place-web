@@ -53,4 +53,4 @@ def test_scene_reports_the_offset_and_overlay_marks_it():
     src = (ROOT / 'scripts/arm_api.py').read_text()
     assert "pick_offset_mm=round(float(target.get('pick_offset_mm') or 0.), 1)" in src
     overlay = (ROOT / 'src/perception/reach_overlay.py').read_text()
-    assert "'*' if abs(obj.get('pick_offset_mm') or 0.) >= .5" in overlay
+    assert "' *' if abs(obj.get('pick_offset_mm') or 0.) >= .5" in overlay

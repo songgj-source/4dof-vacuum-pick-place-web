@@ -12,3 +12,4 @@ os.environ.setdefault('ARM_ARRIVAL_PHOTO', '0')     # 그냥 이동한 뒤 찍�
 # 이 conda 환경에는 autolab_perception의 'perception' 패키지가 깔려 있어 우리 src/perception을 가린다. 시험 파일을 따로 돌려도 src가 먼저 오게 한다.
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(_ROOT / 'src'), str(_ROOT / 'scripts')]
+os.environ.setdefault('ARM_SCENE_FRAMES', '0')       # 시험이 저장소 output/에 사진을 쌓지 않게

@@ -745,10 +745,10 @@ class Arm:
     MORE_ROUNDS = 2      # 정리 확인에서 덜 됐으면 마저 정리하는 최대 횟수(같은 물체를 계속 못 집어 끝없이 도는 것을 막는다)
 
     def _pick_all(self, task_id, objects=None, include_new=False):
-        """책상 정리. ARM_TIDY_VERIFY=1이면 끝난 뒤 책상을 다시 찍어 정리가 잘 됐는지 확인한다(결과의 verification·note). 기본은 꺼짐(2026-10-28 사용자: 끝까지 놓고 HOME에서 확인하지 말고 집는 순간 손목 카메라로 확인).
+        """책상 정리. 물체를 모두 집어 놓은 뒤 HOME에서 책상을 다시 찍어 정리가 잘 됐는지 확인한다(결과의 verification·note). 기본은 켜짐(2026-11-02 사용자: 집기가 모두 끝난 뒤 사진으로 확인; 10-28엔 시간 때문에 껐다). ARM_TIDY_VERIFY=0이면 끈다.
         확인에서 책상에 집을 수 있는 물체가 남았으면 '마저 정리하겠습니다'라고 알리고 남은 것만 이어서 정리한다(최대 MORE_ROUNDS번, 남은 물체가 줄지 않으면 멈춘다)."""
         outcome = self._pick_all_run(task_id, objects, include_new)
-        if not outcome.get('ok') or self.stop_requested or os.environ.get('ARM_TIDY_VERIFY', '0') != '1':
+        if not outcome.get('ok') or self.stop_requested or os.environ.get('ARM_TIDY_VERIFY', '1') == '0':
             return outcome
         first_note, more_notes, previous = outcome.get('note'), [], None
         for round_no in range(self.MORE_ROUNDS + 1):
@@ -1110,40 +1110,112 @@ ARM_HEIGHT_MM = 100.     # 이보다 높은 '등록 안 된 물체'는 로봇팔
 IN_TRAY_SCENE_MM = 70.       # 화면 판단에서 '칸 안'으로 보는 칸 중심 거리(칸 92×100mm의 모서리까지). 칸 안 물체 윗면은 칸 중심에서 50~70mm 떨어져 잡히기도 한다
 
 
-def tray_slots(bgr, depth):
-    """지금 트레이 칸 위치({번호: x_mm, y_mm ...}) 또는 None. 칸에 물체가 들어 있으면 실시간으로 칸 바닥을 못 찾으므로
-    저장해 둔 빈 트레이 사진을 쓰고, 트레이가 조금 밀렸으면 밀린 만큼 옮긴다(plan_sort와 같은 방식)."""
+LAST_TRAY_FILES = ('last_empty_tray_rgb.png', 'last_empty_tray_depth.npy', 'last_empty_tray_slots.json')
+LAST_TRAY_MOVE_MM = 4.      # 이만큼 안 움직였으면 다시 저장하지 않는다(디스크 쓰기를 줄인다)
+
+
+def _slots_from_reference(ref_bgr, ref_depth, ref_slots, bgr, depth, root):
+    """기준 사진(칸 위치를 아는 사진)과 지금 사진을 맞춰 칸 위치를 구한다: 안 움직였으면 그대로, 밀렸으면 밀린 만큼 옮긴다. 못 구하면 None."""
+    from tray.tray_frame_check import tray_offset_px, register_tray, move_slots, GOOD_SCORE
+    offset = tray_offset_px(ref_bgr, bgr, depth=ref_depth, root=root)
+    if offset['ok']:
+        return ref_slots
+    moved = register_tray(ref_bgr, bgr, depth=ref_depth, root=root)
+    if moved['ok']:
+        return move_slots(ref_slots, moved, root)
+    # 화면 판단용(집기 계획에는 쓰지 않는다): 1번 칸에 넣은 물체가 트레이 끝 모서리 둘을 가리면 맞는 모서리가 하나뿐이다(2026-10-22).
+    # 남은 모서리가 정확히 맞고, 나머지가 다른 자리에도 확실히 맞지 않으면(가려짐) 트레이가 그대로라고 보고 저장한 칸을 쓴다.
+    # 나머지 모서리가 다른 자리에 확실히 맞으면 트레이가 움직인 것이다. 안 그러면 칸 안 물체가 책상 물체로 보인다.
+    good = [i for i, (shift, score) in enumerate(zip(offset['offsets_px'], offset['scores'])) if shift <= 3. and score >= GOOD_SCORE]
+    if good and all(i in good or score < GOOD_SCORE for i, score in enumerate(offset['scores'])):
+        return ref_slots
+    return None
+
+
+def _remember_empty_tray(bgr, depth, slots, root):
+    """칸을 직접 찾았고 칸 안에 물체가 없을 때만 그 사진과 칸 위치를 저장한다. 나중에 칸 안 물체가 바닥을 가려 직접 못 찾을 때, 가장 최근의 빈 트레이를
+    기준으로 맞춘다(트레이를 옮겼어도 따라간다). 처음 저장한 기준 사진(output/tray_frames/latest_*)은 계획 때마다 덮어써서 오래됐거나 물체가 들어 있을 수 있다.
+    2026-11-02: 트레이를 옮긴 뒤 칸 안 줄자·정육면체가 책상 물체로 잡혔다(칸 위치를 못 구함)."""
     import cv2
     import numpy as np
-    from tray.tray_detect import detect_tray, detect_tray_checked
+    try:
+        from perception.object_classify import table_height_mm
+        from perception.object_targets import default_locator, load_catalog, DEPTH_MINUS_TOP_CENTER_PX
+        from tray.occupancy import slot_contents
+        from tray.tray_detect import _color_pixel
+        locator, catalog = default_locator(Path(root)), load_catalog(Path(root) / 'config/object_catalog.json')
+        occupied = slot_contents(bgr, table_height_mm(depth), slots, lambda xy, h: _color_pixel(locator, xy, h), DEPTH_MINUS_TOP_CENTER_PX,
+                                 {k: float(v['height_mm']) for k, v in catalog['objects'].items() if k in ALL_ORDER})
+        if occupied:
+            return
+        folder = Path(root) / 'output/tray_frames'
+        meta = folder / LAST_TRAY_FILES[2]
+        if meta.exists():
+            old = json.loads(meta.read_text())
+            if set(old) == {str(k) for k in slots} and all(max(abs(old[str(k)]['x_mm'] - slots[k]['x_mm']), abs(old[str(k)]['y_mm'] - slots[k]['y_mm'])) < LAST_TRAY_MOVE_MM for k in slots):
+                return
+        folder.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(folder / LAST_TRAY_FILES[0]), bgr)
+        np.save(folder / LAST_TRAY_FILES[1], depth)
+        meta.write_text(json.dumps({str(k): {n: x for n, x in v.items() if isinstance(x, (int, float, str, type(None)))} for k, v in slots.items()}))
+    except Exception:
+        pass
+
+
+def tray_slots(bgr, depth):
+    """지금 트레이 칸 위치({번호: x_mm, y_mm ...}) 또는 None. 칸에 물체가 들어 있으면 실시간으로 칸 바닥을 못 찾으므로
+    저장해 둔 빈 트레이 사진을 쓰고, 트레이가 조금 밀렸으면 밀린 만큼 옮긴다(plan_sort와 같은 방식).
+    그것도 안 맞으면(트레이를 옮겼다) 가장 최근에 칸 안이 빈 채로 직접 찾았던 트레이 사진을 기준으로 다시 맞춘다."""
+    import cv2
+    import numpy as np
+    from tray.tray_detect import detect_tray_checked
     root = menu.ROOT
     try:
         live = detect_tray_checked(bgr, depth, root, first_end='far_from_base')
         if live.get('found'):
+            _remember_empty_tray(bgr, depth, live['slots'], root)
             return live['slots']
+        references = []
         rgb, dep = menu.TRAY_FRAME
-        if not (rgb.exists() and dep.exists()):
-            return None
-        from tray.tray_frame_check import tray_offset_px, register_tray, move_slots, GOOD_SCORE
-        stored_bgr, stored_depth = cv2.imread(str(rgb)), np.load(dep)
-        stored = detect_tray_checked(stored_bgr, stored_depth, root, first_end='far_from_base', prefer_floors=True)
-        if not stored.get('found'):
-            return None
-        offset = tray_offset_px(stored_bgr, bgr, depth=stored_depth, root=root)
-        if offset['ok']:
-            return stored['slots']
-        moved = register_tray(stored_bgr, bgr, depth=stored_depth, root=root)
-        if moved['ok']:
-            return move_slots(stored['slots'], moved, root)
-        # 화면 판단용(집기 계획에는 쓰지 않는다): 1번 칸에 넣은 물체가 트레이 끝 모서리 둘을 가리면 맞는 모서리가 하나뿐이다(2026-10-22).
-        # 남은 모서리가 정확히 맞고, 나머지가 다른 자리에도 확실히 맞지 않으면(가려짐) 트레이가 그대로라고 보고 저장한 칸을 쓴다.
-        # 나머지 모서리가 다른 자리에 확실히 맞으면 트레이가 움직인 것이다. 안 그러면 칸 안 물체가 책상 물체로 보인다.
-        good = [i for i, (shift, score) in enumerate(zip(offset['offsets_px'], offset['scores'])) if shift <= 3. and score >= GOOD_SCORE]
-        if good and all(i in good or score < GOOD_SCORE for i, score in enumerate(offset['scores'])):
-            return stored['slots']
+        if rgb.exists() and dep.exists():
+            references.append((cv2.imread(str(rgb)), np.load(dep), None))
+        last = [Path(root) / 'output/tray_frames' / name for name in LAST_TRAY_FILES]
+        if all(path.exists() for path in last):
+            references.append((cv2.imread(str(last[0])), np.load(last[1]), {int(k): v for k, v in json.loads(last[2].read_text()).items()}))
+        for ref_bgr, ref_depth, ref_slots in references:
+            if ref_slots is None:
+                stored = detect_tray_checked(ref_bgr, ref_depth, root, first_end='far_from_base', prefer_floors=True)
+                if not stored.get('found'):
+                    continue
+                ref_slots = stored['slots']
+            found = _slots_from_reference(ref_bgr, ref_depth, ref_slots, bgr, depth, root)
+            if found is not None:
+                return found
         return None
     except Exception:
         return None
+
+
+SCENE_FRAMES_KEEP = 12
+
+
+def _save_scene_frame(bgr, depth):
+    """상황 파악에 쓴 사진(색+깊이)을 최근 SCENE_FRAMES_KEEP장만 저장한다. 인식이 틀렸을 때 그 사진 그대로 다시 돌려 원인을 찾으려고 한다(2026-11-02)."""
+    if os.environ.get('ARM_SCENE_FRAMES', '1') == '0':
+        return
+    try:
+        import cv2
+        import numpy as np
+        folder = Path(menu.ROOT) / 'output/scene_frames'
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime('%Y%m%dT%H%M%S')
+        cv2.imwrite(str(folder / f'{stamp}_rgb.png'), bgr)
+        np.save(folder / f'{stamp}_depth.npy', depth)
+        for stale in sorted(folder.glob('*_rgb.png'))[:-SCENE_FRAMES_KEEP]:
+            stale.unlink(missing_ok=True)
+            (folder / stale.name.replace('_rgb.png', '_depth.npy')).unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def describe_scene(bgr, depth):
@@ -1158,6 +1230,7 @@ def describe_scene(bgr, depth):
     from perception.object_targets import DEPTH_MINUS_TOP_CENTER_PX
     from tray.occupancy import slot_containing, slot_contents
     from tray.tray_detect import _color_pixel
+    _save_scene_frame(bgr, depth)
     seen = classify_objects(bgr, depth)
     try:
         targets = {t['label']: t for t in locate_targets(bgr, depth, menu.ROOT)}
@@ -1205,7 +1278,7 @@ def describe_scene(bgr, depth):
         objects[-1]['range'] = None if distance is None else 'near' if distance < PICK_ENVELOPE_M[0] else 'far' if distance > PICK_ENVELOPE_M[1] else 'ok'
         if item['label'] == 'unknown':
             # 비전 모델의 짐작 이름(안내 문구용). 집기·칸 판단에는 쓰지 않는다. 실패하면 None이라 '등록 안 된 물체'로 말한다
-            objects[-1]['guess'] = object_namer.name_object(bgr, item['bbox_px'])
+            objects[-1]['guess'] = object_namer.name_object(bgr, item['bbox_px'], hints=object_namer.hints_for(item, depth))
             objects[-1]['color'] = object_namer.color_name(*item['color_hsv']) if item.get('color_hsv') else None      # 측정한 색 이름
             # 집을 수 있는 거리(16~30cm, 새 물체는 수직으로만). 먼 것은 안내 때 미리 빼야 정리 중간에 'unreachable'로 멈추지 않는다(2026-10-28, 36.4cm)
             objects[-1]['reachable'] = bool(distance is not None and PICK_ENVELOPE_M[0] <= distance <= PICK_ENVELOPE_M[1])

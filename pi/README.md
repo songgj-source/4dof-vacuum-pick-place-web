@@ -35,29 +35,29 @@ bash pi/start_all.sh stop     # 모두 끄기
 ### 1. 노트북: 음성 인식 서버와 Ollama 중계 (노트북을 켤 때마다 한 번)
 ```bash
 # 음성 토큰은 Pi 설정(pi/arm-api.env)의 ARM_STT_TOKEN과 같아야 한다
-STT_TOKEN=$(ssh user@192.168.0.31 "grep ^ARM_STT_TOKEN= ~/4dof_ik_pi_test/pi/arm-api.env | cut -d= -f2")
+STT_TOKEN=$(ssh user@192.168.0.115 "grep ^ARM_STT_TOKEN= ~/4dof_ik_pi_test/pi/arm-api.env | cut -d= -f2")
 env -u ARM_STT_URL nohup ~/miniconda3/envs/lerobot_312/bin/python scripts/stt_server.py \
   --host 0.0.0.0 --port 8010 --token "$STT_TOKEN" > ~/stt_server.log 2>&1 &
 
 # Pi가 노트북 Ollama(127.0.0.1에서만 받음)를 쓰게 하는 중계. Pi 주소만 허용, sudo 필요 없음
-nohup socat TCP4-LISTEN:11434,bind=192.168.0.32,reuseaddr,fork,range=192.168.0.31/32 \
+nohup socat TCP4-LISTEN:11434,bind=192.168.0.32,reuseaddr,fork,range=192.168.0.115/32 \
   TCP4:127.0.0.1:11434 > ~/ollama_fwd.log 2>&1 &
 ```
 Pi 설정에는 `ARM_STT_URL=http://192.168.0.32:8010/api/stt`, `OLLAMA_HOST=http://192.168.0.32:11434`가 들어 있습니다.
 
 ### 2. Pi: 서버 켜기
 ```bash
-ssh user@192.168.0.31 'sudo iw dev wlan0 set power_save off'   # Pi를 켤 때마다 (절전이면 응답이 수백 ms로 느려짐)
+ssh user@192.168.0.115 'sudo iw dev wlan0 set power_save off'   # Pi를 켤 때마다 (절전이면 응답이 수백 ms로 느려짐)
 bash pi/remote.sh check     # 장치 점검 (읽기 전용)
 bash pi/remote.sh start     # 서버 켜기. 켜기만 해서는 로봇이 움직이지 않는다
 ```
 
 ### 3. 화면 열기
 ```bash
-bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (터널 없이 마이크 사용 가능). start_all은 주행 화면 :8082도 탭으로 연다
+bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.115:8000 (터널 없이 마이크 사용 가능). start_all은 주행 화면 :8082도 탭으로 연다
 ```
 처음 한 번 [설정]에 접속 토큰을 넣습니다. 토큰 보기:
-`ssh user@192.168.0.31 "grep ^ARM_API_TOKEN= ~/4dof_ik_pi_test/pi/arm-api.env | cut -d= -f2"`
+`ssh user@192.168.0.115 "grep ^ARM_API_TOKEN= ~/4dof_ik_pi_test/pi/arm-api.env | cut -d= -f2"`
 
 [말하기]를 누르고 말하거나 입력칸에 씁니다. 앞에 "자비스,"를 붙여도 됩니다.
 
@@ -117,16 +117,16 @@ bash pi/open_jarvis.sh      # 전용 Chrome 창으로 http://192.168.0.31:8000 (
 | 4 | - | 켜면 '전체 지도에서 위치 찾기'로 처음 위치를 잡음(차는 안 움직임) |
 
 ```bash
-ssh user@192.168.0.31 'bash ~/4dof_ik_pi_test/pi/drive_ctl.sh status'        # 상태
-ssh user@192.168.0.31 'bash ~/4dof_ik_pi_test/pi/drive_ctl.sh relocalize'    # 위치 다시 잡기(차를 손으로 옮긴 뒤)
-ssh user@192.168.0.31 'bash ~/4dof_ik_pi_test/pi/drive_ctl.sh log nav'       # 로그 (robot / nav / web)
+ssh user@192.168.0.115 'bash ~/4dof_ik_pi_test/pi/drive_ctl.sh status'        # 상태
+ssh user@192.168.0.115 'bash ~/4dof_ik_pi_test/pi/drive_ctl.sh relocalize'    # 위치 다시 잡기(차를 손으로 옮긴 뒤)
+ssh user@192.168.0.115 'bash ~/4dof_ik_pi_test/pi/drive_ctl.sh log nav'       # 로그 (robot / nav / web)
 ```
 - 팀과 겹치지 않게: ROS 도메인 **43**(팀 42), 세션 이름 `arm_drive_*`, 라벨·도착 오차 파일은 `~/4dof_ik_pi_test/drive_data/`(처음 한 번 팀 라벨 파일을 읽어 복사. 이후 라벨을 새로 만들면 우리 파일에만 저장).
 - 팀 주행(드라이버·라이다·map_web·AMCL)이 이미 돌고 있으면 바퀴 드라이버·라이다가 겹치므로 **켜지 않고 알립니다.** 팀 프로그램은 끄지 않습니다.
 - 차 시리얼은 이 Pi에서 `/dev/ttyAMA0`입니다(사본 launch 기본값 `/dev/ttyS0`은 입출력 오류로 드라이버가 죽음, 10-23 확인).
 - 코드를 바꾸면 `bash pi/deploy_to_robot.sh`가 사본을 Pi로 보내고 빌드합니다. 그 뒤 `bash pi/start_all.sh stop && bash pi/start_all.sh`.
 - 처음 실행할 때 기본 지도의 라벨(`map_20261029_1503.labels.json`)을 `drive_data/labels.json`으로 복사합니다. 이미 저장된 내 라벨은 덮어쓰지 않습니다.
-- 지도 위 장소(라벨)는 map_web 화면(`http://192.168.0.31:8082`)에서 만듭니다. 라벨은 책상에서 조금(3 cm 넘게) 떨어진 자리에서 만드세요.
+- 지도 위 장소(라벨)는 map_web 화면(`http://192.168.0.115:8082`)에서 만듭니다. 라벨은 책상에서 조금(3 cm 넘게) 떨어진 자리에서 만드세요.
 
 ### 팀 주행 코드 사본(`ros2_slam/`)과 같이 쓰기
 `ros2_slam/`은 팀 저장소(perpet99/dapier_project)의 같은 폴더를 복사한 **우리 사본**입니다(2026-10-23, 팀 저장소 `f27cbc9`, `ros2_slam` 마지막 변경 `0a7ca73` 10-16).
@@ -163,10 +163,10 @@ pkill -f "scripts/stt_server.py"; pkill -f "socat TCP4-LISTEN:11434"   # 노트�
 - **화면 아래 [로그]창**: 작업의 시작·완료·실패와 실패의 **원문 이유**(화면에는 "알 수 없는 오류"로만 나오는 것)가 쌓입니다. 빨간 줄을 누르면 실행 프로그램의 마지막 출력이 펼쳐지고, [복사]로 통째로 복사할 수 있습니다. 위쪽 "로그" 옆 숫자는 오류 개수입니다(`GET /api/logs`).
 - 상태·로그: `bash pi/remote.sh status`, `bash pi/remote.sh log`
 - 음성이나 대화가 안 됨: 노트북 주소가 192.168.0.32가 아니면 Pi의 `~/4dof_ik_pi_test/pi/arm-api.env`에서 `ARM_STT_URL`, `OLLAMA_HOST`의 주소를 고치고 `bash pi/remote.sh restart`. socat의 `bind=` 주소도 새 주소로.
-- Pi가 안 보임: `ping 192.168.0.31`. 전원이 끊겼는지 확인합니다. 재부팅했으면 2번부터 다시.
+- Pi가 안 보임: `ping 192.168.0.115`. 전원이 끊겼는지 확인합니다. 재부팅했으면 2번부터 다시.
 - 코드를 고친 뒤 Pi에 반영: `bash pi/deploy_to_robot.sh -- --no-service --no-apt` 후 `bash pi/remote.sh restart`.
 
-## 0. 팀 로봇 Pi(`user@192.168.0.31`)에서 우리 팔만 시험하기
+## 0. 팀 로봇 Pi(`user@192.168.0.115`)에서 우리 팔만 시험하기
 
 팀원의 주행·카메라·hand_eye가 같이 쓰는 Pi라서, **서비스를 만들지 않고(`--no-service`) 우리 폴더 안에서만** 설치·실행합니다.
 팀원의 git 클론, `~/dapier_project/.venv`, ROS 설정은 건드리지 않습니다. Astra 런타임은 Pi에 이미 설치된 Orbbec OpenNI2(`/opt/openni2-orbbec`)를 찾아 씁니다.
@@ -176,11 +176,11 @@ pkill -f "scripts/stt_server.py"; pkill -f "socat TCP4-LISTEN:11434"   # 노트�
 bash pi/deploy_to_robot.sh --dry-run          # 보낼 파일·할 일만 확인
 bash pi/deploy_to_robot.sh                    # 코드 복사(~/4dof_ik_pi_test) + Pi에서 install.sh --no-service
 bash pi/remote.sh check                       # 장치·드라이버·패키지 점검(읽기 전용)
-bash pi/remote.sh start                       # 서버 켜기 → 브라우저 http://192.168.0.31:8000
+bash pi/remote.sh start                       # 서버 켜기 → 브라우저 http://192.168.0.115:8000
 bash pi/remote.sh stop | status | log
 ```
 
-- 다른 주소·사용자면 `ROBOT=사용자@주소`를 앞에 붙입니다. 노트북 키를 등록해 두면(`ssh-copy-id user@192.168.0.31`) 비밀번호를 묻지 않습니다.
+- 다른 주소·사용자면 `ROBOT=사용자@주소`를 앞에 붙입니다. 노트북 키를 등록해 두면(`ssh-copy-id user@192.168.0.115`) 비밀번호를 묻지 않습니다.
 - apt 패키지가 이미 있으면 `bash pi/deploy_to_robot.sh -- --no-service --no-apt`.
 - **Astra는 한 프로그램만 열 수 있습니다.** 팀의 카메라 노드(`remote_robot_rgbd.sh`, `remote_camera_web.sh`)나 `hand_eye`가 돌고 있으면 `start`가 거부합니다. 먼저 팀원과 맞춰 그쪽을 끄세요.
 - 팔·펌프 USB를 Pi에 꽂은 뒤 `check`에서 장치 경로가 OK인지 봅니다. 같은 어댑터면 노트북과 by-id 이름이 같아 설정할 것이 없습니다.

@@ -176,7 +176,7 @@ RViz에서:
 
 ### 3) RTAB-Map 원격 매핑 (로봇: Pi, 매핑: 노트북)
 
-로봇(Raspberry Pi, `user@192.168.0.31`)에는 car2 드라이버와 Astra Pro 카메라만
+로봇(Raspberry Pi, `user@192.168.0.115`)에는 car2 드라이버와 Astra Pro 카메라만
 띄우고, 압축 영상을 WiFi로 받아 노트북에서 RTAB-Map(RGB-D SLAM)을 돌립니다.
 
 ```
@@ -196,7 +196,7 @@ depth를 RGB 프레임으로 맞추는 정합(register)은 노트북에서 합�
 - 노트북에서 코드를 Pi로 배포·빌드 (Pi의 `~/ros2_slam_robot`에 복사하므로 Pi의 git
   클론은 건드리지 않음. 첫 배포 때 Orbbec OpenNI2 arm64 런타임도 설치):
   ```bash
-  ./scripts/deploy_to_robot.sh            # 기본 user@192.168.0.31
+  ./scripts/deploy_to_robot.sh            # 기본 user@192.168.0.115
   ```
   코드를 고칠 때마다 다시 실행하면 됩니다.
 
@@ -206,11 +206,11 @@ depth를 RGB 프레임으로 맞추는 정합(register)은 노트북에서 합�
 # 로봇 쪽 — 노트북에서 원격으로 (Pi의 tmux 'robot_rgbd'에서 실행, 웹 UI 재시작 버튼과 같은 세션)
 ./scripts/remote_robot_rgbd.sh start      # stop / restart / status / log / attach
 #   드라이버만: ./scripts/remote_car2_driver.sh start /dev/ttyS0 -p odom_poll_every_n:=2
-#   카메라 웹 UI(영상·각도·RoiRatios·재시작 버튼): ./scripts/remote_camera_web.sh start  → http://192.168.0.31:8080
-#   ROS 없이 웹 조종(car2_web.py):                ./scripts/remote_car2_web.sh start    → http://192.168.0.31:8766
+#   카메라 웹 UI(영상·각도·RoiRatios·재시작 버튼): ./scripts/remote_camera_web.sh start  → http://192.168.0.115:8080
+#   ROS 없이 웹 조종(car2_web.py):                ./scripts/remote_car2_web.sh start    → http://192.168.0.115:8766
 #   (시리얼 /dev/ttyS0를 쓰는 드라이버·car2_web은 하나만 — 이미 쓰고 있으면 시작을 거부함)
 
-# 로봇 쪽 — Pi에서 직접 하려면 (ssh user@192.168.0.31)
+# 로봇 쪽 — Pi에서 직접 하려면 (ssh user@192.168.0.115)
 source /opt/ros/jazzy/setup.bash
 cd ~/ros2_slam_robot && ./scripts/run_robot_rgbd.sh
 #   RGB 장치가 /dev/video0이 아니면: ./scripts/run_robot_rgbd.sh video_device:=/dev/video1
@@ -326,7 +326,7 @@ RViz(Nav2 화면)에서:
 #### 지도 웹 UI (위치 · 방향 · 주행)
 
 ```bash
-./scripts/remote_map_web.sh start      # Pi에서 test/map_web.py 실행 → http://192.168.0.31:8081
+./scripts/remote_map_web.sh start      # Pi에서 test/map_web.py 실행 → http://192.168.0.115:8081
 ./scripts/remote_map_web.sh status     # 현재 위치/지도/라이다 요약
 ```
 - 지도(`/map`) 위에 로봇 위치·방향(화살표, 원 = 차체 반경), 라이다 스캔, 주행 궤적, Nav2 경로, AMCL 오차 타원을 표시.

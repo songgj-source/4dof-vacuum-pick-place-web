@@ -10,7 +10,7 @@
 ## 서버 실행
 노트북에서 원격으로 실행한다 (Pi의 tmux 세션 `map_web`, 로그 `~/map_web.log`):
 ```bash
-./scripts/remote_map_web.sh start                         # http://192.168.0.31:8081
+./scripts/remote_map_web.sh start                         # http://192.168.0.115:8081
 ./scripts/remote_map_web.sh start -p port:=8082 -p max_linear:=0.1
 ./scripts/remote_map_web.sh status | stop | restart | log | attach
 ```
@@ -61,7 +61,7 @@ export ROS_DOMAIN_ID=42 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 | `wall_max_m` / `wall_timeout_s` | 3.0 / 90 | 라이다 근접 이동 최대 이동 거리 / 시간 |
 
 ## 공통 사항
-- Base URL: `http://192.168.0.31:8081`
+- Base URL: `http://192.168.0.115:8081`
 - 요청/응답은 JSON. 요청 body가 없으면 `{}`로 취급한다. POST에 `Content-Type` 헤더는 필수가 아니다.
 - 오류 응답은 `{"error": "메시지"}` 형식이고, 메시지는 한국어로 원인과 해결 방법을 알려 준다.
 - 없는 경로는 `404 {"error": "not found"}`.
@@ -248,7 +248,7 @@ LLM 같은 계획기에 넘기려고 만든 작은 요약이다. 스캔, 궤적,
 
 ```bash
 # 0.1초마다 보내는 동안 0.08 m/s로 전진
-while true; do curl -s -X POST http://192.168.0.31:8081/api/drive -d '{"linear":0.08}' >/dev/null; sleep 0.1; done
+while true; do curl -s -X POST http://192.168.0.115:8081/api/drive -d '{"linear":0.08}' >/dev/null; sleep 0.1; done
 ```
 - 응답: `GET /api/drive`와 같은 상태.
 - 받는 즉시 한 번 발행하고, 0.5초 동안 0.1초마다 다시 발행한다.
@@ -285,8 +285,8 @@ while true; do curl -s -X POST http://192.168.0.31:8081/api/drive -d '{"linear":
 | `yaw` | float | 아니오 | `x`, `y`를 지정할 때의 방향 (rad, 기본 0) |
 
 ```bash
-curl -X POST http://192.168.0.31:8081/api/labels -d '{"name":"주방"}'
-curl -X POST http://192.168.0.31:8081/api/labels -d '{"name":"문 앞","x":1.2,"y":-0.5,"yaw":1.57}'
+curl -X POST http://192.168.0.115:8081/api/labels -d '{"name":"주방"}'
+curl -X POST http://192.168.0.115:8081/api/labels -d '{"name":"문 앞","x":1.2,"y":-0.5,"yaw":1.57}'
 ```
 응답: 저장된 라벨 `{"id", "name", "x", "y", "yaw", "frame", "created"}`.
 
@@ -312,8 +312,8 @@ curl -X POST http://192.168.0.31:8081/api/labels -d '{"name":"문 앞","x":1.2,"
 라벨마다 도착 오차를 따로 정한다. 그 라벨로 Go to(`/api/nav/goto`, `/api/nav/goto_wall`)를 하는 동안에만 Nav2 goal checker에 이 값을 쓴다.
 정하지 않은 라벨은 `/api/nav/tolerance`의 기본값을 쓴다.
 ```bash
-curl -X POST http://192.168.0.31:8081/api/labels/tolerance -d '{"id":"1b4a6030","xy":0.05,"yaw_deg":10}'   # 설정
-curl -X POST http://192.168.0.31:8081/api/labels/tolerance -d '{"id":"1b4a6030"}'                         # 해제 (기본값 사용)
+curl -X POST http://192.168.0.115:8081/api/labels/tolerance -d '{"id":"1b4a6030","xy":0.05,"yaw_deg":10}'   # 설정
+curl -X POST http://192.168.0.115:8081/api/labels/tolerance -d '{"id":"1b4a6030"}'                         # 해제 (기본값 사용)
 ```
 - 응답은 바뀐 라벨이다. 설정한 라벨에는 `"tol": {"xy": 0.05, "yaw_deg": 10.0}`가 붙는다. 이 값은 `/api/labels`, `/api/state`, `/api/get_map_info`의 라벨에도 나온다.
 - 범위는 기본값과 같다 (`limits`).
@@ -361,7 +361,7 @@ curl -X POST http://192.168.0.31:8081/api/labels/tolerance -d '{"id":"1b4a6030"}
     그 지점으로 다시 시도한다 (최대 2번, `nav.retries`).
 
 ```bash
-curl -X POST http://192.168.0.31:8081/api/nav/goto -d '{"id":"994b2b49"}'
+curl -X POST http://192.168.0.115:8081/api/nav/goto -d '{"id":"994b2b49"}'
 ```
 - 응답: `{"ok": true, "target": {라벨}}`.
   - 이것은 요청이 접수되었다는 뜻일 뿐이다.
@@ -399,7 +399,7 @@ curl -X POST http://192.168.0.31:8081/api/nav/goto -d '{"id":"994b2b49"}'
 라벨 방향을 벽(책상) 쪽으로 저장해 두면 "책상 앞까지 가서 붙기"를 한 번에 할 수 있다.
 
 ```bash
-curl -X POST http://192.168.0.31:8081/api/nav/goto_wall -d '{"id":"1b4a6030"}'
+curl -X POST http://192.168.0.115:8081/api/nav/goto_wall -d '{"id":"1b4a6030"}'
 ```
 - 요청 본문, 응답, 오류는 `/api/nav/goto`와 같다.
 - 웹 UI: 라벨을 선택한 뒤 **Go to + 벽 근접** 버튼을 누른다.
@@ -513,7 +513,7 @@ curl -X POST http://192.168.0.31:8081/api/nav/goto_wall -d '{"id":"1b4a6030"}'
 | `lidar_stop_m` | 라이다 정지 여유: 차체 앞에서 이 거리 안에 물체가 있으면 정지 (중심에서 `robot_front` + 이 값) |
 
 ```bash
-curl -X POST http://192.168.0.31:8081/api/approach/config -d '{"line":0.65,"obstacle_mm":1000}'
+curl -X POST http://192.168.0.115:8081/api/approach/config -d '{"line":0.65,"obstacle_mm":1000}'
 ```
 - 응답: `GET /api/approach`와 같다.
 - 오류: `409`. 범위 밖, 또는 근접선이 하단 제외 영역 안에 있음(`line ≥ 1 - ignore_bottom - 0.02`).
@@ -612,7 +612,7 @@ curl -X POST http://192.168.0.31:8081/api/approach/config -d '{"line":0.65,"obst
 
 ## 예시: 라벨로 이동한 뒤 벽 앞에 붙기
 ```bash
-B=http://192.168.0.31:8081
+B=http://192.168.0.115:8081
 ID=$(curl -s $B/api/labels | python3 -c "import json,sys; print([l['id'] for l in json.load(sys.stdin)['labels'] if l['name']=='충전기 앞'][0])")
 curl -s -X POST $B/api/nav/goto -d "{\"id\":\"$ID\"}"
 # 도착까지 기다리기

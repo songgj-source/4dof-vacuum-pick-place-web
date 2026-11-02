@@ -9,13 +9,13 @@
 #   NO_TORQUE=1 bash pi/start_all.sh    # 토크는 켜지 않고 팔 상태만 확인
 #   NO_DRIVE=1 bash pi/start_all.sh     # 주행 스택은 켜지 않음(팔만)
 #
-# 환경 변수: ROBOT (기본 user@192.168.0.31), REMOTE_DIR (4dof_ik_pi_test), ARM_SSH_KEY,
+# 환경 변수: ROBOT (기본 user@192.168.0.115), REMOTE_DIR (4dof_ik_pi_test), ARM_SSH_KEY,
 #            STT_PY (Whisper가 깔린 파이썬, 기본 ~/miniconda3/envs/lerobot_312/bin/python)
 # 노트북 주소가 바뀌면 Pi의 pi/arm-api.env(ARM_STT_URL, OLLAMA_HOST)를 새 주소로 고치고 서버를 다시 켠다.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ROBOT="${ROBOT:-user@192.168.0.31}"
+ROBOT="${ROBOT:-user@192.168.0.115}"
 PI_IP="${ROBOT#*@}"
 REMOTE_DIR="${REMOTE_DIR:-4dof_ik_pi_test}"
 STT_PY="${STT_PY:-$HOME/miniconda3/envs/lerobot_312/bin/python}"
@@ -34,13 +34,13 @@ fwd_running() { ss -ltn 2>/dev/null | awk '{print $4}' | grep -qx "$1:$OLLAMA_PO
 pi_env() { pi "grep -E '^$1=' $REMOTE_ENV | tail -1 | cut -d= -f2-"; }
 
 reach_pi() {
-  ping -c1 -W2 "$PI_IP" >/dev/null 2>&1 || { warn "Pi($PI_IP)가 응답하지 않습니다. 전원과 Wi-Fi(robot)를 확인하세요."; return 1; }
+  ping -c1 -W2 "$PI_IP" >/dev/null 2>&1 || { warn "Pi($PI_IP)가 응답하지 않습니다. 전원과 Wi-Fi(aicampus_286)를 확인하세요."; return 1; }
   pi true 2>/dev/null || { warn "ssh $ROBOT 접속 실패 (키 등록: ssh-copy-id $ROBOT)"; return 1; }
 }
 
 start() {
   local me; me="$(laptop_ip)"
-  [ -n "$me" ] || { warn "Pi($PI_IP)로 가는 경로가 없습니다. 노트북 Wi-Fi를 robot에 연결하세요."; exit 1; }
+  [ -n "$me" ] || { warn "Pi($PI_IP)로 가는 경로가 없습니다. 노트북 Wi-Fi를 aicampus에 연결하세요."; exit 1; }
   say "노트북 $me  →  Pi $PI_IP"
   reach_pi || exit 1
 

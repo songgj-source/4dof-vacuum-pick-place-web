@@ -1025,6 +1025,11 @@ class MapWeb(Node):
         self.goal_handle = None
         # every Go to first backs straight up this far (odom distance), then sends the goal
         self.backup_m = float(self.declare_parameter('goto_backup_m', 0.30).value)
+        # 2026-10-30 사용자: 방향이 크게 다르면 대각선 호로 가지 말고 제자리에서 먼저 돌 것. Nav2 제어기(MPPI/회전 shim)는 돌다 말고 호를 그리며 다시 돌아 앞으로 가지 못했다.
+        self.turn_min = math.radians(float(self.declare_parameter('goto_turn_min_deg', 25.0).value))     # 이 각도보다 틀어져 있으면 먼저 제자리 회전
+        self.turn_tol = math.radians(float(self.declare_parameter('goto_turn_tol_deg', 8.0).value))      # 이 안으로 들어오면 회전 끝
+        self.turn_w_max = float(self.declare_parameter('goto_turn_w_max', 0.6).value)
+        self.turn_w_min = float(self.declare_parameter('goto_turn_w_min', 0.25).value)
         # a Go to goal must sit below this global-costmap cost (0..100). Higher = deep in the inflation
         # next to an obstacle: MPPI's CostCritic will not drive in there and the robot stalls ('Failed to
         # make progress' x4 at a moved 99-cost label). Such labels go to the closest cell below it.
@@ -1338,8 +1343,10 @@ class MapWeb(Node):
         return float(-x[behind].max()) if behind.any() else None
 
     def _backup_tick(self):
-        """Back straight up backup_m, then send the Nav2 goal. Called from _nav_tick (ROS thread)."""
+        """Back straight up backup_m (or turn in place, mode 'turn'), then send the Nav2 goal. Called from _nav_tick (ROS thread)."""
         b = self.backup
+        if b.get('mode') == 'turn':
+            return self._turn_tick(b)
         t = self._lookup(self.odom_frame, self.base_frame)
         if t is None:
             self.backup = None
@@ -1359,9 +1366,35 @@ class MapWeb(Node):
             note = (f'뒤 {rear:.2f} m 장애물로 후진 {moved * 100:.0f} cm에서 멈춤' if blocked and moved < self.backup_m
                     else f'후진 {moved * 100:.0f} cm (시간 초과)' if moved < self.backup_m else f'후진 {moved * 100:.0f} cm 완료')
             self.get_logger().info(f'goto backup: {note}')
-            self._send_goal(b['label'], note)
+            self._send_or_turn(b['label'], note)
             return
         self.drive.drive(-self.backup_speed, 0.0)
+
+    def _send_or_turn(self, label, note):
+        """Send the goal now, or first turn in place until the label is within turn_tol of straight ahead
+        (when it is more than turn_min off). The state stays 'backing' so the stop button and the UI treat it as a pre-move."""
+        bearing = self._goal_bearing(label)
+        if self.turn_min <= 0 or bearing is None or abs(bearing) <= self.turn_min:
+            self._send_goal(label, note)
+            return
+        self.backup = {'label': label, 'mode': 'turn', 'note': note, 't0': time.time()}
+        self.nav = {**self.nav, 'state': 'backing', 'target': label, 'label': label, 'message': f'제자리 회전 {math.degrees(bearing):+.0f}° 중…'}
+        self.get_logger().info(f"goto '{label['name']}': turning in place first ({math.degrees(bearing):+.0f} deg)")
+
+    def _turn_tick(self, b):
+        label, bearing = b['label'], self._goal_bearing(b['label'])
+        timed_out = time.time() - b['t0'] > 15.0
+        if bearing is None or abs(bearing) <= self.turn_tol or timed_out:
+            self.drive.stop()
+            self.backup = None
+            turned = '' if bearing is None else f'제자리 회전 완료 (남은 {math.degrees(bearing):+.0f}°)'
+            note = ' · '.join(x for x in (b.get('note'), '위치를 몰라 회전 생략' if bearing is None else turned + (' · 시간 초과' if timed_out else '')) if x)
+            self.get_logger().info(f'goto turn: {note}')
+            self._send_goal(label, note)
+            return
+        w = max(self.turn_w_min, min(self.turn_w_max, 1.2 * abs(bearing)))
+        self.nav['message'] = f'제자리 회전 {math.degrees(bearing):+.0f}° 중…'
+        self.drive.drive(0.0, math.copysign(w, bearing))
 
     def _set_nav(self, seq, **kw):
         if seq == self.nav_seq:          # ignore callbacks of a replaced goal
@@ -1412,7 +1445,7 @@ class MapWeb(Node):
                 note = ('' if self.backup_m <= 0 else
                         '현재 위치를 몰라 후진 생략' if bearing is None else
                         f'목표가 앞쪽({math.degrees(bearing):+.0f}°)이라 후진 생략')
-                self._send_goal(label, note)
+                self._send_or_turn(label, note)
                 continue
             self.backup = {'label': label, 'start': None, 't0': time.time()}
             self.nav = {'state': 'backing', 'target': label, 'started': time.time(), 'backed': 0.0,

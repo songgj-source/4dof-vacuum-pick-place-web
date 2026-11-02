@@ -54,6 +54,8 @@ controller_server:
                        required_movement_angle: 0.08, movement_time_allowance: 25.0}
     general_goal_checker: {stateful: true, plugin: 'nav2_controller::SimpleGoalChecker', xy_goal_tolerance: 0.05, yaw_goal_tolerance: 0.25}
     FollowPath:
+      # 2026-10-30: 회전 shim(RotationShimController)을 시험했으나 제자리 회전과 느린 호를 번갈아 반복하며 앞으로 가지 못해 뺐다(Pi cmd_vel 기록).
+      # 큰 방향 차이는 map_web이 목표를 보내기 전에 제자리에서 먼저 돌린다(goto_turn_min_deg).
       plugin: nav2_mppi_controller::MPPIController
       time_steps: 56
       model_dt: 0.05
@@ -110,7 +112,7 @@ local_costmap:
       resolution: 0.05
       robot_radius: 0.23   # 2026-10-29 사용자: 차체(장애물 영역) 지름 46cm. 예전 0.26
       plugins: [obstacle_layer, inflation_layer]
-      inflation_layer: {plugin: 'nav2_costmap_2d::InflationLayer', cost_scaling_factor: 3.0, inflation_radius: 0.33}
+      inflation_layer: {plugin: 'nav2_costmap_2d::InflationLayer', cost_scaling_factor: 10.0, inflation_radius: 0.33}
       static_layer: {plugin: 'nav2_costmap_2d::StaticLayer', map_subscribe_transient_local: true}
       always_send_full_costmap: true
       transform_tolerance: 1.0
@@ -139,7 +141,7 @@ global_costmap:
         scan: {topic: /scan, data_type: LaserScan, marking: true, clearing: true, max_obstacle_height: 2.0, obstacle_min_range: 0.0,
           obstacle_max_range: 6.0, raytrace_min_range: 0.0, raytrace_max_range: 8.0}
       static_layer: {plugin: 'nav2_costmap_2d::StaticLayer', map_subscribe_transient_local: true}
-      inflation_layer: {plugin: 'nav2_costmap_2d::InflationLayer', cost_scaling_factor: 3.0, inflation_radius: 0.33}
+      inflation_layer: {plugin: 'nav2_costmap_2d::InflationLayer', cost_scaling_factor: 10.0, inflation_radius: 0.33}
       always_send_full_costmap: true
       transform_tolerance: 1.0
 planner_server:
@@ -147,7 +149,9 @@ planner_server:
     expected_planner_frequency: 20.0
     planner_plugins: [GridBased]
     costmap_update_timeout: 1.0
-    GridBased: {plugin: 'nav2_navfn_planner::NavfnPlanner', tolerance: 0.3, use_astar: false, allow_unknown: true}
+    # 2026-10-30 사용자: 최단 거리로 접근. use_astar로 목표 쪽으로 곧장 탐색하고, 벽 근처 비용(inflation)을 가파르게 줄여(cost_scaling_factor 3→10) 벽을 피해 돌아가지 않게 했다.
+    # Theta*(any-angle)도 가능하지만 tolerance가 없어 벽 쪽 라벨(책상)이 부풀린 영역 안이면 계획이 실패해 NavFn을 유지한다.
+    GridBased: {plugin: 'nav2_navfn_planner::NavfnPlanner', tolerance: 0.3, use_astar: true, allow_unknown: true}
 smoother_server:
   ros__parameters:
     smoother_plugins: [simple_smoother]
