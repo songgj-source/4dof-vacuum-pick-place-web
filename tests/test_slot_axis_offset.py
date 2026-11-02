@@ -12,8 +12,8 @@ def test_axis_offset_moves_only_along_the_tray_axis_toward_the_robot():
     from tray.tray_capacity import slot_axis_xy
     got = slot_axis_xy(slots)
     assert math.isclose(got[0], unit[0]) and math.isclose(got[1], unit[1])
-    assert sort_job.SLOT_AXIS_OFFSET_MM == {2: -25.}
-    moved = (slots[2]['x_mm'] + unit[0] * -25., slots[2]['y_mm'] + unit[1] * -25.)
+    assert sort_job.SLOT_AXIS_OFFSET_MM == {2: -20.}
+    moved = (slots[2]['x_mm'] + unit[0] * -20., slots[2]['y_mm'] + unit[1] * -20.)
     along = (moved[0] - slots[2]['x_mm']) * unit[0] + (moved[1] - slots[2]['y_mm']) * unit[1]
     side = abs(-(moved[0] - slots[2]['x_mm']) * unit[1] + (moved[1] - slots[2]['y_mm']) * unit[0])
-    assert math.isclose(along, -25.) and side < 1e-9 and moved[0] < slots[2]['x_mm']
+    assert math.isclose(along, -20.) and side < 1e-9 and moved[0] < slots[2]['x_mm']

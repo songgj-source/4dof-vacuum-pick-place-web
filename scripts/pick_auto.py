@@ -17,7 +17,7 @@ from hardware.servo_transport import ServoTransport
 from hardware.servo_driver import ServoDriver
 from robot.planar_kinematics import PlanarGeometry,NAMES
 from motion.tick_pulses import tick_pulses
-from motion.hover_trial import run_hover_trial,TRAVEL_PERIOD_S,TRAVEL_PULSES_PER_STEP,TRAVEL_GOAL_SPEED,TRAVEL_GOAL_ACCELERATION,TRAVEL_ACCEL,LIFT_MAX_M
+from motion.hover_trial import run_hover_trial,TRAVEL_PERIOD_S,TRAVEL_PULSES_PER_STEP,TRAVEL_GOAL_SPEED,TRAVEL_GOAL_ACCELERATION,TRAVEL_ACCEL,APPROACH_ACCEL,LIFT_MAX_M
 from motion.home_trial import run_recorded_home_trial
 from motion import guard_mode
 from motion.trial_phase import finish_pose_phase,candidate_xyz,release_after_return,release_at_slot,stationary_snapshot,phase_pose_tolerance,approach_correction_target,approach_feedforward_target,PoseToleranceError
@@ -402,7 +402,7 @@ def main(argv=None):
                         # HOME->over the box in one continuous move: 4 pulses/tick until the 4 cm short
                         # point and the explicit70mm box hover; no stop at the via point.
                         kwargs['fast_travel']=True;kwargs['quick_ticks']=True;kwargs['pulses_per_step']=approach_pulses
-                        kwargs['tick_s']=approach_period;kwargs['tracking_limit']=args.approach_tracking_limit if args.fast_space else approach_limit;kwargs['native']=args.native_moves
+                        kwargs['tick_s']=approach_period;kwargs['tracking_limit']=args.approach_tracking_limit if args.fast_space else approach_limit;kwargs['native']=args.native_moves;kwargs['path_accel']=APPROACH_ACCEL
                     if args.fast_space and name.startswith('descent'):
                         kwargs['tick_s']=1./args.descent_rate
                     if name.startswith('place_lower'):

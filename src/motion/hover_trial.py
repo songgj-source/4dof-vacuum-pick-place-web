@@ -37,6 +37,9 @@ QUICK_PERIOD_S=.040
 # Commanded acceleration (path pulses/s^2). The servo acceleration register limits what it
 # can follow; a constant-rate start outruns it and trips the tracking guard.
 TRAVEL_ACCEL=300.
+# 빈 컵으로만 움직이는 구간의 가속(2026-11-02 정리 시간 단축): 접근은 300→600, 놓은 뒤 빠져나오기는 100→300. 물체를 든 구간·접촉은 그대로
+APPROACH_ACCEL=600.
+EXIT_ACCEL=300.
 # Candidate clear-space profile; physical validation is still required.
 APPROACH_PERIOD_S=TRAVEL_PERIOD_S
 APPROACH_TRACKING_LIMIT=32
@@ -60,7 +63,7 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
                     cancelled=lambda:False,record=lambda event:None,measured_gap_m=None,lift_m=None,pulses_per_step=1,box_top_m=None,
                     batch_slow_joints=False,fast_travel=False,quick_ticks=False,tick_s=None,tracking_limit=16,
                     via=(),via_pulses=2,tail=None,native=False,smooth_motion=False,pitch_rad=-math.pi/2,min_contact_z=.030,
-                    continuous_lift=False):
+                    continuous_lift=False,path_accel=None):
     target=finite_vector(target,3,'hover target')
     # Contact/lift height floor: default 30 mm for other callers; pick_auto passes a lower one (user instruction 2026-10-15: remove the 30 mm floor,
     # keep only a minimum that stops the cup reaching the table) so low objects such as the white box (top 24 mm) can be picked.
@@ -162,7 +165,7 @@ def run_hover_trial(driver,geometry,zeros,target,measured_radius_m,*,supported=F
         return _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,cancelled,pulses_per_step,batch,
                              TRAVEL_GOAL_SPEED if travel else 40,period,tracking_limit,
                              goals if via else None,[via_pulses]*len(via)+[pulses_per_step] if via else None,tail,
-                             native and travel_ok,continuous_segments=continuous_lift,catch_up=travel)
+                             native and travel_ok,continuous_segments=continuous_lift,catch_up=travel,path_accel=path_accel)
 
 
 def ramped_indices(steps,pulses_per_step,period_s,accel,smooth_s=SMOOTH_WINDOW_S,caps=None):
@@ -249,7 +252,7 @@ def _native_motion(driver,joints,clear,path,seg_ends,goals,seg_rates,record,canc
 
 def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,cancelled,pulses_per_step=1,batch_pulses=0,
                   speed=40,period_s=None,tracking_limit=16,waypoints=None,seg_pulses=None,tail=None,native=False,continuous_segments=False,
-                  catch_up=False,lead_s=0.):
+                  catch_up=False,lead_s=0.,path_accel=None):
     """Caller holds driver.lock and has admitted the explicit experiment."""
     NAMES=tuple(driver.names)
     if native and period_s is None:raise ValueError('native move needs the travel profile')
@@ -307,7 +310,7 @@ def _execute_path(driver,geometry,joints,angles,clear,origin,goal,target,record,
                         begin=end+1
                 if tail is not None:
                     for i in range(max(0,steps-tail[0]),steps+1):caps[i]=min(caps[i],tail[1])
-            indices=ramped_indices(steps,max(seg_pulses) if seg_pulses else pulses_per_step,period_s,TRAVEL_ACCEL if speed==TRAVEL_GOAL_SPEED else 100.,caps=caps)
+            indices=ramped_indices(steps,max(seg_pulses) if seg_pulses else pulses_per_step,period_s,path_accel or (TRAVEL_ACCEL if speed==TRAVEL_GOAL_SPEED else 100.),caps=caps)
         else:
             indices=list(range(pulses_per_step,steps+1,pulses_per_step))
             if steps and (not indices or indices[-1]!=steps):indices.append(steps)

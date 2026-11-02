@@ -11,7 +11,7 @@ import math
 
 from robot.planar_kinematics import NAMES, finite_vector
 from motion import guard_mode
-from motion.hover_trial import _execute_path, _hold_offset, HOVER_RADIUS_MAX_M, MAX_TILT_RAD
+from motion.hover_trial import _execute_path, _hold_offset, HOVER_RADIUS_MAX_M, MAX_TILT_RAD, EXIT_ACCEL
 from motion.tick_pulses import tick_pulses
 
 VERTICAL = -math.pi / 2
@@ -120,4 +120,4 @@ def run_place_exit_trial(driver, geometry, zeros, transition, *, supported=False
         scale = max(1, round(tick_pulses(rate) / 2))      # 150 이하 1배, 250~300 2배, 500 4배(7/2 올림): 틱당 펄스를 늘려 틱을 통신 한계 위로 유지(칸 안 2→4, 벽 위 4→8)
         return _execute_path(driver, geometry, joints, angles, clear, origin, goals[-1], target, record, cancelled,
                              pulses_per_step=2 * scale, period_s=2 * scale / rate, tracking_limit=tracking_limit,
-                             waypoints=goals, seg_pulses=[p * scale for p in seg_pulses])      # 놓은 뒤 빈 컵: 앞당기기 없음(넣은 뒤 끝에서 넘쳐 흔들렸다)
+                             waypoints=goals, seg_pulses=[p * scale for p in seg_pulses], path_accel=EXIT_ACCEL)      # 놓은 뒤 빈 컵: 앞당기기 없음(넣은 뒤 끝에서 넘쳐 흔들렸다)
