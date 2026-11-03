@@ -564,7 +564,10 @@ class ChatTests(ApiBase):
         for text, expected in cases.items():
             status, body = self.chat(FakeLlm([]), text)
             self.assertEqual((status, body['proposal'], body['source']), (200, expected, 'rule'), text)
-            self.assertIn('바로 시작합니다', body['reply'])
+            if expected == all_three:             # 책상 정리: 사진으로 찾은 물체를 알리고 시작한다(2026-11-03)
+                self.assertIn('찾았습니다. 책상 정리를 시작하겠습니다.', body['reply'])
+            else:
+                self.assertIn('바로 시작합니다', body['reply'])
         self.assertEqual(self.commands, [])
 
     def test_tidy_takes_a_photo_and_proposes_only_what_is_on_the_desk(self):
@@ -573,7 +576,7 @@ class ChatTests(ApiBase):
         with a, b:
             status, body = self.chat(FakeLlm([]), '책상 정리해줘')
         self.assertEqual(body['proposal'], {'action': 'pick_all', 'objects': ['red_cube', 'tape_measure'], 'include_new': True})
-        self.assertIn('빨간 정육면체, 줄자, 새 물체 1개를 정리합니다', body['reply'])      # 한 줄로: 무엇을 정리하는지
+        self.assertIn('빨간 정육면체, 줄자, 새 물체 1개를 찾았습니다. 책상 정리를 시작하겠습니다', body['reply'])      # 한 줄로: 무엇을 정리하는지
         self.assertIn('닿지 않아 뺐습니다: 흰 상자', body['reply'])
         self.assertLess(len(body['reply']), 80)                                      # 말이 길지 않게
         self.assertIn('image_jpeg_base64', body['scene'])                  # 화면에 사진을 띄운다

@@ -60,7 +60,14 @@ class BaseError(RuntimeError):
         self.code = code
 
 
+def enabled():
+    """ARM_DRIVE=0이면 주행을 쓰지 않는다(2026-11-03). 서버에 닿으려 하지 않고 '꺼져 있다'고만 알린다."""
+    return os.environ.get('ARM_DRIVE', '1').strip().lower() not in ('0', 'off', 'false', 'no')
+
+
 def _call(method, path, body=None, url=None, timeout_s=5.):
+    if not enabled():
+        raise BaseError('주행이 꺼져 있습니다(ARM_DRIVE=0).', 'drive_disabled')
     request = urllib.request.Request((url or BASE_URL) + path, method=method,
                                      data=None if body is None else json.dumps(body).encode(),
                                      headers={'Content-Type': 'application/json'})

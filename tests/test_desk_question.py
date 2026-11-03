@@ -157,8 +157,8 @@ def test_tidy_reply_is_one_short_sentence_not_three_repeats():
     scene = dict(objects=[dict(label='unknown', reachable=True, guess='박스', color='갈색')], in_tray=[dict(label='white_box', name='흰 상자', slot=2)], tray_found=True)
     proposal, reply, _ = arm_llm.tidy(arm_api.Arm(), scene=scene)
     assert proposal == {'action': 'pick_all', 'objects': [], 'include_new': True}
-    assert reply == '새 물체 1개(갈색 박스 같음)를 정리합니다. 흰 상자(2번 칸)는 이미 칸에 있습니다. 바로 시작합니다.'
-    assert reply.count('남는 빈 칸') == 0 and reply.count('정리') == 1
+    assert reply == '책상에서 새 물체 1개(갈색 박스 같음)를 찾았습니다. 책상 정리를 시작하겠습니다. 흰 상자(2번 칸)는 이미 칸에 있습니다.'
+    assert reply.count('남는 빈 칸') == 0
 
 
 def test_josa_follows_the_last_word_ignoring_parentheses():

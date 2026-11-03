@@ -73,12 +73,17 @@ AUTO_TORQUE = os.environ.get('ARM_AUTO_TORQUE', '1') != '0'
 # 팀 주행(ros2_slam test/map_web.py, 같은 Pi)에 차가 움직이는지 묻는다(읽기만). 움직이면 팔 작업을 시작하지 않는다.
 # map_web이 꺼져 있으면(주행을 안 쓰는 중) 그냥 진행한다. 빈 값이면 확인하지 않는다.
 BASE_URL = os.environ.get('ARM_BASE_URL', 'http://127.0.0.1:8082').rstrip('/')
+# 2026-11-03: ARM_DRIVE=0이면 주행을 끈다(drive 명령 거부, /api/base 503, 웹의 주행 탭·메뉴 숨김). 코드는 그대로라 1로 되돌리면 켜진다.
+DRIVE_ENABLED = os.environ.get('ARM_DRIVE', '1').strip().lower() not in ('0', 'off', 'false', 'no')
+DRIVE_OFF = dict(ok=False, reason_code='drive_disabled', reason='주행이 꺼져 있습니다(ARM_DRIVE=0).')
 BASE_MOVING_NAV = ('backing', 'sending', 'active', 'canceling')     # map_web nav.state: Go to 진행 중
 BASE_LINEAR, BASE_ANGULAR = .01, .03                                 # odom 실제 속도가 이보다 크면 움직이는 중
 
 
 def base_moving(url=BASE_URL, timeout_s=1.5):
     """차가 움직이는 중이면 그 이유 문장, 아니면 None. map_web에 닿지 않으면 None(주행을 안 쓰는 중으로 본다)."""
+    if not DRIVE_ENABLED:
+        return None
     if not url:
         return None
     import urllib.request
@@ -221,7 +226,7 @@ class Arm:
             task = self.tasks.get(self.current) if self.current else None
             last = max(self.tasks.values(), key=lambda t: t['started'], default=None)
             shown = task or last
-            return dict(state='busy' if task else 'idle', arm_home=self.arm_home,
+            return dict(state='busy' if task else 'idle', arm_home=self.arm_home, drive_enabled=DRIVE_ENABLED,
                         task_id=shown['id'] if shown else None, skill=shown['skill'] if shown else None,
                         phase=shown['phase'] if shown else None, phase_label=shown['phase_label'] if shown else None,
                         task_state=shown['state'] if shown else None, resumable=self.resume is not None,
@@ -234,6 +239,8 @@ class Arm:
 
     # ---- 명령 ----
     def start(self, skill, params):
+        if skill == 'drive' and not DRIVE_ENABLED:
+            return 400, dict(DRIVE_OFF)
         """작업을 시작한다. (HTTP 상태, 응답 dict)."""
         if skill == 'pick_place':
             label = params.get('object')
@@ -1499,6 +1506,43 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
                 return self.wfile.write(data)
             if self.path == '/health':
                 return self._send(200, dict(ok=True))
+            if self.path in ('/cert', '/cert.pem', '/jarvis.crt', '/jarvis.mobileconfig') and os.environ.get('ARM_TLS_CERT'):      # 폰에 설치해 https를 신뢰하게 하는 공개 인증서(개인 키 아님)
+                try:
+                    pem = Path(os.environ['ARM_TLS_CERT']).read_text()
+                except OSError:
+                    return self._send(404, dict(ok=False, reason_code='not_found'))
+                if self.path == '/cert':                      # 크롬은 http 페이지의 직접 다운로드를 막는다: 안내 화면에서 눌러 받게 한다
+                    data = ('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+                            '<title>인증서</title><body style="font:18px sans-serif;padding:24px;line-height:1.7"><h2>자비스 인증서</h2>'
+                            '<p><a href="/jarvis.mobileconfig">아이폰: 프로파일 받기</a></p><p><a href="/jarvis.crt" download="jarvis.crt">안드로이드: 인증서 받기 (.crt)</a></p>'
+                            '<p><a href="/cert.pem" download="jarvis.pem">PEM으로 받기</a></p>'
+                            '<p>안드로이드: 설정 → 보안 → 암호화 및 사용자 인증 정보 → 인증서 설치 → CA 인증서.<br>'
+                            '아이폰: 받은 뒤 설정 → 프로파일 설치 → 일반 → 정보 → 인증서 신뢰 설정을 켭니다.</p></body>').encode()
+                    kind = 'text/html; charset=utf-8'
+                elif self.path == '/jarvis.mobileconfig':     # 아이폰: 인증서 파일보다 프로파일이 확실하게 설치 화면을 띄운다(서명 없음 경고는 정상)
+                    import base64, ssl, uuid
+                    der = base64.b64encode(ssl.PEM_cert_to_DER_cert(pem)).decode()
+                    ident = str(uuid.uuid5(uuid.NAMESPACE_URL, der))
+                    data = ('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+                            '<plist version="1.0"><dict><key>PayloadContent</key><array><dict><key>PayloadCertificateFileName</key><string>jarvis.crt</string>'
+                            f'<key>PayloadContent</key><data>{der}</data><key>PayloadDescription</key><string>자비스 https 인증서</string>'
+                            f'<key>PayloadDisplayName</key><string>자비스</string><key>PayloadIdentifier</key><string>kr.jarvis.cert.{ident}</string>'
+                            f'<key>PayloadType</key><string>com.apple.security.root</string><key>PayloadUUID</key><string>{ident.upper()}</string><key>PayloadVersion</key><integer>1</integer></dict></array>'
+                            f'<key>PayloadDisplayName</key><string>자비스</string><key>PayloadIdentifier</key><string>kr.jarvis.profile.{ident}</string>'
+                            f'<key>PayloadType</key><string>Configuration</string><key>PayloadUUID</key><string>{str(uuid.uuid5(uuid.NAMESPACE_DNS, ident)).upper()}</string><key>PayloadVersion</key><integer>1</integer></dict></plist>').encode()
+                    kind = 'application/x-apple-aspen-config'
+                elif self.path == '/jarvis.crt':              # 폰이 기대하는 DER 형식
+                    import ssl
+                    data, kind = ssl.PEM_cert_to_DER_cert(pem), 'application/x-x509-ca-cert'
+                else:
+                    data, kind = pem.encode(), 'application/x-x509-ca-cert'
+                self.send_response(200)
+                self.send_header('Content-Type', kind)
+                if kind != 'text/html; charset=utf-8':
+                    self.send_header('Content-Disposition', 'attachment; filename="jarvis.crt"')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                return self.wfile.write(data)
             if self.path == '/docs':
                 data = docs_html(f"http://{self.headers.get('Host', '127.0.0.1:8000')}").encode()
                 self.send_response(200)
@@ -1515,6 +1559,8 @@ def make_handler(arm, token=None, cors_origin=None, chat_client=None, transcribe
             if self.path == '/api/objects':
                 return self._send(200, arm.objects())
             if self.path == '/api/base':
+                if not DRIVE_ENABLED:
+                    return self._send(503, dict(DRIVE_OFF))
                 try:
                     return self._send(200, base_drive.base_state())
                 except base_drive.BaseError as exc:
@@ -1633,6 +1679,27 @@ def shutdown_arm(arm, wait_s=25.):
     return False
 
 
+def start_tls_server(host, handler):
+    """폰 브라우저는 https에서만 마이크를 허용한다. ARM_TLS_CERT·ARM_TLS_KEY(pem)가 있으면 같은 서버를 ARM_TLS_PORT(기본 8443)에도 https로 연다.
+    8000(http)은 그대로라 NOMI·스크립트는 영향이 없다. 인증서가 없거나 읽지 못하면 https만 건너뛴다."""
+    cert, key = os.environ.get('ARM_TLS_CERT'), os.environ.get('ARM_TLS_KEY')
+    if not cert or not key:
+        return None
+    try:
+        import ssl
+        port = int(os.environ.get('ARM_TLS_PORT') or 8443)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+        tls = ThreadingHTTPServer((host, port), handler)
+        tls.socket = context.wrap_socket(tls.socket, server_side=True)
+    except Exception as exc:
+        print(f'https 꺼짐: {type(exc).__name__}: {exc}', flush=True)
+        return None
+    threading.Thread(target=tls.serve_forever, daemon=True).start()
+    print(f'로봇팔 API(https): https://{host}:{port}  (자체 서명 인증서)', flush=True)
+    return tls
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--host', default='127.0.0.1')
@@ -1644,7 +1711,9 @@ def main(argv=None):
     if args.host not in ('127.0.0.1', 'localhost', '::1') and not args.token:
         parser.error('다른 장비에서 접근하게 열려면 --token이 필요합니다(로봇을 움직이는 API입니다).')
     arm = Arm()
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(arm, args.token, args.cors_origin))
+    handler = make_handler(arm, args.token, args.cors_origin)
+    server = ThreadingHTTPServer((args.host, args.port), handler)
+    tls_server = start_tls_server(args.host, handler)
     print(f'로봇팔 API: http://{args.host}:{args.port}  (Ctrl+C로 종료)', flush=True)
     arm.log.add('info', '서버', f'시작 http://{args.host}:{args.port}', f'펌프 {devices.get("pump_port")} / 서보 {devices.get("servo_port", "(프로필)")}')
 
@@ -1666,6 +1735,9 @@ def main(argv=None):
         pass
     finally:
         server.server_close()
+        if tls_server:
+            tls_server.shutdown()
+            tls_server.server_close()
         shutdown_arm(arm)
         CAMERA.release()
     return 0

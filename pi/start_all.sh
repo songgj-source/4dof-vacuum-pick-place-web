@@ -7,7 +7,7 @@
 #   bash pi/start_all.sh status     # 무엇이 켜져 있는지
 #   NO_BROWSER=1 bash pi/start_all.sh   # 화면은 열지 않는다
 #   NO_TORQUE=1 bash pi/start_all.sh    # 토크는 켜지 않고 팔 상태만 확인
-#   NO_DRIVE=1 bash pi/start_all.sh     # 주행 스택은 켜지 않음(팔만)
+#   DRIVE=1 bash pi/start_all.sh        # 주행 스택도 켠다(기본은 꺼 둠: 2026-11-03부터 팔만. Pi의 ARM_DRIVE=0도 1로 바꿔야 화면·명령에서 쓸 수 있다)
 #
 # 환경 변수: ROBOT (기본 user@192.168.0.115), REMOTE_DIR (4dof_ik_pi_test), ARM_SSH_KEY,
 #            STT_PY (Whisper가 깔린 파이썬, 기본 ~/miniconda3/envs/lerobot_312/bin/python)
@@ -18,6 +18,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROBOT="${ROBOT:-user@192.168.0.115}"
 PI_IP="${ROBOT#*@}"
 REMOTE_DIR="${REMOTE_DIR:-4dof_ik_pi_test}"
+if [ "${DRIVE:-0}" = 1 ]; then unset NO_DRIVE; else NO_DRIVE=1; fi      # 주행 스택은 DRIVE=1일 때만 켠다
 STT_PY="${STT_PY:-$HOME/miniconda3/envs/lerobot_312/bin/python}"
 STT_PORT=8010
 OLLAMA_PORT=11434

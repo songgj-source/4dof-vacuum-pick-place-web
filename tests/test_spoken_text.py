@@ -12,7 +12,7 @@ HTML = Path(__file__).resolve().parents[1] / 'web/index.html'
 def run(fn, *texts):
     source = HTML.read_text()
     code = source[source.index('function spoken(text)'):source.index('function speak(text')]
-    out = subprocess.run(['node', '-e', code + f'console.log(JSON.stringify({json.dumps(list(texts), ensure_ascii=False)}.map({fn})))'],
+    out = subprocess.run(['node', '-e', 'globalThis.window = globalThis; globalThis.addEventListener = () => {};\n' + code + f'console.log(JSON.stringify({json.dumps(list(texts), ensure_ascii=False)}.map({fn})))'],
                          capture_output=True, text=True, check=True).stdout
     return json.loads(out)
 

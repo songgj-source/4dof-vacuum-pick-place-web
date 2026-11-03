@@ -368,6 +368,10 @@ def desk_request(arm):
         proposal, reply, scene = tidy(arm, scene=scene)
         executed = [dict(command='look_at_table', result=dict(ok=True))]
         return dict(reply=reply, proposal=proposal, executed=executed, scene=scene, source='rule')
+    if not base_drive.enabled():                           # 주행을 껐으면 책상으로 이동하지 않는다: 책상이 안 보인다고만 알린다
+        seen = '사진을 찍어 보니 책상이 보이지 않습니다. ' if status == 200 else '사진을 찍지 못했습니다. '
+        return dict(reply=seen + '주행이 꺼져 있어 이동하지 않습니다. 팔 앞에 책상과 트레이가 보이게 놓고 다시 말해 주세요.', proposal=None,
+                    executed=[dict(command='look_at_table', result=dict(ok=True))] if status == 200 else [], scene=scene if status == 200 else None, source='rule')
     proposal, reply = drive_proposal('책상으로 가서 정리해줘')
     if proposal is None:                                   # 지도에 책상 장소가 없다 등: 이유를 그대로 알린다
         return dict(reply=reply, proposal=None, executed=[], scene=None, source='rule')
@@ -401,7 +405,8 @@ def tidy(arm, scene=None):
     proposal = tidy_proposal(present, unknown)
     items = [NAMES[label] for label in present] + ([f'새 물체 {unknown}개{unknown_guess(scene)}'] if unknown else [])
     names_all = ', '.join(items)
-    return proposal, ' '.join([f"{names_all}{josa(names_all, '을', '를')} 정리합니다.", *notes]) + WAIT, scene      # 한 줄로: 무엇을 정리하는지 + 뺀 것
+    # 2026-11-03 사용자: '책상에서 빨간 정육면체, 흰 상자, 줄자를 찾았습니다. 책상 정리를 시작하겠습니다.' 뒤에 '집을 물체의 위치를 확인합니다'(plan 단계)가 이어진다
+    return proposal, ' '.join([f"책상에서 {names_all}{josa(names_all, '을', '를')} 찾았습니다.", '책상 정리를 시작하겠습니다.', *notes]), scene
 
 
 def proposal_reply(proposal, notes=()):
