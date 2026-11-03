@@ -10,7 +10,9 @@ from perception import object_classify, object_registry
 def _label(hsv):
     bgr = np.full((480, 640, 3), (200, 200, 200), np.uint8)
     depth = np.full((480, 640), 600, np.uint16)
-    bgr[250:310, 250:310] = cv2.cvtColor(np.full((60, 60, 3), hsv, np.uint8), cv2.COLOR_HSV2BGR)
+    # 실제 카메라처럼 색은 깊이 위치에서 DEPTH_MINUS_TOP_CENTER_PX만큼 옮긴 자리에 있다
+    dx, dy = (int(round(v)) for v in object_classify.DEPTH_MINUS_TOP_CENTER_PX)
+    bgr[250 - dy:310 - dy, 250 - dx:310 - dx] = cv2.cvtColor(np.full((60, 60, 3), hsv, np.uint8), cv2.COLOR_HSV2BGR)
     depth[250:310, 250:310] = 570
     found = object_classify.classify_objects(bgr, depth)
     return [o['label'] for o in found]
